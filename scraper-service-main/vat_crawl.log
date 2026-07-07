@@ -1,0 +1,7 @@
+/home/tenbitsolutions/scraper-service/crawl_vat_complete.py:226: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "crawled_at": datetime.utcnow().isoformat(),
+pdfminer metadata/pages extraction failed: 'PDFDocument' object has no attribute 'get_pages'
+pdfminer metadata/pages extraction failed: 'PDFDocument' object has no attribute 'get_pages'
+pdfminer metadata/pages extraction failed: 'PDFDocument' object has no attribute 'get_pages'
+pdfminer metadata/pages extraction failed: 'PDFDocument' object has no attribute 'get_pages'
+pdfminer metadata/pages extraction failed: 'PDFDocument' object has no attribute 'get_pages'

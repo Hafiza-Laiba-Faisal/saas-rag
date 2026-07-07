@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+*.egg-link
+MANIFEST
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Environment files
+.env
+*.env
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Kiro spec tooling
+.kiro/
+
+# Logs
+*.log
+logs/
+
+# Temp files
+tmp/
+temp/
+
+# PaddleOCR model cache (downloaded at runtime)
+~/.paddleocr/
+inference/
+
+# Batch processing output
+output/
+
+# Temporary OCR test output files
+mistral_pdf_output.json
+paddle_pdf_output.json
