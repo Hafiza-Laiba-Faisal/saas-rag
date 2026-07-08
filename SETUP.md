@@ -61,19 +61,27 @@
 
 ---
 
-## 2. Quick Start (Development)
+## 2. Quick Start
 
-### 2.1 One-Command Setup (Linux/macOS)
+### 2.0 Docker (Recommended — Single Command)
 
 ```bash
-# Navigate to project root
-cd /projects/TenBit/RAG
+cd C:\Root\Projects\TenBit\RAG
 
-# Run setup script (creates venvs, installs deps, starts all services)
-./scripts/setup-dev.sh
+# Edit .env to set your LLM API key, then:
+docker compose up -d
+
+# Full stack including optional OCR/Scraper:
+# docker compose --profile all up -d
 ```
 
-### 2.2 Manual Quick Start (3 Terminals)
+Access: **http://localhost** (admin dashboard via Nginx on port 80)
+
+See [RUN_GUIDE.md](RUN_GUIDE.md) for detailed Docker instructions.
+
+### 2.1 Manual Development Setup (3 Terminals)
+
+For development without Docker, use the manual setup below:
 
 #### Terminal 1: OCR Service (Port 8001)
 ```bash
@@ -105,9 +113,10 @@ rag init
 python -m rbs_rag.web_run
 ```
 
-### 2.3 Access Dashboard
+### 2.2 Access Dashboard
 
-Open **http://localhost:8100** in your browser.
+- **Docker mode**: http://localhost (port 80, via Nginx)
+- **Manual mode**: http://localhost:8100 (direct to uvicorn)
 
 ---
 
@@ -889,15 +898,44 @@ pytest tests/ -v
 
 ## 7. Production Deployment
 
+### 7.0 Docker Deployment (Recommended)
+
+```bash
+# 1. Copy project to production server
+# 2. Configure .env
+nano .env
+
+# 3. Start all services
+docker compose up -d
+
+# 4. (Optional) Enable OCR + Scraper microservices
+# docker compose --profile all up -d
+```
+
+Access: **http://your-server-ip** (port 80)
+
+For HTTPS:
+```bash
+# 1. Place SSL certs
+mkdir -p nginx/ssl
+# Copy fullchain.pem and privkey.pem into nginx/ssl/
+
+# 2. Update nginx/nginx.conf to add listen 443 ssl;
+#    (see comments in config for SSL directives)
+
+# 3. Restart nginx
+docker compose restart nginx
+
+# 4. Set HTTPS_PORT=443 in .env
+```
+
 ### 7.1 Pre-Deployment Checklist
 
-- [ ] All API keys configured in environment
-- [ ] SSL certificates obtained and placed in `./ssl/`
+- [ ] All API keys configured in `.env`
+- [ ] SSL certificates obtained and placed in `./nginx/ssl/`
 - [ ] Domain DNS configured
-- [ ] Database passwords set (strong, unique)
-- [ ] JWT secret generated (32+ chars)
-- [ ] CORS origins configured
-- [ ] Backup strategy defined
+- [ ] CORS origins configured (`RAG_CORS_ORIGINS` in `.env`)
+- [ ] Backup strategy defined (volumes: `rag_data`, `qdrant_data`, `redis_data`)
 - [ ] Monitoring/alerting configured
 - [ ] Load testing completed
 
@@ -907,11 +945,13 @@ pytest tests/ -v
 # Using Let's Encrypt (Certbot)
 sudo certbot certonly --standalone -d yourdomain.com
 
-# Copy to ssl directory
-mkdir -p ./ssl
-sudo cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem ./ssl/cert.pem
-sudo cp /etc/letsencrypt/live/yourdomain.com/privkey.pem ./ssl/key.pem
-sudo chown $USER:$USER ./ssl/*.pem
+# Copy to nginx/ssl directory
+mkdir -p ./nginx/ssl
+sudo cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem ./nginx/ssl/cert.pem
+sudo cp /etc/letsencrypt/live/yourdomain.com/privkey.pem ./nginx/ssl/key.pem
+sudo chown $USER:$USER ./nginx/ssl/*.pem
+
+# Update nginx.conf to enable SSL (add listen 443 ssl; and ssl_* directives)
 ```
 
 ### 7.3 Database Migration (SQLite → PostgreSQL)

@@ -1,89 +1,95 @@
-# Running the RAG SaaS Platform on Another System
+# RUN GUIDE — RAG Platform
 
-This guide outlines the minimum commands and configurations required to set up and run the RBS RAG Multi-Tenant SaaS Web Application on a clean system.
-
----
-
-## Prerequisites
-
-- **Python**: Version `3.11` or higher installed.
-- **API Keys**: Access keys for Gemini, OpenAI, or Anthropic (depending on which model providers you choose to run).
+## From fresh Windows to working system in 5 commands
 
 ---
 
-## 1. Fast Setup Commands
+### 1. Install Docker Desktop
 
-Open a terminal in the project root directory and execute:
+Download from [docker.com](https://docs.docker.com/desktop/setup/install/windows-install/) and install.  
+After install, launch Docker Desktop and wait for the engine to start (tray icon stops spinning).
 
-```bash
-# 1. (Recommended) Install package with local ML support
-pip install -e ".[local-ml]"
+> **WSL2 alternative (free, no license needed):**  
+> Run as Administrator: `wsl --install -d Ubuntu` → restart → open PowerShell → `wsl -d Ubuntu -e bash -c "curl -fsSL https://get.docker.com | sh"` → `wsl --shutdown`. Then use `wsl -d Ubuntu -e docker` instead of `docker` below.
 
-# Or minimal install:
-pip install -e .
+---
 
-# Set Python path (Windows PowerShell):
-$env:PYTHONPATH="src"
+### 2. Extract the project
 
-# 2. Initialize configuration
-rag init
+Unzip the project folder to a permanent location, e.g. `C:\RAG\`.
 
-# 3. Start the web server
-python -m rbs_rag.web_run
+Open **PowerShell** in that folder:
+
+```powershell
+cd C:\RAG
 ```
 
 ---
 
-## 2. Platform Access
+### 3. Configure (one file)
 
-Once the server boots up, navigate to:
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
 
-- **Admin Web Dashboard**: [http://localhost:8100](http://localhost:8100)
-- **Interactive OpenAPI Documentation**: [http://localhost:8100/docs](http://localhost:8100/docs)
-- **Embeddable Chat Interface**: [http://localhost:8100/widget](http://localhost:8100/widget)
+Set your LLM API key in `.env`:
+
+```
+RAG_LLM_API_KEY=your-gemini-or-openai-key-here
+```
+
+That's the **only** config you need.
 
 ---
 
-## 3. Deployment Directory Structure
+### 4. Start everything
 
-When running, the server automatically manages isolated workspaces under `.rbs_rag`:
+```powershell
+docker compose up -d
+```
 
-```
-.rbs_rag/
-├── admin.db                 # Global SaaS settings & client configs
-└── tenants/
-    ├── client-alpha/        # Isolated directory for Client Alpha
-    │   ├── rag.db           # Client Alpha's isolated vector and chat database
-    │   └── documents/       # Raw uploaded files (PDF, DOCX, etc.)
-    └── client-beta/
-        ├── rag.db
-        └── documents/
-```
+Wait 2–3 min while Docker builds the images and downloads dependencies.
 
 ---
 
-## 4. Minimum Client Integration Example
+### 5. Verify
 
-To test the system from external applications, clients can use this basic HTML snippet to load a floating chat widget. Just replace `YOUR_API_KEY` with the key generated in the dashboard:
+```powershell
+curl http://localhost/api/v1/health
+```
 
-```html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Customer Web Page</title>
-</head>
-<body>
-    <h1>Welcome to Acme Corp</h1>
+Expected: `{"status":"ok","db":"connected","qdrant":"connected","llm":"unknown",...}`
 
-    <!-- Paste the code below to render the RAG chatbot -->
-    <script>
-      (function() {
-        var iframe = document.createElement('iframe');
-        iframe.src = "http://localhost:8000/widget?api_key=YOUR_API_KEY";
-        iframe.style = "position: fixed; bottom: 20px; right: 20px; width: 380px; height: 600px; border: none; z-index: 999999; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);";
-        document.body.appendChild(iframe);
-      })();
-    </script>
-</body>
-</html>
+---
+
+### 6. Create a client
+
+```powershell
+curl -X POST http://localhost/api/v1/tenants -H "Content-Type: application/json" -d "{\"tenant_id\":\"demo\",\"name\":\"Demo Client\",\"llm_api_key\":\"your-actual-api-key\"}"
+```
+
+Save the returned **API key** — you'll give it to your client.
+
+---
+
+### Access URLs
+
+| Page | URL |
+|------|-----|
+| Admin dashboard | http://localhost |
+| Chat widget | http://localhost/widget |
+| OCR API | http://localhost/ocr/docs |
+| Scraper API | http://localhost/crawl/test |
+| Qdrant UI | http://localhost:6333/dashboard |
+
+---
+
+### If something goes wrong
+
+```powershell
+docker compose ps          # check all 6 services are "Up"
+docker logs tenbit-rag-api --tail 20   # check RAG API logs
+docker logs tenbit-ocr --tail 20       # check OCR logs
+docker logs tenbit-scraper --tail 20   # check Scraper logs
 ```

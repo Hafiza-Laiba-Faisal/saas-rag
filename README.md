@@ -45,96 +45,59 @@ A production-ready Retrieval-Augmented Generation platform built for enterprise 
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Docker)
 
 ### Prerequisites
 
-- **Python 3.11+**
-- **Node.js 18+** (for frontend development)
-- **Git**
+- **Docker Engine** 24+ with Compose V2
+- **Git** (to clone the repo)
+- **4+ GB RAM** allocated to Docker
 
-### 1. Clone and Setup RAG Core
+### 1. Clone & Configure
 
 ```bash
+git clone <repo-url> /projects/TenBit/RAG
 cd /projects/TenBit/RAG
 
-# Install Python dependencies
-python -m pip install -e .
-
-# Or with local ML extras for embeddings + Qdrant
-python -m pip install -e ".[local-ml]"
-
-# Start Qdrant vector database (Docker required)
-docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
-
-# Initialize configuration
-rag init
+# Edit .env — set your LLM API key (Gemini, OpenAI, or Anthropic)
+#   RAG_LLM_API_KEY=your-api-key-here
 ```
 
-### 2. Start OCR Service (Terminal 1)
+### 2. Launch Everything
 
 ```bash
-cd /projects/TenBit/RAG/ocr-service-main
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
-
-# Configure environment
-cp .env.example .env
-# Edit .env: Add MISTRAL_API_KEY for cloud OCR (optional - has local fallback)
-
-# Start service on port 8001
-uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+docker compose up -d
 ```
 
-### 3. Start Scraper Service (Terminal 2)
+Wait ~30 seconds for health checks. Verify:
 
 ```bash
-cd /projects/TenBit/RAG/scraper-service-main
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install Playwright browsers
-playwright install chromium
-
-# Configure environment (optional)
-cp .env.example .env
-# Edit .env: Add DEEPCRAWL_API_KEY for Cloudflare bypass
-
-# Start service on port 8002
-uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+curl http://localhost/api/v1/health
+# {"status":"ok","db":"connected","qdrant":"connected",...}
 ```
 
-### 4. Start RAG API + Dashboard (Terminal 3)
+### 3. Access
+
+| Service | URL |
+|---------|-----|
+| **Admin Dashboard** | http://localhost |
+| **Widget Demo** | http://localhost/widget |
+| **API (via Nginx)** | http://localhost/api/v1/chat |
+| **Qdrant Dashboard** | http://localhost:6333/dashboard |
+
+### 4. Create Your First Tenant
 
 ```bash
-cd /projects/TenBit/RAG
-
-# Set Python path
-export PYTHONPATH="src"  # Windows: $env:PYTHONPATH="src"
-
-# Start web server on port 8100
-python -m rbs_rag.web_run
+curl -X POST http://localhost/api/v1/tenants \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"demo","name":"Demo Client","llm_api_key":"'$RAG_LLM_API_KEY'"}'
 ```
 
-### 5. Access the Dashboard
+### 5. (Optional) Start OCR / Scraper Microservices
 
-Open **http://localhost:8100** in your browser.
-
-- **Admin Dashboard**: Full multi-tenant management
-- **Chat Interface**: RAG-powered Q&A with citations
-- **Document Management**: Upload, OCR status, ingestion
-- **URL Ingestion**: Submit URLs for scraping
-- **System Logs**: Audit trail and activity
+```bash
+docker compose --profile all up -d
+```
 
 ---
 
@@ -142,17 +105,26 @@ Open **http://localhost:8100** in your browser.
 
 ```
 /projects/TenBit/RAG/
-├── IMPROVEMENTS_ANALYSIS.md    # Comprehensive architecture analysis
-├── FEATURES.md                 # Complete feature documentation
-├── README.md                   # This file
-├── SETUP.md                    # Detailed installation guide
-├── ARCHITECTURE.md             # System design documentation
-├── API.md                      # Complete API reference
-├── database_analysis.md        # Vector DB comparison
-├── improvements.md             # Improvement tracking
-├── pyproject.toml              # Python package config
-├── rag.docx                    # Original architecture spec
-├── run-rag.ps1                 # Windows run script
+├── Dockerfile                  # Multi-stage build for rag_api
+├── docker-compose.yml          # Orchestrates all services
+├── .env                        # Single config point (git-ignored)
+├── .env.example                # Template with all variables
+├── .dockerignore               # Build context exclusions
+├── nginx/
+│   └── nginx.conf              # Reverse proxy config
+│   └── ssl/                    # HTTPS certs (create if needed)
+├── docker/
+│   └── docker-entrypoint.sh    # Auto-generates config.json on start
+├── IMPROVEMENTS_ANALYSIS.md
+├── FEATURES.md
+├── README.md
+├── SETUP.md
+├── ARCHITECTURE.md
+├── database_analysis.md
+├── improvements.md
+├── pyproject.toml
+├── rag.docx
+├── run-rag.ps1
 ├── src/
 │   └── rbs_rag/
 │       ├── __init__.py
@@ -330,69 +302,72 @@ mypy src/
 
 ## 🚢 Production Deployment
 
-### Docker Compose (Planned)
+### Docker Compose (Implemented)
 
-```yaml
-services:
-  rag-api:
-    build: .
-    ports: ["8100:8100"]
-    environment:
-      - QDRANT_URL=http://qdrant:6333
-      - REDIS_URL=redis://redis:6379
-    depends_on: [qdrant, redis, postgres]
+The project ships with a complete `docker-compose.yml` covering all core services:
 
-  ocr-service:
-    build: ./ocr-service-main
-    ports: ["8001:8000"]
-    environment:
-      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
+| Service | Container | Image | Purpose |
+|---------|-----------|-------|---------|
+| **rag_api** | tenbit-rag-api | Build from `./Dockerfile` | RAG engine + admin dashboard |
+| **nginx** | tenbit-nginx | `nginx:alpine` | Reverse proxy (ports 80/443) |
+| **qdrant** | tenbit-qdrant | `qdrant/qdrant:latest` | Vector database |
+| **redis** | tenbit-redis | `redis:7-alpine` | Caching + rate limiting |
+| **ocr_service** | tenbit-ocr | Build from `./ocr-service-main/Dockerfile` | OCR microservice (profile: all) |
+| **scraper_service** | tenbit-scraper | Build from `./scraper-service-main/Dockerfile` | Web scraper microservice (profile: all) |
 
-  scraper-service:
-    build: ./scraper-service-main
-    ports: ["8002:8000"]
-    environment:
-      - DEEPCRAWL_API_KEY=${DEEPCRAWL_API_KEY}
+### Deploy to Production
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports: ["6333:6333"]
-    volumes: [qdrant_data:/qdrant/storage]
+```bash
+# 1. Copy project to server, then:
+# 2. Set your LLM API key
+nano .env
 
-  redis:
-    image: redis:7-alpine
-    ports: ["6379:6379"]
+# 3. Start all services
+docker compose up -d
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_DB=tenbit_rag
-      - POSTGRES_USER=tenbit
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes: [postgres_data:/var/lib/postgresql/data]
-
-volumes:
-  qdrant_data:
-  postgres_data:
+# 4. (Optional) Add SSL — place certs in nginx/ssl/, update nginx.conf
+#     then restart: docker compose restart nginx
 ```
 
-### Environment Variables for Production
+### Client Integration
+
+Clients connect using the **X-API-Key** header. Each tenant gets a unique key:
+
+```bash
+curl -X POST "https://yourdomain.com/api/v1/chat" \
+  -H "X-API-Key: rbs_rag_sk_<tenant_secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the policy?", "session_id": "session-123"}'
+```
+
+Or embed the floating chat widget on any website:
+
+```html
+<script>
+(function() {
+var iframe = document.createElement('iframe');
+iframe.src = "https://yourdomain.com/widget?api_key=rbs_rag_sk_<tenant_secret>";
+iframe.style = "position: fixed; bottom: 20px; right: 20px; width: 380px; height: 600px; border: none; z-index: 999999; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);";
+document.body.appendChild(iframe);
+})();
+</script>
+```
+
+### Environment Variables
+
+All config lives in a single `.env` file at the project root. Key variables:
 
 ```env
-# RAG Core
-RAG_LLM_API_KEY=your_llm_key
-QDRANT_URL=http://qdrant:6333
-REDIS_URL=redis://redis:6379
-DATABASE_URL=postgresql://tenbit:pass@postgres/tenbit_rag
-ADMIN_JWT_SECRET=your_jwt_secret
-CORS_ORIGINS=https://yourdomain.com
+# Required — set your LLM provider key
+RAG_LLM_API_KEY=your-gemini-or-openai-api-key
 
-# OCR Service
-MISTRAL_API_KEY=your_mistral_key
-OCR_API_KEY=your_ocr_api_key
-
-# Scraper Service
-DEEPCRAWL_API_KEY=your_deepcrawl_key
+# Optional — defaults are suitable for most deployments
+RAG_LLM_PROVIDER=gemini
+RAG_LLM_MODEL=gemini-2.5-flash-lite
+RAG_EMBEDDING_PROVIDER=hash
+RAG_QDRANT_HOST=qdrant
+RAG_REDIS_HOST=redis
+RAG_LOG_LEVEL=INFO
 ```
 
 ---
@@ -436,8 +411,8 @@ MIT License - see LICENSE file for details.
 ## 🆘 Support
 
 - **Issues**: GitHub Issues
-- **Documentation**: `/docs` endpoint when running (http://localhost:8100/docs)
-- **Architecture Spec**: `rag.docx` and `.rbs_rag/tenants/testing-gdrive/documents/rag.md`
+- **API Docs**: `/docs` endpoint when running (http://localhost/api/v1/docs)
+- **Architecture Spec**: `rag.docx`
 
 ---
 
