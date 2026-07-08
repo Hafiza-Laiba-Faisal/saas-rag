@@ -1,0 +1,132 @@
+networks:
+  rag_network:
+    driver: bridge
+
+volumes:
+  rag_data:
+  qdrant_data:
+  redis_data:
+  ocr_data:
+  scraper_data:
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: tenbit-qdrant
+    restart: unless-stopped
+    networks:
+      - rag_network
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_ENABLED: "true"
+      QDRANT__LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: tenbit-redis
+    restart: unless-stopped
+    networks:
+      - rag_network
+    volumes:
+      - redis_data:/data
+    command: >
+      sh -c '
+        if [ -n "$REDIS_PASSWORD" ]; then
+          redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
+        else
+          redis-server --appendonly yes
+        fi
+      '
+    environment:
+      REDIS_PASSWORD: ${RAG_REDIS_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  rag_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tenbit-rag-api
+    restart: unless-stopped
+    networks:
+      - rag_network
+    volumes:
+      - rag_data:/data
+    env_file:
+      - .env
+    environment:
+      - RAG_ROOT_DIR=/data/.rbs_rag
+      - QDRANT_HOST=${RAG_QDRANT_HOST:-qdrant}
+      - QDRANT_PORT=${RAG_QDRANT_PORT:-6333}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ocr_service:
+    build:
+      context: ./ocr-service-main
+      dockerfile: Dockerfile
+    container_name: tenbit-ocr
+    restart: unless-stopped
+    networks:
+      - rag_network
+    volumes:
+      - ocr_data:/app/uploads
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  scraper_service:
+    build:
+      context: ./scraper-service-main
+      dockerfile: Dockerfile
+    container_name: tenbit-scraper
+    restart: unless-stopped
+    networks:
+      - rag_network
+    volumes:
+      - scraper_data:/app/data
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  nginx:
+    image: nginx:alpine
+    container_name: tenbit-nginx
+    restart: unless-stopped
+    networks:
+      - rag_network
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - rag_api
+      - ocr_service
+      - scraper_service
