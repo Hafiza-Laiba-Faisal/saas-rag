@@ -144,7 +144,7 @@ class OpenAICompatibleClient:
                             delta = data.get("choices", [{}])[0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
-                                yield StreamingChunk(text=content, done=False)
+                                yield StreamingChunk(text=_clean_llm_text(content), done=False)
                 return
             except Exception as exc:
                 if not _is_retryable_error(str(exc)):
@@ -213,7 +213,7 @@ class GeminiClient:
                                 for part in parts:
                                     text = part.get("text", "")
                                     if text:
-                                        yield StreamingChunk(text=text, done=False)
+                                        yield StreamingChunk(text=_clean_llm_text(text), done=False)
                 yield StreamingChunk(text="", done=True)
                 return
             except Exception as exc:
@@ -248,7 +248,7 @@ class AnthropicClient:
             headers = {"x-api-key": self.settings.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
             try:
                 response = _post_json(url, payload, headers=headers, timeout=self.settings.timeout_seconds)
-                return response["content"][0]["text"]
+                return _clean_llm_text(response["content"][0]["text"])
             except RuntimeError as exc:
                 if not _is_retryable_model_error(exc):
                     raise
