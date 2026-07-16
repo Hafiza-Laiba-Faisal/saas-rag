@@ -11,7 +11,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
         qdrant-client redis \
         opencv-python-headless beautifulsoup4 \
         cryptography pyjwt prometheus-client \
-        curl_cffi
+        curl_cffi \
+        brotli
 
 FROM python:3.11-slim
 

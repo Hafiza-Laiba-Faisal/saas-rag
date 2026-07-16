@@ -18,6 +18,12 @@ try:
 except ImportError:
     HAS_CURL_CFFI = False
 
+try:
+    import brotli
+    HAS_BROTLI = True
+except ImportError:
+    HAS_BROTLI = False
+
 
 class FetchResult:
     """Result of a fetch operation."""
@@ -142,15 +148,28 @@ class HTTPFetcher:
         if not HAS_CURL_CFFI or not self._curl_session:
             return None
         try:
-            response = await self._curl_session.get(url, impersonate="chrome124")
+            response = await self._curl_session.get(
+                url, impersonate="chrome124",
+                headers={"Accept-Encoding": "gzip, deflate, br"},
+            )
+            content = response.content
+            # curl_cffi may not auto-decompress brotli; do it manually
+            if (
+                HAS_BROTLI
+                and response.headers.get("content-encoding", "").lower() == "br"
+            ):
+                try:
+                    content = brotli.decompress(content)
+                except Exception:
+                    pass
             result = FetchResult(
                 url=url,
                 status_code=response.status_code,
-                content=response.content,
+                content=content,
                 content_type=response.headers.get("content-type", ""),
                 headers=dict(response.headers),
             )
-            if result.is_success and self._is_cloudflare_challenge(response.content):
+            if result.is_success and self._is_cloudflare_challenge(content):
                 logger.info("curl_cffi got Cloudflare challenge for %s, falling back", url)
                 return None
             return result
