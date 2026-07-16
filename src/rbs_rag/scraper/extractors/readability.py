@@ -27,7 +27,7 @@ def extract_readable_content(html: str, base_url: str = "") -> str:
         return text
 
     # Last resort: plain get_text
-    text = soup.get_text(separator="\n", strip=True)
+    text = soup.get_text(separator=" ", strip=True)
     return text
 
 
@@ -36,7 +36,7 @@ def _extract_text_from_element(element) -> str:
     parts = []
     for tag in element.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "td",
                                  "th", "blockquote", "pre", "code", "div"]):
-        text = tag.get_text(strip=True)
+        text = tag.get_text(separator=" ", strip=True)
         if text:
             parts.append(text)
     return "\n".join(parts)
