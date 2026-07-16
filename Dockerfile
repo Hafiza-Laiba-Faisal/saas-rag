@@ -11,7 +11,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
         qdrant-client redis \
         opencv-python-headless beautifulsoup4 \
         cryptography pyjwt prometheus-client \
-        transformers \
         curl_cffi
 
 FROM python:3.11-slim
