@@ -252,16 +252,19 @@ The scraper uses a **3-tier fallback chain** for maximum compatibility:
 ```
 httpx (fast, lightweight)
   → curl_cffi (TLS fingerprint, bypasses Cloudflare on most sites)
-  → Playwright (full Chromium browser, renders JS)
+  → scraper microservice with Playwright (full Chromium browser)
 ```
 
-All three are included in the Docker image. For non-Docker setups:
+**Main RAG image** includes httpx + curl_cffi (lightweight, covers 95% of sites).
+**Scraper microservice** (`scraper-service-main/`) adds Playwright for JS-heavy sites.
+
+For non-Docker setups:
 
 ```bash
-# curl_cffi (Cloudflare bypass)
+# curl_cffi (Cloudflare bypass) — recommended
 pip install curl_cffi
 
-# Playwright (JS rendering)
+# Playwright (JS rendering) — only if needed
 pip install playwright
 playwright install chromium
 ```
