@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse, urlencode, parse_qs
 from bs4 import BeautifulSoup
 
 from rbs_rag.scraper.config import ScraperConfig, get_config
-from rbs_rag.scraper.fetcher.http_fetcher import HTTPFetcher, FetchResult
+from rbs_rag.scraper.fetcher.http_fetcher import HTTPFetcher, FetchResult, HAS_CURL_CFFI
 from rbs_rag.scraper.parsers.html_parser import HTMLParser, ParsedContent
 from rbs_rag.scraper.extractors.readability import extract_readable_content
 from rbs_rag.utils.logger import get_logger
@@ -157,9 +157,12 @@ class ScraperEngine:
                 processing_time_ms=(time.time() - t0) * 1000,
             )
 
+        msg = fetch_result.error or f"HTTP {fetch_result.status_code}"
+        if fetch_result.status_code == 200 and not HAS_CURL_CFFI and self.fetcher._is_cloudflare_challenge(fetch_result.content):
+            msg = "Site is behind Cloudflare — install curl_cffi (pip install curl_cffi)"
         return ScrapeResult(
             url=url,
-            error=fetch_result.error or f"HTTP {fetch_result.status_code}",
+            error=msg,
             status_code=fetch_result.status_code,
             processing_time_ms=ms,
         )
