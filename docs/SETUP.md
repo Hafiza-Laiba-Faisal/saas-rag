@@ -245,13 +245,66 @@ curl -X POST https://localhost/api/v1/chat \
 
 Both admin playground and client dashboard have a sidebar/panel to view and edit the system prompt. The system prompt is stored per-tenant in the admin DB. It can also be overridden per chat request by passing `"system_prompt": "..."` in the chat body.
 
-## DeepCrawl Fallback
+## Web Scraper
 
-Websites behind Cloudflare can be scraped by setting `DEEPCRAWL_API_KEY` in `.env`. When Playwright is unavailable, the scraper falls back to DeepCrawl automatically.
+The scraper uses a **3-tier fallback chain** for maximum compatibility:
+
+```
+httpx (fast, lightweight)
+  → curl_cffi (TLS fingerprint, bypasses Cloudflare on most sites)
+  → Playwright (full Chromium browser, renders JS)
+```
+
+All three are included in the Docker image. For non-Docker setups:
+
+```bash
+# curl_cffi (Cloudflare bypass)
+pip install curl_cffi
+
+# Playwright (JS rendering)
+pip install playwright
+playwright install chromium
+```
+
+### Scrape Endpoints
+
+**POST /api/v1/client/scrape**
+
+```json
+{
+  "url": "https://example.com",
+  "crawl": false,
+  "max_pages": 10,
+  "max_depth": 2,
+  "full_site": false
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | — | Target URL to scrape |
+| `crawl` | `false` | Follow links on the page |
+| `max_pages` | `10` | Max pages to fetch (raised to 200 in full_site mode) |
+| `max_depth` | `2` | Link depth to follow (raised to 10 in full_site mode) |
+| `full_site` | `false` | Smart discovery: sitemap → language variants → BFS crawl |
+
+When `full_site=true`, the scraper:
+1. Parses `sitemap.xml` (supports sub-sitemaps)
+2. Discovers language variants (EN/FR/DE/ES) via hreflang tags
+3. Filters out non-HTML files (`.jpg`, `.pdf`, etc.) and social share URLs
+4. Scrapes URLs in parallel (5 concurrent, 2-minute cap)
+5. Deduplicates via `_normalize_url()` (strips fragments, tracking params, language suffixes)
+
+### Scraper Config (.env)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEEPCRAWL_API_KEY` | — | Optional final fallback for blocked sites |
+| `SCRAPER_MAX_PAGES` | `200` | Max pages in full_site mode |
+| `SCRAPER_MAX_DEPTH` | `10` | Max link depth in full_site mode |
 
 ## Known Issues
 
-- Playwright browser path issue in scraper container (not critical — DeepCrawl and httpx/BS4 work as fallbacks)
 - SSL cert filenames: `start.sh` generates `server.key`/`server.crt`; nginx expects `cert.pem`/`key.pem`. Symlink or copy after generation.
 - `start.sh` health check targets `/health` (OCR service) instead of `/api/v1/health` (RAG API)
 
@@ -276,5 +329,7 @@ docker compose down -v
 | `401 Unauthorized` | Missing/invalid JWT | Login at `POST /api/v1/admin/login` |
 | `404` on admin routes | Not behind nginx | Use `https://localhost/` not `http://localhost:8000/` |
 | OCR service `degraded` | PaddleOCR not in image | Rebuild: `docker compose build ocr_service` |
-| Scraper fails on JS sites | Playwright unavailable | Set `DEEPCRAWL_API_KEY` in `.env` |
+| Scraper fails on Cloudflare sites | curl_cffi not installed | `pip install curl_cffi` (included in Docker) |
+| Scraper returns "HTTP 200" error | Playwright unavailable for JS-heavy sites | `pip install playwright && playwright install chromium` or set `DEEPCRAWL_API_KEY` |
+| Scraper returns garbage/binary content | Cloudflare challenge not bypassed | Rebuild Docker image: `docker compose build --no-cache rag_api` |
 | Carriage return in API keys | Windows CRLF in `.env` | `sed -i 's/\r$//' .env` |
