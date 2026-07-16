@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Protocol, runtime_checkable
 
@@ -10,6 +11,16 @@ import httpx
 from .models import StreamingChunk
 
 log = logging.getLogger(__name__)
+
+# Strip HTML tags and broken tags like strong>text (missing <)
+_HTML_TAG_RE = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*[^>]*>')
+_BROKEN_TAG_RE = re.compile(r'(?<!<)(strong|em|b|i|p|u|s|span|div|h[1-6])\s*>', re.IGNORECASE)
+
+def _clean_llm_text(text: str) -> str:
+    text = _HTML_TAG_RE.sub('', text)
+    text = _BROKEN_TAG_RE.sub('', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 @dataclass(slots=True)
@@ -95,7 +106,7 @@ class OpenAICompatibleClient:
                 reasoning = msg_obj.get("reasoning_content") or ""
                 if not content and reasoning:
                     return f"Thinking:\n{reasoning}"
-                return content
+                return _clean_llm_text(content)
             except RuntimeError as exc:
                 if not _is_retryable_model_error(exc):
                     raise
@@ -160,7 +171,7 @@ class GeminiClient:
             url = f"{base_url}/models/{model}:generateContent?key={self.settings.api_key}"
             try:
                 response = _post_json(url, {"contents": contents}, headers={"Content-Type": "application/json"}, timeout=self.settings.timeout_seconds)
-                return response["candidates"][0]["content"]["parts"][0]["text"]
+                return _clean_llm_text(response["candidates"][0]["content"]["parts"][0]["text"])
             except RuntimeError as exc:
                 if not _is_retryable_model_error(exc):
                     raise
