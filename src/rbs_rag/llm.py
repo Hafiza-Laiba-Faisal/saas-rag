@@ -8,17 +8,23 @@ from typing import AsyncGenerator, Protocol, runtime_checkable
 
 import httpx
 
+import unicodedata
+
 from .models import StreamingChunk
 
 log = logging.getLogger(__name__)
 
 # Strip HTML tags and broken tags like strong>text (missing <)
 _HTML_TAG_RE = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*[^>]*>')
-_BROKEN_TAG_RE = re.compile(r'(?<!<)(strong|em|b|i|p|u|s|span|div|h[1-6])\s*>', re.IGNORECASE)
+_BROKEN_TAG_RE = re.compile(r'(?<!<)(strong|em|b|i|p|u|s|span|div|h[1-6]|li|ul|ol|br|hr|a|img|table|tr|td|th)\s*>', re.IGNORECASE)
+_OPEN_BROKEN_TAG_RE = re.compile(r'<\s*(strong|em|b|i|p|u|s|span|div|h[1-6]|li|ul|ol|br|hr|a|img|table|tr|td|th)\s*$', re.IGNORECASE)
 
 def _clean_llm_text(text: str) -> str:
+    text = unicodedata.normalize('NFKC', text)
     text = _HTML_TAG_RE.sub('', text)
     text = _BROKEN_TAG_RE.sub('', text)
+    text = _OPEN_BROKEN_TAG_RE.sub(' ', text)
+    text = re.sub(r'\s+', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -65,7 +71,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "If the context is insufficient, state what information is missing rather than guessing. "
     "Cite evidence with bracketed numbers like [1]. "
     "Be concise, professional, and helpful. "
-    "Never fabricate URLs, statistics, or facts."
+    "Never fabricate URLs, statistics, or facts.\n\n"
+    "OUTPUT FORMAT:\n"
+    "- Use **bold** for key terms or hotel names.\n"
+    "- Use bullet lists for amenities, services, or features.\n"
+    "- Never output HTML tags, HTML fragments, or broken tags.\n"
+    "- Before responding, remove all HTML, broken tags, and normalize whitespace.\n"
+    "- Ensure proper spacing between words."
 )
 
 def build_rag_messages(query: str, contexts, session_memory: str = "", system_prompt: str | None = None) -> list[dict[str, str]]:
