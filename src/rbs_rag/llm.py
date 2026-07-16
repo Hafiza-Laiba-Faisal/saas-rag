@@ -48,8 +48,13 @@ def detect_llm_provider(settings: LLMSettings) -> str:
 
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a grounded enterprise knowledge assistant. Answer only from the supplied context. "
-    "If the context is insufficient, say what is missing. Cite evidence with bracketed numbers like [1]."
+    "You are a multilingual enterprise knowledge assistant. "
+    "Always respond in the same language as the user's question. "
+    "Answer only from the supplied context. "
+    "If the context is insufficient, state what information is missing rather than guessing. "
+    "Cite evidence with bracketed numbers like [1]. "
+    "Be concise, professional, and helpful. "
+    "Never fabricate URLs, statistics, or facts."
 )
 
 def build_rag_messages(query: str, contexts, session_memory: str = "", system_prompt: str | None = None) -> list[dict[str, str]]:
