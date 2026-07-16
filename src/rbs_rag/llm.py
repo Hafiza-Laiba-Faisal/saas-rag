@@ -94,6 +94,7 @@ def build_rag_messages(query: str, contexts, session_memory: str = "", system_pr
     memory_block = f"\nSession memory:\n{session_memory}\n" if session_memory else ""
     context_block = "\n\n".join(context_lines) if context_lines else "No retrieved context."
     system = system_prompt or DEFAULT_SYSTEM_PROMPT
+    log.info("=== RETRIEVED CONTEXT for query=%r ===\n%s", query, context_block[:2000])
     user = f"{memory_block}\nRetrieved context:\n{context_block}\n\nUser question: {query}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user.strip()}]
 
@@ -156,7 +157,11 @@ class OpenAICompatibleClient:
                             delta = data.get("choices", [{}])[0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
-                                yield StreamingChunk(text=_clean_llm_text(content), done=False)
+                                raw = content
+                                cleaned = _clean_llm_text(content)
+                                if raw != cleaned or "strong" in raw.lower() or "<" in raw:
+                                    log.info("=== RAW LLM CHUNK === %r", raw)
+                                yield StreamingChunk(text=cleaned, done=False)
                 return
             except Exception as exc:
                 if not _is_retryable_error(str(exc)):
@@ -225,7 +230,11 @@ class GeminiClient:
                                 for part in parts:
                                     text = part.get("text", "")
                                     if text:
-                                        yield StreamingChunk(text=_clean_llm_text(text), done=False)
+                                        raw = text
+                                        cleaned = _clean_llm_text(text)
+                                        if raw != cleaned or "strong" in raw.lower() or "<" in raw:
+                                            log.info("=== RAW GEMINI CHUNK === %r", raw)
+                                        yield StreamingChunk(text=cleaned, done=False)
                 yield StreamingChunk(text="", done=True)
                 return
             except Exception as exc:
