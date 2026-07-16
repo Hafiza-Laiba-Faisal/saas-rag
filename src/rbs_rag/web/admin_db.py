@@ -71,6 +71,10 @@ class AdminStore:
                 conn.execute("ALTER TABLE tenants ADD COLUMN api_key_hash TEXT")
             except sqlite3.OperationalError:
                 pass
+            try:
+                conn.execute("ALTER TABLE tenants ADD COLUMN system_prompt TEXT")
+            except sqlite3.OperationalError:
+                pass
 
             conn.execute(
                 """
@@ -180,8 +184,8 @@ class AdminStore:
                     retrieval_top_k, retrieval_rerank_top_k, retrieval_final_context_k,
                     retrieval_dense_weight, retrieval_sparse_weight,
                     chunking_max_tokens, chunking_overlap_tokens,
-                    session_memory_limit, chat_retention_days
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    session_memory_limit, chat_retention_days, system_prompt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["tenant_id"],
@@ -209,6 +213,7 @@ class AdminStore:
                     data["chunking_overlap_tokens"],
                     data.get("session_memory_limit", 8),
                     data.get("chat_retention_days", 30),
+                    data.get("system_prompt"),
                 ),
             )
             conn.commit()

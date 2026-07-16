@@ -93,6 +93,7 @@ class AppConfig:
     default_kb: str = "default"
     session_memory_limit: int = 8
     chat_retention_days: int = 30
+    system_prompt: str | None = None
     storage: StorageConfig = field(default_factory=StorageConfig)
     embeddings: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)

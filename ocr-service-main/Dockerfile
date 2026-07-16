@@ -31,7 +31,10 @@ RUN pip install --no-cache-dir --prefix=/install \
     "slowapi>=0.1.9" \
     "opencv-python-headless>=4.9.0.80" \
     "pypdf>=4.0" \
-    "pymupdf>=1.24.3"
+    "pymupdf>=1.24.3" \
+    "paddleocr>=3.0.0" \
+    "onnxruntime>=1.18.0" \
+    "mistralai>=1.0.0"
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.11-slim

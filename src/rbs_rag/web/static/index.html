@@ -1361,9 +1361,62 @@
             line-height: 1.5;
             white-space: pre-wrap;
         }
+        /* ── Login Modal ── */
+        .login-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.85); backdrop-filter: blur(20px);
+            z-index: 99999; display: flex; align-items: center; justify-content: center;
+        }
+        .login-box {
+            background: var(--modal-bg); border: 1px solid var(--panel-border);
+            border-radius: 20px; padding: 48px 40px; width: 400px;
+            max-width: 90vw; text-align: center;
+        }
+        .login-box .logo-icon { font-size: 36px; margin-bottom: 8px; }
+        .login-box h1 { font-size: 22px; margin: 0 0 4px; }
+        .login-box p { color: var(--text-muted); font-size: 13px; margin: 0 0 28px; }
+        .login-box .form-group { text-align: left; margin-bottom: 16px; }
+        .login-box .form-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 6px; }
+        .login-box .form-group input {
+            width: 100%; padding: 12px 14px; border-radius: 10px;
+            background: var(--input-bg); border: 1px solid var(--panel-border);
+            color: var(--text-primary); font-size: 14px; outline: none; box-sizing: border-box;
+        }
+        .login-box .form-group input:focus { border-color: var(--accent-primary); }
+        .login-box .btn-primary { width: 100%; padding: 12px; font-size: 14px; margin-top: 8px; }
+        .login-box .login-error { color: var(--error-color); font-size: 12px; margin-top: 8px; display: none; }
+        .login-box .login-header { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 24px; }
+        .login-box .login-header .brand-icon { width: 44px; height: 44px; background: var(--accent-gradient); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; color: #fff; }
+        .login-box .login-header h1 { margin: 0; font-size: 20px; }
+        .login-box .login-header span { color: var(--text-muted); font-size: 12px; display: block; margin-top: 2px; }
     </style>
 </head>
 <body>
+
+    <!-- Login Modal -->
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-box">
+            <div class="login-header">
+                <div class="brand-icon">TB</div>
+                <div>
+                    <h1>TenBit RAG</h1>
+                    <span>Admin Dashboard</span>
+                </div>
+            </div>
+            <form onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label for="loginUsername">Username</label>
+                    <input type="text" id="loginUsername" value="admin" required>
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="btn btn-primary">Sign In</button>
+                <div class="login-error" id="loginError">Invalid credentials. Please try again.</div>
+            </form>
+        </div>
+    </div>
 
     <!-- Toast Notification Container -->
     <div class="toast-container" id="toastContainer"></div>
@@ -1413,13 +1466,16 @@
                 </div>
                 <div class="header-actions">
                     <!-- Dynamic Theme Selector -->
-                    <div class="theme-selector" style="display:flex; align-items:center; gap:8px; margin-right:12px;">
-                        <button class="btn btn-secondary" onclick="openSystemLogsModal()" style="padding: 6px 12px; font-size:12px; border-radius: 8px; font-weight:700; color:var(--accent-teal); border-color: rgba(6, 182, 212, 0.4);">
-                            📊 System Logs & Audit
-                        </button>
-                        <button class="btn btn-secondary" onclick="toggleTerminalDrawer()" style="padding: 6px 12px; font-size:12px; border-radius: 8px; font-weight:700; color:var(--accent-primary); border-color: rgba(0,240,255,0.3);">
-                            💻 Console Terminal
-                        </button>
+                        <div class="theme-selector" style="display:flex; align-items:center; gap:8px; margin-right:12px;">
+                            <button class="btn btn-secondary" onclick="logout()" style="padding: 6px 12px; font-size:12px; border-radius: 8px; font-weight:700; color:var(--error-color); border-color: rgba(239,68,68,0.4);">
+                                ⏻ Logout
+                            </button>
+                            <button class="btn btn-secondary" onclick="openSystemLogsModal()" style="padding: 6px 12px; font-size:12px; border-radius: 8px; font-weight:700; color:var(--accent-teal); border-color: rgba(6, 182, 212, 0.4);">
+                                📊 System Logs & Audit
+                            </button>
+                            <button class="btn btn-secondary" onclick="toggleTerminalDrawer()" style="padding: 6px 12px; font-size:12px; border-radius: 8px; font-weight:700; color:var(--accent-primary); border-color: rgba(0,240,255,0.3);">
+                                💻 Console Terminal
+                            </button>
                         <label for="themeSelect" style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">Theme</label>
                         <select id="themeSelect" onchange="changeTheme(this.value)" style="padding: 6px 12px; font-size:12px; border-radius: 8px; background: rgba(255,255,255,0.02); color: var(--text-primary); border: 1px solid var(--panel-border); outline:none; cursor:pointer;">
                             <option value="cyber">Tron Legacy</option>
@@ -1511,14 +1567,15 @@
                                     LLM Model Provider
                                     <span class="info-tooltip-trigger" onclick="toggleTooltipGuide('guideLlmProviderConfig')">ℹ️ Setup Guide</span>
                                 </label>
-                                <select id="configLlmProvider" onchange="adjustModelDefaults()">
-                                    <option value="gemini">Google Gemini Cloud (gemini-2.5-flash-lite)</option>
-                                    <option value="openai">Official OpenAI (gpt-4o-mini / gpt-4o)</option>
-                                    <option value="nvidia">NVIDIA NIM Cloud (Nemotron / Llama 3.3 / GLM / Gemma)</option>
-                                    <option value="openrouter">OpenRouter API (openrouter/auto)</option>
-                                    <option value="anthropic">Anthropic Claude (claude-3-5-sonnet)</option>
-                                    <option value="openai_compatible">Custom OpenAI-Compatible (Ollama / vLLM / LM Studio)</option>
-                                </select>
+                                 <select id="configLlmProvider" onchange="adjustModelDefaults()">
+                                     <option value="gemini">Google Gemini Cloud (gemini-2.5-flash-lite)</option>
+                                     <option value="mistral">Mistral Cloud (mistral-small/large/latest)</option>
+                                     <option value="openai">Official OpenAI (gpt-4o-mini / gpt-4o)</option>
+                                     <option value="nvidia">NVIDIA NIM Cloud (Nemotron / Llama 3.3 / GLM / Gemma)</option>
+                                     <option value="openrouter">OpenRouter API (openrouter/auto)</option>
+                                     <option value="anthropic">Anthropic Claude (claude-3-5-sonnet)</option>
+                                     <option value="openai_compatible">Custom OpenAI-Compatible (Ollama / vLLM / LM Studio)</option>
+                                 </select>
                             </div>
                             <div class="form-group">
                                 <label for="configRerankerType">Reranker Type</label>
@@ -1685,8 +1742,11 @@
                         </label>
                         <label style="display: flex; align-items: center; gap: 4px;">
                             <span>Max depth:</span>
-                            <input type="number" id="maxDepthInput" value="2" min="1" max="5"
+                            <input type="number" id="maxDepthInput" value="2" min="1" max="10"
                                 style="width: 50px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--panel-border); background: var(--input-bg); color: var(--text-primary); font-size: 12px; outline: none;">
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                            <input type="checkbox" id="fullSiteToggle" style="accent-color: var(--accent-primary);"> Full site
                         </label>
                     </div>
                     <!-- Scrape progress log -->
@@ -1845,6 +1905,11 @@
                             <span style="font-size: 13px; font-weight: 700; color: var(--accent-primary); text-transform: uppercase; letter-spacing: 0.5px;">💬 Chat Sessions</span>
                             <button class="btn btn-primary" onclick="startNewChatSession()" style="font-size: 11px; padding: 4px 10px; border-radius: 6px;">+ New Chat</button>
                         </div>
+                        <details style="margin-bottom: 12px; font-size: 12px;">
+                            <summary style="cursor:pointer; color:var(--accent-teal); font-weight:600;">⚙️ System Prompt</summary>
+                            <textarea id="systemPromptEditor" rows="5" style="width:100%; margin-top:6px; padding:6px; background:var(--input-bg); border:1px solid var(--panel-border); border-radius:6px; color:var(--text-primary); font-size:11px; resize:vertical; font-family:monospace;">You are a grounded enterprise knowledge assistant. Answer only from the supplied context. If the context is insufficient, say what is missing. Cite evidence with bracketed numbers like [1].</textarea>
+                            <button class="btn btn-secondary" onclick="saveSystemPrompt()" style="margin-top:4px; font-size:10px; padding:3px 8px;">Apply</button>
+                        </details>
                         <div id="sessionListContainer" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
                             <!-- Dynamic Sessions List -->
                         </div>
@@ -1968,14 +2033,15 @@
                             LLM Provider
                             <span class="info-tooltip-trigger" onclick="toggleTooltipGuide('guideLlmProviderNew')">ℹ️ Setup Guide</span>
                         </label>
-                        <select id="newLlmProvider" onchange="adjustNewModelDefaults()">
-                            <option value="gemini" selected>Google Gemini Cloud (gemini-2.5-flash-lite)</option>
-                            <option value="openai">Official OpenAI (gpt-4o-mini / gpt-4o)</option>
-                            <option value="nvidia">NVIDIA NIM Cloud (Nemotron / Llama 3.3 / GLM / Gemma)</option>
-                            <option value="openrouter">OpenRouter API (openrouter/auto)</option>
-                            <option value="anthropic">Anthropic Claude (claude-3-5-sonnet)</option>
-                            <option value="openai_compatible">Custom OpenAI-Compatible (Ollama / vLLM / LM Studio)</option>
-                        </select>
+                             <select id="newLlmProvider" onchange="adjustNewModelDefaults()">
+                             <option value="gemini" selected>Google Gemini Cloud (gemini-2.5-flash-lite)</option>
+                             <option value="mistral">Mistral Cloud (mistral-small/large/latest)</option>
+                             <option value="openai">Official OpenAI (gpt-4o-mini / gpt-4o)</option>
+                             <option value="nvidia">NVIDIA NIM Cloud (Nemotron / Llama 3.3 / GLM / Gemma)</option>
+                             <option value="openrouter">OpenRouter API (openrouter/auto)</option>
+                             <option value="anthropic">Anthropic Claude (claude-3-5-sonnet)</option>
+                             <option value="openai_compatible">Custom OpenAI-Compatible (Ollama / vLLM / LM Studio)</option>
+                         </select>
                         <div id="guideLlmProviderNew" class="tooltip-guide-box" style="display:none; margin-top:6px;">
                             <div id="llmGuideContentNew"></div>
                         </div>
@@ -2260,8 +2326,75 @@
         let currentTenantData = null;
         let ingestionIntervalId = null;
 
+        // ── Auth ──
+        function getAuthToken() { return sessionStorage.getItem('rag_admin_token'); }
+        function setAuthToken(t) { if (t) sessionStorage.setItem('rag_admin_token', t); else sessionStorage.removeItem('rag_admin_token'); }
+        function isLoggedIn() { return !!getAuthToken(); }
+
+        function showLogin() { document.getElementById('loginOverlay').style.display = 'flex'; }
+        function hideLogin() { document.getElementById('loginOverlay').style.display = 'none'; }
+
+        async function handleLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+            const errorEl = document.getElementById('loginError');
+            try {
+                const resp = await fetch('/api/v1/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                if (!resp.ok) { errorEl.style.display = 'block'; return; }
+                const data = await resp.json();
+                setAuthToken(data.token);
+                hideLogin();
+                loadTenants();
+                showToast('Logged in successfully', 'success');
+            } catch (e) {
+                errorEl.textContent = 'Connection error. Is the server running?';
+                errorEl.style.display = 'block';
+            }
+        }
+
+        function logout() {
+            setAuthToken(null);
+            showLogin();
+            showToast('Logged out', 'info');
+        }
+
+        // Wrap fetch with auth header and 401 handling
+        const _origFetch = window.fetch;
+        window.fetch = function(input, init = {}) {
+            const token = getAuthToken();
+            if (token) {
+                init = init || {};
+                init.headers = init.headers || {};
+                if (init.headers instanceof Headers) {
+                    if (!init.headers.has('Authorization'))
+                        init.headers.set('Authorization', `Bearer ${token}`);
+                } else if (Array.isArray(init.headers)) {
+                    const hasAuth = init.headers.some(h => h[0].toLowerCase() === 'authorization');
+                    if (!hasAuth) init.headers.push(['Authorization', `Bearer ${token}`]);
+                } else {
+                    if (!init.headers['Authorization'])
+                        init.headers['Authorization'] = `Bearer ${token}`;
+                }
+            }
+            return _origFetch.call(window, input, init).then(resp => {
+                if (resp.status === 401 && token) {
+                    setAuthToken(null);
+                    showToast('Session expired. Please login again.', 'error');
+                    setTimeout(showLogin, 500);
+                }
+                return resp;
+            });
+        };
+
         // Fetch tenants list and themes on load
         window.addEventListener('DOMContentLoaded', () => {
+            if (!isLoggedIn()) { showLogin(); return; }
+            hideLogin();
             loadTenants();
 
             // Theme loader
@@ -2464,6 +2597,12 @@
                 document.getElementById('configMemoryLimit').value = t.session_memory_limit || 8;
                 document.getElementById('configRetentionDays').value = t.chat_retention_days || 30;
 
+                // Prefill system prompt in playground
+                const spEditor = document.getElementById('systemPromptEditor');
+                if (spEditor) {
+                    spEditor.value = t.system_prompt || '';
+                }
+
                 // Integration Snippets
                 document.getElementById('integrationApiKey').innerText = t.api_key;
                 
@@ -2531,6 +2670,9 @@
             if (provider === 'gemini') {
                 modelInput.value = 'gemini-2.5-flash-lite';
                 urlInput.value = '';
+            } else if (provider === 'mistral') {
+                modelInput.value = 'mistral-small-latest';
+                urlInput.value = 'https://api.mistral.ai/v1';
             } else if (provider === 'openai') {
                 modelInput.value = 'gpt-4o-mini';
                 urlInput.value = 'https://api.openai.com/v1';
@@ -2561,6 +2703,10 @@
                 modelInput.value = 'gemini-2.5-flash-lite';
                 urlGroup.style.display = 'none';
                 urlInput.value = '';
+            } else if (provider === 'mistral') {
+                modelInput.value = 'mistral-small-latest';
+                urlGroup.style.display = 'block';
+                urlInput.value = 'https://api.mistral.ai/v1';
             } else if (provider === 'openai') {
                 modelInput.value = 'gpt-4o-mini';
                 urlGroup.style.display = 'block';
@@ -2626,6 +2772,15 @@
                     <ol style="margin: 4px 0 0 16px; padding: 0;">
                         <li>Visit <b>aistudio.google.com/app/apikey</b> for an API key (starts with <code>AIza...</code>).</li>
                         <li>Model Name can be <code>gemini-2.5-flash-lite</code> or <code>gemini-2.5-pro</code>.</li>
+                    </ol>
+                `;
+            } else if (provider === 'mistral') {
+                html = `
+                    <strong>🟢 Mistral AI Setup Instructions:</strong>
+                    <ol style="margin: 4px 0 0 16px; padding: 0;">
+                        <li>Visit <b>console.mistral.ai/api-keys</b> for an API key (starts with <code>fJkY...</code>).</li>
+                        <li>Base URL set to <code>https://api.mistral.ai/v1</code>.</li>
+                        <li>Model Name can be <code>mistral-small-latest</code>, <code>mistral-medium-latest</code>, or <code>mistral-large-latest</code>.</li>
                     </ol>
                 `;
             } else if (provider === 'anthropic') {
@@ -3172,6 +3327,7 @@
             
             const crawl = document.getElementById('crawlToggle').checked;
             const maxPages = parseInt(document.getElementById('maxPagesInput').value) || 10;
+            const maxDepth = parseInt(document.getElementById('maxDepthInput').value) || 2;
             const btn = document.getElementById('scrapeBtn');
             const status = document.getElementById('scrapeSummary');
             
@@ -3185,7 +3341,7 @@
                 const response = await fetch(`/api/v1/tenants/${currentTenantId}/scrape`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, crawl, max_pages: maxPages, max_depth: 2 })
+                    body: JSON.stringify({ url, crawl, max_pages: maxPages, max_depth: maxDepth, full_site: document.getElementById('fullSiteToggle')?.checked || false })
                 });
                 
                 const result = await response.json();
@@ -3349,6 +3505,22 @@
             chatSessionId = uuidv4();
             retrievedContextsMap = {};
             toggleDrawer(false);
+        }
+
+        async function saveSystemPrompt() {
+            const editor = document.getElementById('systemPromptEditor');
+            if (!currentTenantId) { showToast('No tenant selected', 'error'); return; }
+            const sp = editor.value.trim();
+            try {
+                const resp = await fetch(`/api/v1/tenants/${currentTenantId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ ...currentTenantData, system_prompt: sp || null, chunking_semantic: currentTenantData.chunking_semantic ?? false, chunking_semantic_threshold: currentTenantData.chunking_semantic_threshold ?? 0.75, reranker_type: currentTenantData.reranker_type ?? 'local' })
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                currentTenantData.system_prompt = sp || null;
+                showToast('System prompt updated!', 'success');
+            } catch(e) { showToast('Failed to save: '+e.message, 'error'); }
         }
 
         async function sendPlaygroundMessage(event) {

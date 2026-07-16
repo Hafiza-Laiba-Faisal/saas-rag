@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test RAG Widget</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 40px; background: #f5f5f5; }
+        h1 { color: #333; }
+        p { color: #666; }
+    </style>
+</head>
+<body>
+    <h1>Apple Kid - RAG Chat Widget Test</h1>
+    <p>Chat widget neeche right corner mein dikhe ga.</p>
+    <p>API Key: rbs_rag_sk_03b70e36389b4057bff8561ce87f84de</p>
+
+    <!-- Widget Code -->
+    <script>
+    (function() {
+    var iframe = document.createElement('iframe');
+    iframe.src = "https://localhost/widget?api_key=rbs_rag_sk_03b70e36389b4057bff8561ce87f84de";
+    iframe.style = "position: fixed; bottom: 20px; right: 20px; width: 380px; height: 600px; border: none; z-index: 999999; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);";
+    document.body.appendChild(iframe);
+    })();
+    </script>
+</body>
+</html>

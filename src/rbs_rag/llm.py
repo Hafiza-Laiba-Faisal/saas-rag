@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import AsyncGenerator, Protocol
+from typing import AsyncGenerator, Protocol, runtime_checkable
 
 import httpx
 
@@ -22,11 +22,13 @@ class LLMSettings:
     fallback_models: list[str] = field(default_factory=list)
 
 
+@runtime_checkable
 class LLMClient(Protocol):
     def generate(self, messages: list[dict[str, str]]) -> str:
         ...
 
 
+@runtime_checkable
 class StreamingLLMClient(Protocol):
     async def generate_stream(self, messages: list[dict[str, str]]) -> AsyncGenerator[StreamingChunk, None]:
         ...
@@ -45,7 +47,12 @@ def detect_llm_provider(settings: LLMSettings) -> str:
     return "openai_compatible"
 
 
-def build_rag_messages(query: str, contexts, session_memory: str = "") -> list[dict[str, str]]:
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a grounded enterprise knowledge assistant. Answer only from the supplied context. "
+    "If the context is insufficient, say what is missing. Cite evidence with bracketed numbers like [1]."
+)
+
+def build_rag_messages(query: str, contexts, session_memory: str = "", system_prompt: str | None = None) -> list[dict[str, str]]:
     context_lines: list[str] = []
     for index, result in enumerate(contexts, start=1):
         metadata = result.chunk.metadata
@@ -58,10 +65,7 @@ def build_rag_messages(query: str, contexts, session_memory: str = "") -> list[d
 
     memory_block = f"\nSession memory:\n{session_memory}\n" if session_memory else ""
     context_block = "\n\n".join(context_lines) if context_lines else "No retrieved context."
-    system = (
-        "You are a grounded enterprise knowledge assistant. Answer only from the supplied context. "
-        "If the context is insufficient, say what is missing. Cite evidence with bracketed numbers like [1]."
-    )
+    system = system_prompt or DEFAULT_SYSTEM_PROMPT
     user = f"{memory_block}\nRetrieved context:\n{context_block}\n\nUser question: {query}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user.strip()}]
 
@@ -244,7 +248,7 @@ def create_llm_client(settings: LLMSettings) -> LLMClient:
         return GeminiClient(settings)
     if provider == "anthropic":
         return AnthropicClient(settings)
-    if provider in {"openai", "openai_compatible", "nvidia", "openrouter", "groq", "together", "fireworks", "custom"}:
+    if provider in {"openai", "openai_compatible", "mistral", "nvidia", "openrouter", "groq", "together", "fireworks", "custom"}:
         return OpenAICompatibleClient(settings)
     raise ValueError(f"Unsupported LLM provider '{provider}'.")
 
@@ -300,5 +304,5 @@ def _is_retryable_error(message: str) -> bool:
     return any(marker in message for marker in markers)
 
 
-async def _get_async_client() -> httpx.AsyncClient:
+def _get_async_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0), limits=httpx.Limits(max_keepalive_connections=5, max_connections=10))

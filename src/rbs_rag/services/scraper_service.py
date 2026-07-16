@@ -25,6 +25,7 @@ class ScrapeJob:
         max_pages: int = 10,
         max_depth: int = 2,
         crawl: bool = False,
+        full_site: bool = False,
     ):
         self.job_id = job_id or str(uuid.uuid4())
         self.url = url
@@ -32,6 +33,7 @@ class ScrapeJob:
         self.max_pages = max_pages
         self.max_depth = max_depth
         self.crawl = crawl
+        self.full_site = full_site
         self.result: Optional[ScrapeResult] = None
         self.results: list[ScrapeResult] = None
         self.error: Optional[str] = None
@@ -100,12 +102,12 @@ class ScraperService:
 
         return job
 
-    async def crawl_url(self, url: str, max_pages: int = 10, max_depth: int = 2) -> ScrapeJob:
+    async def crawl_url(self, url: str, max_pages: int = 10, max_depth: int = 2, full_site: bool = False) -> ScrapeJob:
         """Crawl a URL (scrape page + its links)."""
         if not self._engine:
             await self.start()
 
-        job = ScrapeJob(url=url, crawl=True, max_pages=max_pages, max_depth=max_depth)
+        job = ScrapeJob(url=url, crawl=True, max_pages=max_pages, max_depth=max_depth, full_site=full_site)
         self._jobs[job.job_id] = job
 
         try:
@@ -114,6 +116,7 @@ class ScraperService:
                 url,
                 max_pages=max_pages,
                 max_depth=max_depth,
+                full_site=full_site,
             )
             job.results = results
             job.status = "completed" if any(r.is_success for r in results) else "failed"

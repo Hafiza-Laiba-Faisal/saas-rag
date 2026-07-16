@@ -12,14 +12,23 @@ def extract_readable_content(html: str, base_url: str = "") -> str:
     for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
         tag.decompose()
 
-    # Try common article containers
+    # Try common article containers, skip if too small
     for selector in ["article", "main", ".content", ".post", ".article", ".entry-content",
                      "#content", "#main", ".entry", ".post-content"]:
         container = soup.select_one(selector)
         if container:
-            return _extract_text_from_element(container)
+            text = _extract_text_from_element(container)
+            if len(text) > 100:
+                return text
 
-    return _extract_text_from_element(soup)
+    # Fallback: extract from full body / soup
+    text = _extract_text_from_element(soup)
+    if len(text) > 100:
+        return text
+
+    # Last resort: plain get_text
+    text = soup.get_text(separator="\n", strip=True)
+    return text
 
 
 def _extract_text_from_element(element) -> str:

@@ -208,9 +208,63 @@ class DeepCrawlAdapter(BaseScraperAdapter):
 _BOT_BLOCK_CODES = {403, 429, 503}
 
 
+class PlaywrightAdapter(BaseScraperAdapter):
+    """Adapter that uses headless Chromium (Playwright) to render JS-heavy pages."""
+    name = "playwright"
+
+    def __init__(self):
+        self._renderer = None
+
+    def _get_renderer(self):
+        if self._renderer is None:
+            from core.renderer.playwright_renderer import PlaywrightRenderer
+            self._renderer = PlaywrightRenderer(headless=True)
+        return self._renderer
+
+    async def scrape(self, url: str, timeout: int = 30) -> ScrapeResult:
+        result = ScrapeResult(url=url, adapter_used=self.name)
+        start = time.perf_counter()
+        try:
+            import asyncio
+            renderer = self._get_renderer()
+            render_result = await asyncio.to_thread(
+                renderer.render, url, wait_ms=3000
+            )
+            result.status_code = render_result.status_code
+            if render_result.status_code != 200:
+                result.error = f"HTTP {render_result.status_code}"
+                result.elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+                return result
+
+            from core.parser.bs4_parser import BS4Parser
+            from core.extractor.metadata_extractor import DefaultMetadataExtractor
+            from core.extractor.links_extractor import DefaultLinksExtractor
+
+            parser = BS4Parser()
+            parsed = parser.parse(render_result.html)
+            metadata = DefaultMetadataExtractor().extract(parsed, url)
+            result.title = metadata.get("og_title") or metadata.get("title", "")
+            result.description = metadata.get("og_description") or metadata.get("description", "")
+            result.metadata = metadata
+            links = DefaultLinksExtractor().extract(parsed, url)
+            result.links = links["links"]
+            result.links_count = links["count"]
+            result.html_length = len(render_result.html)
+            result.content_type = "text/html"
+
+            from core.content.readability_extractor import ReadabilityExtractor
+            result.readability = ReadabilityExtractor(base_url=url).extract(render_result.html)
+
+        except Exception as e:
+            result.error = str(e)
+        result.elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        return result
+
+
 class ScraperEngine:
     def __init__(self, fallback_threshold: float = 0.4):
         self.primary = NativeAdapter()
+        self.js_fallback = PlaywrightAdapter()
         self.fallback = DeepCrawlAdapter()
         self.scorer = QualityScorer()
         self.fallback_threshold = fallback_threshold
@@ -219,10 +273,18 @@ class ScraperEngine:
         result = await self.primary.scrape(url, timeout=timeout)
 
         # Immediately fall back on bot-block codes (403, 429, 503)
-        if result.status_code in _BOT_BLOCK_CODES and self.fallback.configured:
-            fallback_result = await self.fallback.scrape(url, timeout=timeout)
-            fallback_result.timing = result.timing  # preserve native timing
-            return fallback_result
+        if result.status_code in _BOT_BLOCK_CODES:
+            # First try Playwright (headless browser)
+            js_result = await self.js_fallback.scrape(url, timeout=timeout)
+            if js_result.status_code == 200:
+                js_result.timing = result.timing
+                return js_result
+            # Then try DeepCrawl if configured
+            if self.fallback.configured:
+                fallback_result = await self.fallback.scrape(url, timeout=timeout)
+                fallback_result.timing = result.timing
+                return fallback_result
+            return js_result
 
         score_data = self.scorer.score({
             "title": result.title,

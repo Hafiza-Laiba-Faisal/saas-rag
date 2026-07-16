@@ -1,406 +1,57 @@
 # TenBit RAG Platform
 
-> **Enterprise-Grade Multi-Tenant RAG Platform with Integrated OCR & Web Scraping**
+Multi-tenant Retrieval-Augmented Generation platform with OCR, web scraping, hybrid search, and per-tenant LLM configuration.
 
-A production-ready Retrieval-Augmented Generation platform built for enterprise deployments. Features multi-tenant isolation, hierarchical chunking, hybrid search (Qdrant ANN + BM25 with RRF fusion), and integrates with NVIDIA Nemotron OCR v2, PaddleOCR, and web scraping microservices. No API keys required at startup — each tenant provides their own LLM key.
-
----
-
-## 📚 Documentation
-
-| Document | Location | Description |
-|----------|----------|-------------|
-| Quick Start | [docs/SETUP.md](docs/SETUP.md) | One-command new machine setup |
-| Run Guide | [docs/RUN_GUIDE.md](docs/RUN_GUIDE.md) | Running the platform (Windows/macOS/Linux) |
-| Features | [docs/FEATURES.md](docs/FEATURES.md) | Full feature catalog |
-| Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Hybrid RAG, security, OCR pipeline |
-| Improvement Plan | [docs/IMPROVEMENTS_ANALYSIS.md](docs/IMPROVEMENTS_ANALYSIS.md) | Scoring, gaps, re-scoring |
-| Deployment Guides | [docs/deployment/](docs/deployment/) | Docker, VPS, Kubernetes, Windows Server |
-| OCR Service | [ocr-service-main/](ocr-service-main/) | Standalone OCR microservice docs |
-| Scraper Service | [scraper-service-main/](scraper-service-main/) | Standalone scraper microservice docs |
-
----
-
-## 🚀 Quick Start (Docker)
-
-### Prerequisites
-
-- **Docker Engine** 24+ with Compose V2
-- **Git** (to clone the repo)
-- **4+ GB RAM** allocated to Docker
-
-### 1. Clone & Configure
+## Quick Start
 
 ```bash
-git clone <repo-url> /projects/TenBit/RAG
-cd /projects/TenBit/RAG
-
-# No API keys required at setup. Copy the template:
-cp .env.example .env
+# Full bootstrap — checks prerequisites, generates SSL, builds images, starts services
+sudo ./start.sh
 ```
 
-### 2. Launch Everything
-
-```bash
-docker compose up -d
-```
-
-Wait ~30 seconds for health checks. Verify:
-
-```bash
-curl http://localhost/api/v1/health
-# {"status":"ok","db":"connected","qdrant":"connected",...}
-```
-
-### 3. Access
-
-| Service | URL |
-|---------|-----|
-| **Admin Dashboard** | http://localhost |
-| **Widget Demo** | http://localhost/widget |
-| **API (via Nginx)** | http://localhost/api/v1/chat |
-| **Qdrant Dashboard** | http://localhost:6333/dashboard |
-
-### 4. Create Your First Tenant (with API Key)
-
-```bash
-curl -X POST http://localhost/api/v1/tenants \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id":"demo","name":"Demo Client","llm_api_key":"your-gemini-or-openai-key"}'
-```
-
-Each tenant gets their own LLM API key. The system comes up with zero API keys and you add them per-client.
-
-### 5. (Optional) Start OCR / Scraper Microservices
-
-```bash
-docker compose --profile all up -d
-```
-
-OCR uses PaddleOCR locally (no API key needed). Scraper uses Playwright locally (no API key needed).
-
-**How OCR works:** The OCR service runs PaddleOCR as a local model (downloaded on first use, ~15MB). If `MISTRAL_API_KEY` is set, it uses Mistral's cloud OCR as the primary engine and falls back to PaddleOCR if Mistral is unavailable.
-
-**How Scraper works:** The scraper uses httpx + BeautifulSoup4 for HTML parsing and Playwright for JavaScript-rendered pages. All processing is local. The optional `DEEPCRAWL_API_KEY` is only for bypassing Cloudflare protection on certain websites.
-
----
-
-## 📦 Project Structure
-
-```
-/projects/TenBit/RAG/
-├── Dockerfile                  # Multi-stage build for rag_api
-├── docker-compose.yml          # Orchestrates all services
-├── .env                        # Single config point (git-ignored)
-├── .env.example                # Template with all variables
-├── .dockerignore               # Build context exclusions
-├── nginx/
-│   └── nginx.conf              # Reverse proxy config
-│   └── ssl/                    # HTTPS certs (create if needed)
-├── docker/
-│   └── docker-entrypoint.sh    # Auto-generates config.json on start
-├── IMPROVEMENTS_ANALYSIS.md
-├── FEATURES.md
-├── README.md
-├── SETUP.md
-├── ARCHITECTURE.md
-├── database_analysis.md
-├── improvements.md
-├── pyproject.toml
-├── rag.docx
-├── run-rag.ps1
-├── src/
-│   └── rbs_rag/
-│       ├── __init__.py
-│       ├── __main__.py         # CLI entry point
-│       ├── chunking.py         # Hierarchical + semantic chunking
-│       ├── cli.py              # CLI commands
-│       ├── cloud_sync.py       # Google Drive/OneDrive sync
-│       ├── config.py           # Configuration management
-│       ├── document_loaders.py # Document parsing + OCR integration
-│       ├── embeddings.py       # Embedding providers
-│       ├── engine.py           # Core RAG engine
-│       ├── llm.py              # LLM providers (Gemini, OpenAI, Anthropic)
-│       ├── models.py           # Pydantic models
-│       ├── reranking.py        # Reranking (heuristic + BGE planned)
-│       ├── retrieval.py        # Hybrid search + retrieval
-│       ├── store.py            # SQLite storage
-│       ├── text.py             # Text processing utilities
-│       ├── validation.py       # Self-RAG validation
-│       ├── vector_store.py     # Qdrant abstraction (planned)
-│       └── web/
-│           ├── __init__.py
-│           ├── admin_db.py     # Multi-tenant admin database
-│           ├── server.py       # FastAPI server + endpoints
-│           ├── static/
-│           │   ├── index.html  # React dashboard (SPA)
-│           │   └── widget.html # Embeddable chat widget
-│           └── web_run.py      # Web server entry point
-├── ocr-service-main/           # OCR Microservice
-│   ├── main.py                 # FastAPI entry point
-│   ├── api/routers/ocr.py      # OCR endpoints
-│   ├── ocr/engines/            # Mistral + PaddleOCR engines
-│   ├── pdf/                    # Hybrid PDF pipeline
-│   ├── preprocessing/          # Image preprocessing
-│   ├── postprocessing/         # Table parsing, Japanese correction
-│   ├── services/               # Business logic services
-│   ├── schemas/                # Pydantic schemas
-│   ├── config/settings.py      # Configuration
-│   ├── FEATURES.md
-│   ├── ARCHITECTURE.md
-│   ├── SETUP.md
-│   └── README.md
-└── scraper-service-main/       # Scraper Microservice
-    ├── app/
-    │   ├── main.py             # FastAPI entry point
-    │   ├── api/routes/         # All API endpoints
-    │   ├── core/               # Core pipeline (fetch, parse, extract)
-    │   ├── scrapers/           # Platform-specific scrapers
-    │   ├── storage/            # SQLite storage
-    │   ├── session/            # Browser session management
-    │   ├── jobs/               # Background job processing
-    │   └── schemas/            # Pydantic schemas
-    ├── FEATURES.md
-    ├── ARCHITECTURE.md
-    ├── SETUP.md
-    ├── README.md
-    └── requirements.txt
-```
-
----
-
-## 🔧 Configuration
-
-### RAG Core (`.rbs_rag/config.json`)
-
-```json
-{
-  "llm": {
-    "provider": "gemini",
-    "api_key": "${RAG_LLM_API_KEY}",
-    "model": "gemini-2.5-flash-lite",
-    "base_url": "https://generativelanguage.googleapis.com/v1beta",
-    "fallback_models": ["gemini-2.5-flash"]
-  },
-  "embeddings": {
-    "provider": "hash",
-    "dimensions": 384,
-    "model": "BAAI/bge-small-en-v1.5",
-    "api_key": "${RAG_LLM_API_KEY}"
-  },
-  "retrieval": {
-    "top_k": 20,
-    "rerank_top_k": 8,
-    "final_context_k": 5,
-    "dense_weight": 0.55,
-    "sparse_weight": 0.45
-  },
-  "chunking": {
-    "max_tokens": 320,
-    "overlap_tokens": 48
-  }
-}
-```
-
-### OCR Service (`.env`)
-
-```env
-MISTRAL_API_KEY=your_mistral_key_here
-MAX_FILE_SIZE_MB=50
-OCR_LANGUAGES=en,ur,ar
-USE_GPU=false
-PAGE_RENDER_DPI=150
-MIN_TEXT_CHARS_THRESHOLD=20
-MIN_IMAGE_DPI=150
-LOG_LEVEL=INFO
-OCR_API_KEY=optional_api_key_for_auth
-```
-
-### Scraper Service (`.env`)
-
-```env
-DEEPCRAWL_API_KEY=your_deepcrawl_key_for_cloudflare_bypass
-MAX_CONNECTIONS=100
-MAX_KEEPALIVE_CONNECTIONS=20
-APP_TITLE="Scraper Service"
-APP_VERSION="1.0.0"
-```
-
----
-
-## 📚 Documentation
-
-| Document | Description |
-|----------|-------------|
-| **[IMPROVEMENTS_ANALYSIS.md](IMPROVEMENTS_ANALYSIS.md)** | Comprehensive architecture gap analysis with 156-hour implementation plan |
-| **[FEATURES.md](FEATURES.md)** | Complete feature documentation with production target state |
-| **[SETUP.md](SETUP.md)** | Detailed installation and configuration guide |
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | System design with diagrams and data flows |
-| **[API.md](API.md)** | Complete API reference for all three services |
-| **[database_analysis.md](database_analysis.md)** | Vector database comparison and migration strategy |
-| **[improvements.md](improvements.md)** | Prioritized improvement tracking |
-
----
-
-## 🛠️ Development
-
-### Run Tests
-
-```bash
-export PYTHONPATH="src"
-python -m unittest discover -s tests -v
-```
-
-### CLI Usage
-
-```bash
-# Initialize
-rag init
-
-# Ingest documents
-rag ingest ./docs --kb default
-
-# Search
-rag search "query" --kb default
-
-# Chat
-rag chat --kb default --session my-session
-
-# User memory
-rag memory set role "support manager" --user alice
-```
-
-### Code Quality
-
-```bash
-# Format
-black src/
-isort src/
-
-# Lint
-ruff check src/
-mypy src/
-```
-
----
-
-## 🚢 Production Deployment
-
-### Docker Compose (Implemented)
-
-The project ships with a complete `docker-compose.yml` covering all core services:
-
-| Service | Container | Image | Purpose |
-|---------|-----------|-------|---------|
-| **rag_api** | tenbit-rag-api | Build from `./Dockerfile` | RAG engine + admin dashboard |
-| **nginx** | tenbit-nginx | `nginx:alpine` | Reverse proxy (ports 80/443) |
-| **qdrant** | tenbit-qdrant | `qdrant/qdrant:latest` | Vector database |
-| **redis** | tenbit-redis | `redis:7-alpine` | Caching + rate limiting |
-| **ocr_service** | tenbit-ocr | Build from `./ocr-service-main/Dockerfile` | OCR microservice (profile: all) |
-| **scraper_service** | tenbit-scraper | Build from `./scraper-service-main/Dockerfile` | Web scraper microservice (profile: all) |
-
-### Deploy to Production
-
-```bash
-# 1. Copy project to server, then:
-# 2. Set your LLM API key
-nano .env
-
-# 3. Start all services
-docker compose up -d
-
-# 4. (Optional) Add SSL — place certs in nginx/ssl/, update nginx.conf
-#     then restart: docker compose restart nginx
-```
-
-### Client Integration
-
-Clients connect using the **X-API-Key** header. Each tenant gets a unique key:
-
-```bash
-curl -X POST "https://yourdomain.com/api/v1/chat" \
-  -H "X-API-Key: rbs_rag_sk_<tenant_secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the policy?", "session_id": "session-123"}'
-```
-
-Or embed the floating chat widget on any website:
-
-```html
-<script>
-(function() {
-var iframe = document.createElement('iframe');
-iframe.src = "https://yourdomain.com/widget?api_key=rbs_rag_sk_<tenant_secret>";
-iframe.style = "position: fixed; bottom: 20px; right: 20px; width: 380px; height: 600px; border: none; z-index: 999999; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.5);";
-document.body.appendChild(iframe);
-})();
-</script>
-```
-
-### Environment Variables
-
-All config lives in a single `.env` file at the project root. Key variables:
-
-```env
-# Optional — set only if you want a global LLM fallback.
-# Each tenant can provide their own LLM API key at creation time.
-RAG_LLM_API_KEY=
-
-# Optional — defaults are suitable for most deployments
-RAG_LLM_PROVIDER=gemini
-RAG_LLM_MODEL=gemini-2.5-flash-lite
-RAG_EMBEDDING_PROVIDER=hash
-RAG_QDRANT_HOST=qdrant
-RAG_REDIS_HOST=redis
-RAG_LOG_LEVEL=INFO
-```
-
----
-
-## 📊 Current Status vs Production Target
-
-| Component | Current | Target | Status |
-|-----------|---------|--------|--------|
-| Vector DB | Qdrant (HNSW ANN) | BGE-M3 dense+sparse | 🟢 Live |
-| Embeddings | sentence-transformers (BGE) | BGE-M3 | 🟡 Local models available |
-| Reranker | Heuristic | BGE Cross-Encoder | 🟢 Implemented |
-| Chunking | Hierarchical | Hierarchical + Semantic | 🟢 Implemented |
-| Streaming | SSE via async generators | SSE streaming | 🟢 Implemented |
-| OCR | Nemotron → Mistral → Paddle | Auto-fallback chain | 🟢 Integrated |
-| Scraping | URL ingestion + crawl | Recursive crawl | 🟢 Integrated |
-| Auth | JWT admin + X-API-Key tenant | JWT + OAuth | 🟢 Implemented |
-| API Key Storage | Fernet encrypted (AES-256-GCM) | At-rest encryption | 🟢 Implemented |
-| Prompt Injection | Pattern-based detection | ML-based detection | 🟢 Hybrid (ML + Regex) |
-| Observability | Basic logging | Prometheus + Tracing | 🟢 Implemented |
-| Duplicate Detection | SQLite document_id check | Full dedup pipeline | 🟢 Implemented |
-| Document UI | 3-panel tabs (Upload/Ingested/Scraped) | Refined UX | 🟢 Implemented |
-
-See **[docs/IMPROVEMENTS_ANALYSIS.md](docs/IMPROVEMENTS_ANALYSIS.md)** for detailed analysis and re-scoring.
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing`)
-5. Open Pull Request
-
----
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
----
-
-## 🆘 Support
-
-- **Issues**: GitHub Issues
-- **API Docs**: `/docs` endpoint when running (http://localhost:8000/docs)
-- **Architecture Docs**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/deployment/](docs/deployment/)
-
----
-
-**Built for Enterprise** • Multi-Tenant • Production-Ready • Extensible
+Open **https://localhost/** (accept self-signed cert warning), login with `admin` / `admin`, create a tenant with your LLM API key.
+
+## Services
+
+| Container | Purpose |
+|-----------|---------|
+| tenbit-rag-api | RAG engine + admin/client dashboards |
+| tenbit-nginx | Reverse proxy (HTTP -> HTTPS redirect, rate limiting) |
+| tenbit-qdrant | Vector database (HNSW ANN + BM25 hybrid search) |
+| tenbit-redis | Caching and rate limiting |
+| tenbit-ocr | OCR microservice (PaddleOCR local, optional Mistral cloud) |
+| tenbit-scraper | Web scraper microservice (httpx/BS4, optional DeepCrawl for Cloudflare) |
+
+## Access
+
+| URL | Description |
+|-----|-------------|
+| https://localhost/ | Admin dashboard (JWT login) |
+| https://localhost/client | Client dashboard (API key login) |
+| https://localhost/widget?api_key=xxx | Embeddable chat widget |
+| https://localhost/api/v1/chat | Client chat endpoint (X-API-Key header) |
+| https://localhost/api/v1/health | Health check |
+
+## Architecture
+
+- **Multi-tenant isolation** — each tenant has its own SQLite DB, document directory, and Qdrant collection prefix
+- **Hybrid search** — Qdrant ANN (dense) + BM25 (sparse) with RRF fusion
+- **Chunking** — hierarchical with optional semantic chunking
+- **Document types** — txt, pdf, images (png/jpg/gif/bmp/tiff/webp/svg), html, docx, xlsx, pptx, csv, json, xml, epub, rtf, md
+- **LLM providers** — Gemini, OpenAI-compatible (including Mistral, Groq, Together, etc.), Anthropic
+- **OCR pipeline** — PaddleOCR (local, no API key) -> Mistral OCR (cloud, optional)
+- **Auth** — JWT-based admin auth (username: `admin`, password from `RAG_ADMIN_PASSWORD`), X-API-Key for client endpoints
+- **System prompt** — customizable per tenant, overridable per chat request
+
+## Configuration
+
+Single `.env` file at project root. Key variables:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `RAG_ENCRYPTION_KEY` | Yes | -- | Fernet key for encrypting API keys at rest |
+| `RAG_ADMIN_JWT_SECRET` | Yes | -- | JWT signing secret (32+ chars) |
+| `RAG_ADMIN_PASSWORD` | No | `admin` | Admin dashboard password |
+| `DEEPCRAWL_API_KEY` | No | -- | Cloudflare bypass for scraper |
+
+See [docs/SETUP.md](docs/SETUP.md) for full setup and API reference.

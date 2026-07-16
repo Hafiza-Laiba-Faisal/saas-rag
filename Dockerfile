@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
         pypdf pymupdf openpyxl xlrd python-pptx \
         qdrant-client redis \
         opencv-python-headless beautifulsoup4 \
-        cryptography pyjwt prometheus-client
+        cryptography pyjwt prometheus-client \
+        transformers
 
 FROM python:3.11-slim
 

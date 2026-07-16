@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -154,6 +154,7 @@ class TenantOnboardRequest(BaseModel):
     reranker_type: str = "local"
     session_memory_limit: int = 8
     chat_retention_days: int = 30
+    system_prompt: str | None = None
 
 
 class TenantUpdateRequest(BaseModel):
@@ -182,6 +183,7 @@ class TenantUpdateRequest(BaseModel):
     reranker_type: str = "local"
     session_memory_limit: int = 8
     chat_retention_days: int = 30
+    system_prompt: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -189,6 +191,7 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
     user_id: str = "web-user"
     filters: dict[str, str] | None = None
+    system_prompt: str | None = None
 
 
 class CloudSyncRequest(BaseModel):
@@ -204,6 +207,7 @@ class ScrapeRequest(BaseModel):
     crawl: bool = False
     max_pages: int = 10
     max_depth: int = 2
+    full_site: bool = False
 
 
 class TerminalExecRequest(BaseModel):
@@ -286,6 +290,7 @@ def _get_tenant_config(tenant: dict) -> AppConfig:
             semantic_chunking=tenant.get("chunking_semantic", True),
             semantic_similarity_threshold=tenant.get("chunking_semantic_threshold", 0.75),
         ),
+        system_prompt=tenant.get("system_prompt"),
         llm=LLMSettings(
             provider=tenant["llm_provider"], api_key=tenant["llm_api_key"],
             model=tenant["llm_model"], base_url=tenant["llm_base_url"],
@@ -449,6 +454,13 @@ def get_dashboard():
         return response
     return "<h3>Frontend index.html is still generating. Reload in a few seconds...</h3>"
 
+
+@app.get("/client", response_class=HTMLResponse)
+def get_client_dashboard():
+    client_file = static_dir / "client.html"
+    if client_file.exists():
+        return HTMLResponse(content=client_file.read_text(encoding="utf-8"))
+    return "<h3>Client dashboard is loading...</h3>"
 
 @app.get("/widget", response_class=HTMLResponse)
 def get_chat_widget():
@@ -768,7 +780,7 @@ async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str
         }
     engine = _get_engine(tenant)
     try:
-        ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters)
+        ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters, system_prompt=req.system_prompt)
         if ans.contexts:
             CHUNKS_RETRIEVED.observe(len(ans.contexts))
         return {
@@ -802,7 +814,7 @@ async def chat_playground_stream(tenant_id: str, req: ChatRequest, x_forwarded_f
     engine = _get_engine(tenant)
 
     async def event_stream():
-        async for chunk in engine.ask_stream(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters):
+        async for chunk in engine.ask_stream(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters, system_prompt=req.system_prompt):
             data = {"text": chunk.text, "done": chunk.done}
             if chunk.error:
                 data["error"] = chunk.error
@@ -827,7 +839,7 @@ def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API
         return {"answer": "Request rejected due to prompt injection.", "citations": [], "validation": {"sufficient": False, "confidence": "low"}}
     engine = _get_engine(tenant)
     try:
-        ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters)
+        ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters, system_prompt=req.system_prompt)
         if ans.contexts:
             CHUNKS_RETRIEVED.observe(len(ans.contexts))
         return {"answer": ans.text, "citations": [{"index": c.index, "document_name": c.document_name, "section": c.section, "chunk_id": c.chunk_id} for c in ans.citations], "validation": {"sufficient": ans.validation.sufficient, "confidence": ans.validation.confidence}}
@@ -851,13 +863,199 @@ async def chat_integration_stream(req: ChatRequest, x_api_key: str = Header(...,
     engine = _get_engine(tenant)
 
     async def event_stream():
-        async for chunk in engine.ask_stream(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters):
+        async for chunk in engine.ask_stream(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters, system_prompt=req.system_prompt):
             data = {"text": chunk.text, "done": chunk.done}
             if chunk.error:
                 data["error"] = chunk.error
             yield f"data: {json.dumps(data)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# --- CLIENT (API Key) Endpoints ---
+
+def _require_client_api(x_api_key: str = Header(..., alias="X-API-Key")):
+    tenant = admin_store.get_tenant_by_api_key(x_api_key)
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key.")
+    if tenant["status"] != "active":
+        raise HTTPException(status_code=403, detail="Client account is suspended.")
+    return tenant
+
+def _resolve_client_tenant(x_api_key: str | None = Header(None, alias="X-API-Key"), api_key: str | None = Query(None)):
+    key = api_key or x_api_key
+    if not key:
+        raise HTTPException(status_code=401, detail="Missing API Key.")
+    tenant = admin_store.get_tenant_by_api_key(key)
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key.")
+    if tenant["status"] != "active":
+        raise HTTPException(status_code=403, detail="Client account is suspended.")
+    return tenant
+
+@app.get("/api/v1/client/documents")
+def client_list_documents(tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    ingested_map = {}
+    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    if db_path.exists():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute("SELECT document_id, name, source, source_url, ingested_at FROM documents").fetchall()
+                for r in rows:
+                    ingested_map[r["document_id"]] = r["name"]
+        except Exception:
+            pass
+    files_list = []
+    for item in docs_dir.glob("*"):
+        if item.is_file():
+            doc_id = _document_id(item)
+            ingested = doc_id in ingested_map
+            chunk_count = 0
+            if ingested and db_path.exists():
+                try:
+                    with sqlite3.connect(db_path) as conn:
+                        row_chunks = conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)).fetchone()
+                        chunk_count = row_chunks[0] if row_chunks else 0
+                except Exception:
+                    pass
+            files_list.append({
+                "name": item.name, "size_bytes": item.stat().st_size,
+                "ingested": ingested, "chunks": chunk_count,
+                "extension": item.suffix.lstrip("."),
+            })
+    return files_list
+
+@app.get("/api/v1/tenants/{tenant_id}/documents/{filename}")
+def admin_get_document(tenant_id: str, filename: str, _admin=Depends(require_admin)):
+    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    content = file_path.read_bytes()
+    media_type = "text/plain"
+    ext = file_path.suffix.lower()
+    if ext in {".pdf"}:
+        media_type = "application/pdf"
+    elif ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+        media_type = f"image/{ext.lstrip('.')}"
+    elif ext in {".html", ".htm"}:
+        media_type = "text/html"
+    elif ext in {".docx"}:
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f"inline; filename=\"{filename}\""})
+
+@app.get("/api/v1/client/documents/{filename}")
+def client_get_document(filename: str, x_api_key: str | None = Header(None, alias="X-API-Key"), api_key: str | None = Query(None)):
+    key = api_key or x_api_key
+    if not key:
+        raise HTTPException(status_code=401, detail="Missing API Key. Provide via X-API-Key header or ?api_key= query param.")
+    tenant = admin_store.get_tenant_by_api_key(key)
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key.")
+    if tenant["status"] != "active":
+        raise HTTPException(status_code=403, detail="Client account is suspended.")
+    tenant_id = tenant["tenant_id"]
+    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    content = file_path.read_bytes()
+    media_type = "text/plain"
+    ext = file_path.suffix.lower()
+    if ext in {".pdf"}:
+        media_type = "application/pdf"
+    elif ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+        media_type = f"image/{ext.lstrip('.')}"
+    elif ext in {".html", ".htm"}:
+        media_type = "text/html"
+    elif ext in {".docx"}:
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f"inline; filename=\"{filename}\""})
+
+@app.post("/api/v1/client/documents")
+async def client_upload_documents(files: list[UploadFile] = File(...), tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    uploaded_files = []
+    for file in files:
+        filename = Path(file.filename).name
+        _validate_upload_file(filename, 0)
+        ext = Path(filename).suffix.lower()
+        safe_name = f"{uuid.uuid4().hex}{ext}"
+        target_path = docs_dir / safe_name
+        content = await file.read()
+        _validate_upload_file(filename, len(content))
+        with target_path.open("wb") as buffer:
+            buffer.write(content)
+        uploaded_files.append({"original": filename, "saved_as": safe_name})
+    return {"status": "success", "uploaded": uploaded_files}
+
+@app.post("/api/v1/client/ingest")
+def client_trigger_ingestion(background_tasks: BackgroundTasks, apply_ocr: bool = Query(default=False), tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    if tenant_id in ingestion_status and ingestion_status[tenant_id]["status"] == "running":
+        return {"status": "already_running"}
+    ingestion_status[tenant_id] = {"status": "running", "logs": ["[System] Initiating ingestion."], "progress": 0, "summary": None}
+    background_tasks.add_task(_run_ingestion_background, tenant_id, tenant, apply_ocr)
+    return {"status": "started", "apply_ocr": apply_ocr}
+
+@app.get("/api/v1/client/ingest/status")
+def client_get_ingestion_status(tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    status = ingestion_status.get(tenant_id, {"status": "idle", "logs": ["No ingestion tasks run yet."], "progress": 0, "summary": None})
+    return status
+
+@app.post("/api/v1/client/scrape")
+async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    _validate_scrape_url(req.url)
+    scraper = _get_scraper_service()
+    try:
+        if req.crawl:
+            job = await scraper.crawl_url(req.url, max_pages=req.max_pages, max_depth=req.max_depth, full_site=req.full_site)
+        else:
+            job = await scraper.scrape_url(req.url)
+        docs_dir = TENANTS_DIR / tenant_id / "documents"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        saved_files = []
+        if job.crawl and job.results:
+            for result in job.results:
+                if result.is_success:
+                    content = f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
+                    safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
+                    (docs_dir / safe_name).write_text(content, encoding="utf-8")
+                    saved_files.append({"url": result.url, "file": safe_name, "title": result.title})
+        elif job.result and job.result.is_success:
+            content = f"# {job.result.title}\n\nSource: {job.result.url}\n\n{job.result.content}"
+            safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
+            (docs_dir / safe_name).write_text(content, encoding="utf-8")
+            saved_files.append({"url": job.result.url, "file": safe_name, "title": job.result.title})
+        admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
+        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error, "processing_time_ms": job.processing_time_ms}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scraping error: {e}")
+
+@app.delete("/api/v1/client/documents/{filename}")
+def client_delete_document(filename: str, tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    file_path.unlink()
+    doc_id = _document_id(file_path)
+    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    if db_path.exists():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
+                conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
+                conn.commit()
+        except Exception:
+            pass
+    return {"status": "deleted", "filename": filename}
 
 
 # --- CLOUD SYNC, SCRAPE, OCR APIs ---
@@ -930,7 +1128,7 @@ async def scrape_url(tenant_id: str, req: ScrapeRequest, _admin=Depends(require_
     scraper = _get_scraper_service()
     try:
         if req.crawl:
-            job = await scraper.crawl_url(req.url, max_pages=req.max_pages, max_depth=req.max_depth)
+            job = await scraper.crawl_url(req.url, max_pages=req.max_pages, max_depth=req.max_depth, full_site=req.full_site)
         else:
             job = await scraper.scrape_url(req.url)
         docs_dir = TENANTS_DIR / tenant_id / "documents"

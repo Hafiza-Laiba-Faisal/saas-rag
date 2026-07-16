@@ -111,7 +111,8 @@ class RagEngine:
         return retriever.search_with_profile(query, kb or self.config.default_kb, filters=filters)
 
     def ask(self, query: str, kb: str | None = None, session_id: str = "default",
-            user_id: str = "local-user", filters: dict[str, str] | None = None) -> Answer:
+            user_id: str = "local-user", filters: dict[str, str] | None = None,
+            system_prompt: str | None = None) -> Answer:
         t_start = time.perf_counter()
         retriever = self._build_retriever()
         results, ret_profile = retriever.search_with_profile(query, kb or self.config.default_kb, filters=filters)
@@ -125,7 +126,7 @@ class RagEngine:
         combined_memory = "\n".join(part for part in [user_memory_text, session_memory_text] if part)
         memory_ms = (time.perf_counter() - t_mem_start) * 1000.0
 
-        messages = build_rag_messages(query, results, session_memory=combined_memory)
+        messages = build_rag_messages(query, results, session_memory=combined_memory, system_prompt=system_prompt or self.config.system_prompt)
 
         t_llm_start = time.perf_counter()
         client = create_llm_client(self.config.llm)
@@ -160,14 +161,15 @@ class RagEngine:
         return Answer(text=answer_text, citations=citations, validation=validation, contexts=results, profile=profile)
 
     async def ask_stream(self, query: str, kb: str | None = None, session_id: str = "default",
-                         user_id: str = "local-user", filters: dict[str, str] | None = None):
+                         user_id: str = "local-user", filters: dict[str, str] | None = None,
+                         system_prompt: str | None = None):
         t_start = time.perf_counter()
         retriever = self._build_retriever()
         results, ret_profile = retriever.search_with_profile(query, kb or self.config.default_kb, filters=filters)
         validation = validate_retrieval(results)
         combined_memory = "\n".join(part for part in [self.get_user_memory_text(user_id),
                                                       self.store.get_session_memory(self.config.tenant_id, session_id, user_id, limit=self.config.session_memory_limit)] if part)
-        messages = build_rag_messages(query, results, session_memory=combined_memory)
+        messages = build_rag_messages(query, results, session_memory=combined_memory, system_prompt=system_prompt or self.config.system_prompt)
 
         stream_client = create_streaming_client(self.config.llm)
         citations = [

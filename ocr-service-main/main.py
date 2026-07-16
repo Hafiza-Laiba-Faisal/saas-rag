@@ -93,6 +93,7 @@ async def lifespan(app: FastAPI):
 
     from ocr.engines.orchestrator import OCROrchestrator
     app.state.orchestrator = OCROrchestrator(engines)
+    app.state.ocr_engine = app.state.orchestrator
     app.state.ocr_engine_ready = len(engines) > 0
 
     if engines:
