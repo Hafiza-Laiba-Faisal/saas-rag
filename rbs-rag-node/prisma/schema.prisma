@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  tenantId    String   @id @map("tenant_id")
+  name        String
+  apiKey      String   @unique @map("api_key")
+  status      String   @default("active")
+  subscriptionTier String   @default("basic") @map("subscription_tier")
+  monthlyFee  Float    @default(299.0) @map("monthly_fee")
+
+  llmProvider   String @default("gemini") @map("llm_provider")
+  llmModel      String @default("gemini-2.5-flash-lite") @map("llm_model")
+  llmApiKey     String @map("llm_api_key")
+  llmBaseUrl    String? @map("llm_base_url")
+
+  embeddingProvider     String @default("hash") @map("embedding_provider")
+  embeddingModel        String @default("BAAI/bge-small-en-v1.5") @map("embedding_model")
+  embeddingDimensions   Int    @default(384) @map("embedding_dimensions")
+  embeddingBaseUrl      String? @map("embedding_base_url")
+  embeddingApiKey       String? @map("embedding_api_key")
+
+  retrievalTopK        Int @default(20) @map("retrieval_top_k")
+  retrievalRerankTopK  Int @default(8) @map("retrieval_rerank_top_k")
+  retrievalFinalContextK Int @default(5) @map("retrieval_final_context_k")
+  retrievalDenseWeight Float @default(0.55) @map("retrieval_dense_weight")
+  retrievalSparseWeight Float @default(0.45) @map("retrieval_sparse_weight")
+
+  chunkingMaxTokens       Int  @default(320) @map("chunking_max_tokens")
+  chunkingOverlapTokens   Int  @default(48) @map("chunking_overlap_tokens")
+  chunkingSemantic        Boolean @default(false) @map("chunking_semantic")
+  chunkingSemanticThreshold Float @default(0.75) @map("chunking_semantic_threshold")
+
+  rerankerType      String @default("local") @map("reranker_type")
+  sessionMemoryLimit Int  @default(8) @map("session_memory_limit")
+  chatRetentionDays  Int  @default(30) @map("chat_retention_days")
+  systemPrompt      String? @map("system_prompt")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  documents   Document[]
+  chunks      Chunk[]
+  sessionTurns SessionTurn[]
+  activityLogs ActivityLog[]
+
+  @@map("tenants")
+}
+
+model Document {
+  documentId    String   @id @map("document_id")
+  tenantId      String   @map("tenant_id")
+  knowledgeBaseId String @default("default") @map("knowledge_base_id")
+  path          String
+  name          String
+  documentType  String   @map("document_type")
+  text          String
+  metadataJson  String   @default("{}") @map("metadata_json")
+  ocrApplied    Boolean  @default(false) @map("ocr_applied")
+  ocrEngine     String?  @map("ocr_engine")
+  pageCount     Int?     @map("page_count")
+  source        String   @default("upload")
+  sourceUrl     String?  @map("source_url")
+  ingestedAt    DateTime @default(now()) @map("ingested_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId])
+  chunks Chunk[]
+
+  @@map("documents")
+}
+
+model Chunk {
+  chunkId       String @id @map("chunk_id")
+  documentId    String @map("document_id")
+  tenantId      String @map("tenant_id")
+  knowledgeBaseId String @default("default") @map("knowledge_base_id")
+  ordinal       Int
+  text          String
+  metadataJson  String @default("{}") @map("metadata_json")
+  embeddingJson String @default("[]") @map("embedding_json")
+
+  document Document @relation(fields: [documentId], references: [documentId])
+  tenant   Tenant   @relation(fields: [tenantId], references: [tenantId])
+
+  @@map("chunks")
+}
+
+model SessionTurn {
+  id        Int      @id @default(autoincrement())
+  tenantId  String   @map("tenant_id")
+  sessionId String   @map("session_id")
+  userId    String   @map("user_id")
+  role      String
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId])
+
+  @@map("session_turns")
+}
+
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+  tenantId  String?  @map("tenant_id")
+  level     String   @default("INFO")
+  operation String
+  message   String
+  details   String?
+  traceback String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [tenantId])
+
+  @@map("activity_logs")
+}
