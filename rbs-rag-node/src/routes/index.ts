@@ -7,6 +7,7 @@ import { AppConfig } from '../config.js';
 import { AdminStore } from '../adminStore.js';
 import { DbStore } from '../store.js';
 import { RagEngine, createEngineFromTenant } from '../engine.js';
+import { scrapeUrl } from '../scraper.js';
 
 const ingestionStatus: Record<string, any> = {};
 
@@ -32,7 +33,7 @@ export function routes(
       if (username !== 'admin' || password !== config.security.adminPassword)
         return res.status(401).json({ detail: 'Invalid credentials' });
       const token = jwt.sign({ role: 'admin', tenant_id: 'admin' }, secret, { expiresIn: '24h' });
-      res.json({ status: 'success', token, token_type: 'Bearer' });
+      res.json({ status: 'success', token, access_token: token, token_type: 'Bearer' });
     } catch (err: any) {
       res.status(500).json({ detail: err.message });
     }
@@ -76,34 +77,34 @@ export function routes(
   router.get('/tenants', requireAdmin, async (_req, res) => {
     const tenants = await adminStore.listTenants();
     const result = await Promise.all(tenants.map(async (t: any) => ({
-      tenant_id: t.tenantId,
+      tenantId: t.tenantId,
       name: t.name,
-      api_key: '***',
+      apiKey: t.apiKey,
       status: t.status,
-      subscription_tier: t.subscriptionTier,
-      monthly_fee: t.monthlyFee,
-      llm_provider: t.llmProvider,
-      llm_model: t.llmModel,
-      llm_api_key: '***',
-      embedding_provider: t.embeddingProvider,
-      embedding_model: t.embeddingModel,
-      embedding_dimensions: t.embeddingDimensions,
-      embedding_api_key: t.embeddingApiKey ? '***' : null,
-      retrieval_top_k: t.retrievalTopK,
-      retrieval_rerank_top_k: t.retrievalRerankTopK,
-      retrieval_final_context_k: t.retrievalFinalContextK,
-      retrieval_dense_weight: t.retrievalDenseWeight,
-      retrieval_sparse_weight: t.retrievalSparseWeight,
-      chunking_max_tokens: t.chunkingMaxTokens,
-      chunking_overlap_tokens: t.chunkingOverlapTokens,
-      chunking_semantic: t.chunkingSemantic,
-      chunking_semantic_threshold: t.chunkingSemanticThreshold,
-      reranker_type: t.rerankerType,
-      session_memory_limit: t.sessionMemoryLimit,
-      chat_retention_days: t.chatRetentionDays,
-      system_prompt: t.systemPrompt,
-      doc_count: await dbStore.countDocuments(t.tenantId, 'default'),
-      chunk_count: await dbStore.countChunks(t.tenantId, 'default'),
+      subscriptionTier: t.subscriptionTier,
+      monthlyFee: t.monthlyFee,
+      llmProvider: t.llmProvider,
+      llmModel: t.llmModel,
+      llmApiKey: '***',
+      embeddingProvider: t.embeddingProvider,
+      embeddingModel: t.embeddingModel,
+      embeddingDimensions: t.embeddingDimensions,
+      embeddingApiKey: t.embeddingApiKey ? '***' : null,
+      retrievalTopK: t.retrievalTopK,
+      retrievalRerankTopK: t.retrievalRerankTopK,
+      retrievalFinalContextK: t.retrievalFinalContextK,
+      retrievalDenseWeight: t.retrievalDenseWeight,
+      retrievalSparseWeight: t.retrievalSparseWeight,
+      chunkingMaxTokens: t.chunkingMaxTokens,
+      chunkingOverlapTokens: t.chunkingOverlapTokens,
+      chunkingSemantic: t.chunkingSemantic,
+      chunkingSemanticThreshold: t.chunkingSemanticThreshold,
+      rerankerType: t.rerankerType,
+      sessionMemoryLimit: t.sessionMemoryLimit,
+      chatRetentionDays: t.chatRetentionDays,
+      systemPrompt: t.systemPrompt,
+      docCount: await dbStore.countDocuments(t.tenantId, 'default'),
+      chunkCount: await dbStore.countChunks(t.tenantId, 'default'),
     })));
     res.json(result);
   });
@@ -148,7 +149,7 @@ export function routes(
       };
       await adminStore.upsertTenant(tenantData);
       fs.mkdirSync(path.join(config.rootDir, 'tenants', tid, 'documents'), { recursive: true });
-      res.json({ status: 'success', tenant_id: tid, api_key: apiKey });
+      res.json({ status: 'success', tenantId: tid, apiKey: apiKey });
     } catch (err: any) {
       res.status(500).json({ detail: err.message });
     }
@@ -158,20 +159,40 @@ export function routes(
     const t = await adminStore.getTenant(req.params.tenantId);
     if (!t) return res.status(404).json({ detail: 'Tenant not found' });
     res.json({
-      tenant_id: t.tenantId, name: t.name, api_key: '***', status: t.status,
-      subscription_tier: t.subscriptionTier, monthly_fee: t.monthlyFee,
-      llm_provider: t.llmProvider, llm_model: t.llmModel, llm_api_key: '***',
-      llm_base_url: t.llmBaseUrl,
-      embedding_provider: t.embeddingProvider, embedding_model: t.embeddingModel,
-      embedding_dimensions: t.embeddingDimensions, embedding_base_url: t.embeddingBaseUrl,
-      embedding_api_key: t.embeddingApiKey ? '***' : null,
-      retrieval_top_k: t.retrievalTopK, retrieval_rerank_top_k: t.retrievalRerankTopK,
-      retrieval_final_context_k: t.retrievalFinalContextK,
-      retrieval_dense_weight: t.retrievalDenseWeight, retrieval_sparse_weight: t.retrievalSparseWeight,
-      chunking_max_tokens: t.chunkingMaxTokens, chunking_overlap_tokens: t.chunkingOverlapTokens,
-      chunking_semantic: t.chunkingSemantic, chunking_semantic_threshold: t.chunkingSemanticThreshold,
-      reranker_type: t.rerankerType, session_memory_limit: t.sessionMemoryLimit,
-      chat_retention_days: t.chatRetentionDays, system_prompt: t.systemPrompt,
+      tenantId: t.tenantId, name: t.name, apiKey: t.apiKey, status: t.status,
+      subscriptionTier: t.subscriptionTier, monthlyFee: t.monthlyFee,
+      llmProvider: t.llmProvider, llmModel: t.llmModel, llmApiKey: '***',
+      llmBaseUrl: t.llmBaseUrl,
+      embeddingProvider: t.embeddingProvider, embeddingModel: t.embeddingModel,
+      embeddingDimensions: t.embeddingDimensions, embeddingBaseUrl: t.embeddingBaseUrl,
+      embeddingApiKey: t.embeddingApiKey ? '***' : null,
+      retrievalTopK: t.retrievalTopK, retrievalRerankTopK: t.retrievalRerankTopK,
+      retrievalFinalContextK: t.retrievalFinalContextK,
+      retrievalDenseWeight: t.retrievalDenseWeight, retrievalSparseWeight: t.retrievalSparseWeight,
+      chunkingMaxTokens: t.chunkingMaxTokens, chunkingOverlapTokens: t.chunkingOverlapTokens,
+      chunkingSemantic: t.chunkingSemantic, chunkingSemanticThreshold: t.chunkingSemanticThreshold,
+      rerankerType: t.rerankerType, sessionMemoryLimit: t.sessionMemoryLimit,
+      chatRetentionDays: t.chatRetentionDays, systemPrompt: t.systemPrompt,
+    });
+  });
+
+  router.get('/tenants/:tenantId/config', requireAdmin, async (req, res) => {
+    const t = await adminStore.getTenant(req.params.tenantId);
+    if (!t) return res.status(404).json({ detail: 'Tenant not found' });
+    res.json({
+      tenantId: t.tenantId, name: t.name, status: t.status,
+      subscriptionTier: t.subscriptionTier, monthlyFee: t.monthlyFee,
+      llmProvider: t.llmProvider, llmModel: t.llmModel,
+      llmBaseUrl: t.llmBaseUrl,
+      embeddingProvider: t.embeddingProvider, embeddingModel: t.embeddingModel,
+      embeddingDimensions: t.embeddingDimensions, embeddingBaseUrl: t.embeddingBaseUrl,
+      retrievalTopK: t.retrievalTopK, retrievalRerankTopK: t.retrievalRerankTopK,
+      retrievalFinalContextK: t.retrievalFinalContextK,
+      retrievalDenseWeight: t.retrievalDenseWeight, retrievalSparseWeight: t.retrievalSparseWeight,
+      chunkingMaxTokens: t.chunkingMaxTokens, chunkingOverlapTokens: t.chunkingOverlapTokens,
+      chunkingSemantic: t.chunkingSemantic, chunkingSemanticThreshold: t.chunkingSemanticThreshold,
+      rerankerType: t.rerankerType, sessionMemoryLimit: t.sessionMemoryLimit,
+      chatRetentionDays: t.chatRetentionDays, systemPrompt: t.systemPrompt,
     });
   });
 
@@ -198,6 +219,19 @@ export function routes(
       embeddingBaseUrl: body.embedding_base_url !== undefined ? body.embedding_base_url : existing.embeddingBaseUrl,
       embeddingApiKey: embKey,
       apiKey: existing.apiKey,
+      retrievalTopK: body.retrieval_top_k ?? existing.retrievalTopK,
+      retrievalRerankTopK: body.retrieval_rerank_top_k ?? existing.retrievalRerankTopK,
+      retrievalFinalContextK: body.retrieval_final_context_k ?? existing.retrievalFinalContextK,
+      retrievalDenseWeight: body.retrieval_dense_weight ?? existing.retrievalDenseWeight,
+      retrievalSparseWeight: body.retrieval_sparse_weight ?? existing.retrievalSparseWeight,
+      chunkingMaxTokens: body.chunking_max_tokens ?? existing.chunkingMaxTokens,
+      chunkingOverlapTokens: body.chunking_overlap_tokens ?? existing.chunkingOverlapTokens,
+      chunkingSemantic: body.chunking_semantic ?? existing.chunkingSemantic,
+      chunkingSemanticThreshold: body.chunking_semantic_threshold ?? existing.chunkingSemanticThreshold,
+      rerankerType: body.reranker_type || existing.rerankerType,
+      sessionMemoryLimit: body.session_memory_limit ?? existing.sessionMemoryLimit,
+      chatRetentionDays: body.chat_retention_days ?? existing.chatRetentionDays,
+      systemPrompt: body.system_prompt !== undefined ? body.system_prompt : existing.systemPrompt,
     };
     await adminStore.upsertTenant(updatedData);
     engineCache.delete(req.params.tenantId);
@@ -250,14 +284,20 @@ export function routes(
     const docs = await dbStore.listDocuments(req.params.tenantId, 'default');
     const doc = docs.find((d: any) => d.name === req.params.filename);
     if (!doc) return res.json([]);
-    const allChunks = await dbStore.listChunks(req.params.tenantId, 'default');
-    const docChunks = allChunks.filter((c: any) => c.documentId === doc.documentId);
+    const docChunks = await dbStore.listChunksForDocument(req.params.tenantId, 'default', doc.documentId);
     res.json(docChunks.map(c => ({ chunk_id: c.chunkId, ordinal: c.ordinal, text: c.text, metadata: c.metadata })));
   });
 
   router.post('/tenants/:tenantId/documents', requireAdmin, async (req, res) => {
     const { default: multer } = await import('multer');
-    const upload = multer({ dest: path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents') });
+    const storage = multer.diskStorage({
+      destination: path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents'),
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname) || '';
+        cb(null, `${Date.now()}_${file.originalname.replace(ext, '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}${ext}`);
+      },
+    });
+    const upload = multer({ storage });
     upload.array('files')(req, res, (err: any) => {
       if (err) return res.status(400).json({ detail: err.message });
       const files = req.files as Express.Multer.File[];
@@ -269,7 +309,13 @@ export function routes(
     const filePath = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents', req.params.filename);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     const docId = crypto.createHash('sha1').update(filePath).digest('hex');
-    await dbStore.deleteDocument(docId);
+    const tenant = await adminStore.getTenant(req.params.tenantId);
+    if (tenant) {
+      const engine = await getOrCreateEngine(tenant);
+      await engine.deleteDocument(docId);
+    } else {
+      await dbStore.deleteDocument(docId);
+    }
     res.json({ status: 'success' });
   });
 
@@ -326,12 +372,17 @@ export function routes(
     const { query, session_id, user_id, filters, system_prompt } = req.body;
     const engine = await getOrCreateEngine(tenant);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-    const stream = engine.askStream(query, 'default', session_id || 'default', user_id || 'web-user', filters || null, system_prompt || null);
-    for await (const chunk of stream) {
-      const data: any = { text: chunk.text, done: chunk.done };
-      if (chunk.error) data.error = chunk.error;
-      if (chunk.citations) data.citations = chunk.citations.map(c => ({ index: c.index, document_name: c.documentName, section: c.section, chunk_id: c.chunkId }));
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    try {
+      const stream = engine.askStream(query, 'default', session_id || 'default', user_id || 'web-user', filters || null, system_prompt || null);
+      for await (const chunk of stream) {
+        const data: any = { text: chunk.text, done: chunk.done };
+        if (chunk.error) data.error = chunk.error;
+        if (chunk.citations) data.citations = chunk.citations.map(c => ({ index: c.index, document_name: c.documentName, section: c.section, chunk_id: c.chunkId }));
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      }
+    } catch (err: any) {
+      console.error('[Admin Stream Error]', err?.message || err);
+      res.write(`data: ${JSON.stringify({ text: '', done: true, error: err?.message || 'LLM stream failed' })}\n\n`);
     }
     res.end();
   });
@@ -354,11 +405,16 @@ export function routes(
     const { query, session_id, user_id, filters, system_prompt } = req.body;
     const engine = await getOrCreateEngine(tenant);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-    const stream = engine.askStream(query, 'default', session_id || 'default', user_id || 'web-user', filters || null, system_prompt || null);
-    for await (const chunk of stream) {
-      const data: any = { text: chunk.text, done: chunk.done };
-      if (chunk.error) data.error = chunk.error;
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    try {
+      const stream = engine.askStream(query, 'default', session_id || 'default', user_id || 'web-user', filters || null, system_prompt || null);
+      for await (const chunk of stream) {
+        const data: any = { text: chunk.text, done: chunk.done };
+        if (chunk.error) data.error = chunk.error;
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      }
+    } catch (err: any) {
+      console.error('[Client Stream Error]', err?.message || err);
+      res.write(`data: ${JSON.stringify({ text: '', done: true, error: err?.message || 'LLM stream failed' })}\n\n`);
     }
     res.end();
   });
@@ -397,7 +453,14 @@ export function routes(
   router.post('/client/documents', resolveClientTenant, async (req, res) => {
     const { default: multer } = await import('multer');
     const tenant = (req as TenantRequest).tenant;
-    const upload = multer({ dest: path.join(config.rootDir, 'tenants', tenant.tenantId, 'documents') });
+    const storage = multer.diskStorage({
+      destination: path.join(config.rootDir, 'tenants', tenant.tenantId, 'documents'),
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname) || '';
+        cb(null, `${Date.now()}_${file.originalname.replace(ext, '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}${ext}`);
+      },
+    });
+    const upload = multer({ storage });
     upload.array('files')(req, res, (err: any) => {
       if (err) return res.status(400).json({ detail: err.message });
       const files = req.files as Express.Multer.File[];
@@ -429,7 +492,8 @@ export function routes(
     if (!fs.existsSync(filePath)) return res.status(404).json({ detail: 'File not found' });
     fs.unlinkSync(filePath);
     const docId = crypto.createHash('sha1').update(filePath).digest('hex');
-    await dbStore.deleteDocument(docId);
+    const engine = await getOrCreateEngine(tenant);
+    await engine.deleteDocument(docId);
     res.json({ status: 'deleted', filename: req.params.filename });
   });
 
@@ -479,13 +543,69 @@ export function routes(
     res.json({ status: 'success', purged_turns: purged, retention_days: retentionDays });
   });
 
-  // ===================== PLACEHOLDER ENDPOINTS =====================
+  // ===================== SCRAPE =====================
   router.post('/tenants/:tenantId/scrape', requireAdmin, async (req, res) => {
-    res.json({ status: 'completed', job_id: 'placeholder', url: req.body.url, files_saved: 0, files: [], error: null, processing_time_ms: 0 });
+    try {
+      const tenant = await adminStore.getTenant(req.params.tenantId);
+      if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+
+      const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
+      const result = await scrapeUrl({
+        url: req.body.url,
+        crawl: req.body.crawl,
+        fullSite: req.body.full_site || req.body.fullSite,
+        maxPages: req.body.max_pages || req.body.maxPages,
+        maxDepth: req.body.max_depth || req.body.maxDepth,
+      }, docsDir);
+
+      await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape', `Scraped ${req.body.url}`, { url: req.body.url, job_id: result.jobId, success: !result.error });
+
+      res.json({
+        status: result.error ? 'failed' : 'completed',
+        job_id: result.jobId,
+        url: result.url,
+        title: result.title,
+        description: result.description,
+        word_count: result.wordCount,
+        files_saved: result.savedFilePath ? 1 : 0,
+        files: result.savedFilePath ? [result.savedFilePath] : [],
+        error: result.error,
+        processing_time_ms: result.processingTimeMs,
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: 'failed', error: err.message });
+    }
   });
 
   router.post('/client/scrape', resolveClientTenant, async (req, res) => {
-    res.json({ status: 'completed', job_id: 'placeholder', url: req.body.url, files_saved: 0, files: [], error: null, processing_time_ms: 0 });
+    try {
+      const tenant = (req as TenantRequest).tenant;
+      const docsDir = path.join(config.rootDir, 'tenants', tenant.tenantId, 'documents');
+      const result = await scrapeUrl({
+        url: req.body.url,
+        crawl: req.body.crawl,
+        fullSite: req.body.full_site || req.body.fullSite,
+        maxPages: req.body.max_pages || req.body.maxPages,
+        maxDepth: req.body.max_depth || req.body.maxDepth,
+      }, docsDir);
+
+      await adminStore.logActivity(tenant.tenantId, 'INFO', 'scrape', `Scraped ${req.body.url}`, { url: req.body.url, job_id: result.jobId, success: !result.error });
+
+      res.json({
+        status: result.error ? 'failed' : 'completed',
+        job_id: result.jobId,
+        url: result.url,
+        title: result.title,
+        description: result.description,
+        word_count: result.wordCount,
+        files_saved: result.savedFilePath ? 1 : 0,
+        files: result.savedFilePath ? [result.savedFilePath] : [],
+        error: result.error,
+        processing_time_ms: result.processingTimeMs,
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: 'failed', error: err.message });
+    }
   });
 
   return router;

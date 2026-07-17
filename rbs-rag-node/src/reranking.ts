@@ -13,7 +13,7 @@ export class LocalReranker implements Reranker {
       const overlap = queryTerms.size > 0
         ? [...queryTerms].filter(t => chunkTerms.has(t)).length / queryTerms.size
         : 0;
-      const phraseBonus = query.toLowerCase().includes(r.chunk.text.toLowerCase()) ? 0.15 : 0;
+      const phraseBonus = r.chunk.text.toLowerCase().includes(query.toLowerCase()) ? 0.15 : 0;
       const rerankScore = Math.min(overlap + phraseBonus, 1.0);
       const score = 0.7 * r.score + 0.3 * rerankScore;
       return { ...r, score, rerankScore };

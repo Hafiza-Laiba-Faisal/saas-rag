@@ -17,56 +17,28 @@ export class QdrantVectorStore {
   async initialize(): Promise<void> {
     try {
       const url = `${this.config.https ? 'https' : 'http'}://${this.config.host}:${this.config.port}`;
-      this.client = new QdrantClient({ url, apiKey: this.config.apiKey || undefined });
-      await this.client.getCollections();
+      this.client = new QdrantClient({ url, apiKey: this.config.apiKey || undefined, checkCompatibility: false });
       this.initialized = true;
     } catch (err) {
-      console.warn('Qdrant unavailable:', (err as Error).message);
+      console.warn('Qdrant client init error:', (err as Error).message);
     }
   }
 
   async ensureCollection(collection: string, vectorSize = 384): Promise<void> {
-    if (!this.client) return;
+    if (!this.client || !this.initialized) return;
     try {
       await this.client.getCollection(collection);
     } catch {
-      await this.client.createCollection(collection, {
-        vectors: { size: vectorSize, distance: 'Cosine' },
-        optimizers_config: { default_segment_number: 2 },
-        replication_factor: 1,
-      } as any);
-    }
-  }
-
-  async upsertChunks(collection: string, chunks: Chunk[], batchSize = 64): Promise<void> {
-    if (!this.client) return;
-    const points = chunks.map(chunk => {
-      const payload: Record<string, any> = {
-        chunk_id: chunk.chunkId,
-        document_id: chunk.documentId,
-        text: chunk.text,
-        ordinal: chunk.ordinal,
-      };
-      for (const [k, v] of Object.entries(chunk.metadata)) {
-        payload[k] = v;
+      try {
+        await this.client!.createCollection(collection, {
+          vectors: { size: vectorSize, distance: 'Cosine' },
+          optimizers_config: { default_segment_number: 2 },
+          replication_factor: 1,
+        } as any);
+      } catch {
+        console.warn(`Qdrant: cannot create collection ${collection}`);
       }
-      return {
-        id: makePointId(chunk.chunkId),
-        vector: chunk.embedding,
-        payload,
-      };
-    });
-    for (let i = 0; i < points.length; i += batchSize) {
-      await this.client.upsert(collection, { points: points.slice(i, i + batchSize), wait: true });
     }
-  }
-
-  async deleteDocumentChunks(collection: string, documentId: string): Promise<void> {
-    if (!this.client) return;
-    await this.client.delete(collection, {
-      filter: { must: [{ key: 'document_id', match: { value: documentId } }] },
-      wait: true,
-    });
   }
 
   async search(
@@ -75,37 +47,79 @@ export class QdrantVectorStore {
     topK = 20,
     filters?: Record<string, string>
   ): Promise<Chunk[]> {
-    if (!this.client) return [];
-    const queryFilter = buildFilter(filters);
-    const result = await this.client.query(collection, {
-      query: queryVector,
-      limit: topK,
-      with_payload: true,
-      filter: queryFilter || undefined,
-    } as any);
-    return (result.points || []).map(p => pointToChunk(p));
+    if (!this.client || !this.initialized) return [];
+    try {
+      const queryFilter = buildFilter(filters);
+      const result = await this.client.query(collection, {
+        query: queryVector,
+        limit: topK,
+        with_payload: true,
+        filter: queryFilter || undefined,
+      } as any);
+      return (result.points || []).map(p => pointToChunk(p));
+    } catch {
+      return [];
+    }
   }
 
   async scrollAllChunks(collection: string, limit = 100): Promise<Chunk[]> {
-    if (!this.client) return [];
-    const result = await this.client.scroll(collection, { limit, with_payload: true } as any);
-    return result.points.map(p => pointToChunk(p));
+    if (!this.client || !this.initialized) return [];
+    try {
+      const result = await this.client.scroll(collection, { limit, with_payload: true } as any);
+      return result.points.map(p => pointToChunk(p));
+    } catch {
+      return [];
+    }
   }
 
   async countChunks(collection: string): Promise<number> {
-    if (!this.client) return 0;
-    const result = await this.client.count(collection);
-    return result.count;
+    if (!this.client || !this.initialized) return 0;
+    try {
+      const result = await this.client.count(collection);
+      return result.count;
+    } catch {
+      return 0;
+    }
   }
 
   async deleteCollection(collection: string): Promise<void> {
-    if (!this.client) return;
-    await this.client.deleteCollection(collection);
+    if (!this.client || !this.initialized) return;
+    try { await this.client.deleteCollection(collection); } catch {}
   }
 
-  async close(): Promise<void> {
-    this.client = null;
-    this.initialized = false;
+  async deleteDocumentChunks(collection: string, documentId: string): Promise<void> {
+    if (!this.client || !this.initialized) return;
+    try {
+      await this.client.delete(collection, {
+        filter: { must: [{ key: 'document_id', match: { value: documentId } }] },
+        wait: true,
+      });
+    } catch {}
+  }
+
+  async upsertChunks(collection: string, chunks: Chunk[], batchSize = 64): Promise<void> {
+    if (!this.client || !this.initialized) return;
+    try {
+      const points = chunks.map(chunk => {
+        const payload: Record<string, any> = {
+          chunk_id: chunk.chunkId,
+          document_id: chunk.documentId,
+          text: chunk.text,
+          ordinal: chunk.ordinal,
+        };
+        for (const [k, v] of Object.entries(chunk.metadata)) {
+          payload[k] = v;
+        }
+        return {
+          id: makePointId(chunk.chunkId),
+          vector: chunk.embedding,
+          payload,
+        };
+      });
+      for (let i = 0; i < points.length; i += batchSize) {
+        await this.client.upsert(collection, { points: points.slice(i, i + batchSize), wait: true });
+      }
+    } catch {}
   }
 }
 

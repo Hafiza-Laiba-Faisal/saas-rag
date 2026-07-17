@@ -85,6 +85,8 @@ services:
       context: ./ocr-service-main
       dockerfile: Dockerfile
     container_name: tenbit-ocr
+    ports:
+      - "8000:8000"
     restart: unless-stopped
     networks:
       - rag_network

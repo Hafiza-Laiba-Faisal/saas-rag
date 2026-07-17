@@ -53,6 +53,11 @@ export interface SecurityConfig {
   corsOrigins: string[];
 }
 
+export interface OcrConfig {
+  serviceUrl: string;
+  apiKey: string;
+}
+
 export interface AppConfig {
   port: number;
   logLevel: string;
@@ -68,6 +73,7 @@ export interface AppConfig {
   qdrant: QdrantConfig;
   rateLimit: RateLimitConfig;
   security: SecurityConfig;
+  ocr: OcrConfig;
 }
 
 export function loadConfig(): AppConfig {
@@ -121,6 +127,10 @@ export function loadConfig(): AppConfig {
       adminJwtSecret: process.env.ADMIN_JWT_SECRET || '',
       adminPassword: process.env.ADMIN_PASSWORD || 'admin',
       corsOrigins: (process.env.CORS_ORIGINS || '*').split(','),
+    },
+    ocr: {
+      serviceUrl: process.env.OCR_SERVICE_URL || 'http://localhost:8000',
+      apiKey: process.env.OCR_API_KEY || 'yxSp53pdmvxk1xYeyBJ70TW4QDRH8y7',
     },
   };
 }
@@ -176,6 +186,10 @@ export function tenantConfigFromRow(tenant: any, rootDir: string): AppConfig {
       adminJwtSecret: process.env.ADMIN_JWT_SECRET || '',
       adminPassword: process.env.ADMIN_PASSWORD || 'admin',
       corsOrigins: ['*'],
+    },
+    ocr: {
+      serviceUrl: process.env.OCR_SERVICE_URL || 'http://localhost:8000',
+      apiKey: process.env.OCR_API_KEY || 'yxSp53pdmvxk1xYeyBJ70TW4QDRH8y7',
     },
   };
 }

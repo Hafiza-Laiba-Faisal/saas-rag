@@ -38,8 +38,12 @@ export class RagEngine {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    await this.vectorStore.initialize();
-    await this.vectorStore.ensureCollection('rag_chunks', this.config.embeddings.dimensions);
+    try {
+      await this.vectorStore.initialize();
+      await this.vectorStore.ensureCollection('rag_chunks', this.config.embeddings.dimensions);
+    } catch {
+      // Qdrant not available — continue in degraded mode
+    }
     this.initialized = true;
   }
 
@@ -65,7 +69,7 @@ export class RagEngine {
       }
 
       try {
-        const document = loadDocument(filePath);
+        const document = await loadDocument(filePath, undefined, applyOcr, this.config.ocr.serviceUrl, this.config.ocr.apiKey);
         if (!document.text.trim()) {
           summary.errors.push(`${document.name}: no text extracted`);
           continue;
@@ -90,6 +94,11 @@ export class RagEngine {
     }
 
     return summary;
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    await this.vectorStore.deleteDocumentChunks('rag_chunks', documentId);
+    await this.store.deleteDocument(documentId);
   }
 
   async ask(
@@ -179,6 +188,9 @@ export class RagEngine {
       fullText += chunk.text;
       yield { text: chunk.text, done: false };
     }
+
+    await this.store.addSessionTurn(this.config.tenantId, sessionId, userId, 'user', query);
+    await this.store.addSessionTurn(this.config.tenantId, sessionId, userId, 'assistant', fullText);
 
     yield { text: '', done: true, citations };
   }

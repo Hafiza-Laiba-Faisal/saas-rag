@@ -11,7 +11,7 @@ function cleanLlmText(text: string): string {
   result = result.replace(HTML_TAG_RE, '');
   result = result.replace(BROKEN_TAG_RE, '');
   result = result.replace(OPEN_BROKEN_TAG_RE, ' ');
-  result = result.replace(/\s+/g, ' ');
+  result = result.replace(/[ \t]+/g, ' ');
   result = result.replace(/\n{3,}/g, '\n\n');
   return result.trim();
 }
@@ -91,8 +91,9 @@ export class LLMClient {
         if (provider === 'gemini') {
           return await this.generateGemini(m, messages, apiKey, baseUrl);
         }
-        if (provider === 'openai' || provider === 'openai_compatible') {
-          return await this.generateOpenAI(m, messages, apiKey, baseUrl);
+        if (provider === 'openai' || provider === 'openai_compatible' || provider === 'mistral') {
+          const apiBase = provider === 'mistral' && !baseUrl ? 'https://api.mistral.ai/v1' : baseUrl;
+          return await this.generateOpenAI(m, messages, apiKey, apiBase);
         }
         if (provider === 'anthropic') {
           return await this.generateAnthropic(m, messages, apiKey);
@@ -117,8 +118,9 @@ export class LLMClient {
         if (provider === 'gemini') {
           return this.generateGeminiStream(m, messages, apiKey, baseUrl);
         }
-        if (provider === 'openai' || provider === 'openai_compatible') {
-          return this.generateOpenAIStream(m, messages, apiKey, baseUrl);
+        if (provider === 'openai' || provider === 'openai_compatible' || provider === 'mistral') {
+          const apiBase = provider === 'mistral' && !baseUrl ? 'https://api.mistral.ai/v1' : baseUrl;
+          return this.generateOpenAIStream(m, messages, apiKey, apiBase);
         }
         throw new Error(`Unsupported provider for streaming: ${provider}`);
       } catch (err: any) {
@@ -206,7 +208,7 @@ export class LLMClient {
     for await (const chunk of result.stream) {
       const text = chunk.text();
       if (text) {
-        yield { text: cleanLlmText(text), done: false };
+        yield { text, done: false };
       }
     }
     yield { text: '', done: true };
@@ -218,17 +220,49 @@ export class LLMClient {
     apiKey: string,
     baseUrl: string | null
   ): AsyncGenerator<StreamingChunk> {
-    const client = new OpenAI({ apiKey, baseURL: baseUrl || undefined });
-    const stream = await client.chat.completions.create({
-      model,
-      messages: messages as any,
-      temperature: 0.2,
-      stream: true,
+    const url = `${(baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')}/chat/completions`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, messages, temperature: 0.2, stream: true }),
+      signal: AbortSignal.timeout(120000),
     });
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      if (content) {
-        yield { text: cleanLlmText(content), done: false };
+
+    if (!response.ok) {
+      const errText = await response.text();
+      yield { text: '', done: true, error: `LLM API error ${response.status}: ${errText}` };
+      return;
+    }
+
+    // Raw SSE line-by-line parsing — same approach as Python httpx aiter_lines()
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const dataStr = trimmed.slice(6).trim();
+        if (dataStr === '[DONE]') {
+          yield { text: '', done: true };
+          return;
+        }
+        if (!dataStr) continue;
+        try {
+          const data = JSON.parse(dataStr);
+          const content: string = data?.choices?.[0]?.delta?.content ?? '';
+          if (content) yield { text: content, done: false };
+        } catch { /* skip malformed chunk */ }
       }
     }
     yield { text: '', done: true };

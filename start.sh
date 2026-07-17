@@ -171,7 +171,31 @@ if [ -f pyproject.toml ]; then
 fi
 
 # ──────────────────────────────────────────────
-# 8. Pull & Build Docker Images
+# 8. Build React Admin UI
+# ──────────────────────────────────────────────
+UI_DIR="$(cd "$(dirname "$0")/.." && pwd)/chic-interface-design"
+NODE_STATIC="$(cd "$(dirname "$0")" && pwd)/rbs-rag-node/static"
+
+if [ -d "$UI_DIR" ]; then
+    info "Building React Admin UI from: $UI_DIR"
+    if command -v node &>/dev/null && command -v npm &>/dev/null; then
+        (
+            cd "$UI_DIR"
+            npm install --silent 2>/dev/null || true
+            npx vite build --config vite.spa.config.ts 2>&1 | tail -5
+            rm -rf "$NODE_STATIC"/*
+            cp -r dist-spa/* "$NODE_STATIC"/
+            ok "React UI built and deployed to: $NODE_STATIC"
+        )
+    else
+        warn "Node.js/npm not found — skipping UI build. Existing static files will be used."
+    fi
+else
+    warn "chic-interface-design not found at $UI_DIR — skipping UI build."
+fi
+
+# ──────────────────────────────────────────────
+# 9. Pull & Build Docker Images
 # ──────────────────────────────────────────────
 info "Pulling base images..."
 $DCOMPOSE pull 2>&1 | tail -3 || true
@@ -180,7 +204,7 @@ info "Building images..."
 $DCOMPOSE build 2>&1 | tail -5
 
 # ──────────────────────────────────────────────
-# 9. Start Services
+# 10. Start Services
 # ──────────────────────────────────────────────
 info "Cleaning old containers..."
 $DCOMPOSE down --remove-orphans 2>/dev/null || true
@@ -189,7 +213,7 @@ info "Starting all services..."
 $DCOMPOSE up -d --force-recreate
 
 # ──────────────────────────────────────────────
-# 10. Health Check
+# 11. Health Check
 # ──────────────────────────────────────────────
 echo ""
 info "Waiting for services to become healthy..."

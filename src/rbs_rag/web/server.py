@@ -124,7 +124,12 @@ async def admin_login(req: AdminLoginRequest):
     if req.username != "admin" or req.password != admin_password:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = generate_jwt("admin", secret)
-    return {"status": "success", "token": token, "token_type": "Bearer"}
+    return {
+        "status": "success",
+        "token": token,
+        "access_token": token,
+        "token_type": "Bearer",
+    }
 
 
 # --- Pydantic models ---

@@ -3717,16 +3717,82 @@
         }
 
         function parseMarkdown(text) {
-            // Simple robust regex mapping for dashboard chatbot visualization
-            let html = text
-                .replace(/\*\*(.*?)\*\*/g, 'strong>$1</strong>') // bold
-                .replace(/\*(.*?)\*/g, 'em>$1</em>') // italic
-                .replace(/`([^`]+)`/g, '<code style="font-family:\'JetBrains Mono\'; background:rgba(255,255,255,0.05); padding:2px 4px; border-radius:4px; font-size:90%;">$1</code>') // inline code
-                .replace(/\n\s*-\s+(.*?)/g, '<li style="margin-left: 16px; margin-top:4px;">$1</li>') // bullets
-                .replace(/\n\s*\d+\.\s+(.*?)/g, '<li style="margin-left: 16px; margin-top:4px; list-style-type: decimal;">$1</li>'); // numbered list
-            
-            return html.replace(/\n/g, '<br>');
+            // 1. Strip any raw HTML tags the LLM may have output
+            text = text.replace(/<(?!\s)((?!citation-tag)[^>])*>/gi, '');
+
+            // 2. Process line by line for accurate rendering
+            const lines = text.split('\n');
+            const output = [];
+            let inList = false;
+
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i];
+
+                // Inline formatting: bold, italic, inline code
+                line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                line = line.replace(/\*(.+?)\*/g, '<em>$1</em>');
+                line = line.replace(/`([^`]+)`/g, '<code style="font-family:\'JetBrains Mono\';background:rgba(255,255,255,0.07);padding:2px 5px;border-radius:4px;font-size:89%;">$1</code>');
+
+                // Horizontal rule: --- or ===
+                if (/^\s*[-=]{3,}\s*$/.test(line)) {
+                    if (inList) { output.push('</ul>'); inList = false; }
+                    output.push('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:10px 0;">');
+                    continue;
+                }
+
+                // Headings: ###, ##, #
+                const h3 = line.match(/^###\s+(.+)/);
+                const h2 = line.match(/^##\s+(.+)/);
+                const h1 = line.match(/^#\s+(.+)/);
+                if (h3) {
+                    if (inList) { output.push('</ul>'); inList = false; }
+                    output.push(`<h4 style="margin:12px 0 4px;font-size:13.5px;color:var(--accent-teal,#06b6d4);font-weight:700;">${h3[1]}</h4>`);
+                    continue;
+                }
+                if (h2) {
+                    if (inList) { output.push('</ul>'); inList = false; }
+                    output.push(`<h3 style="margin:14px 0 4px;font-size:14.5px;color:var(--accent-teal,#06b6d4);font-weight:700;">${h2[1]}</h3>`);
+                    continue;
+                }
+                if (h1) {
+                    if (inList) { output.push('</ul>'); inList = false; }
+                    output.push(`<h2 style="margin:16px 0 6px;font-size:16px;color:var(--accent-teal,#06b6d4);font-weight:700;">${h1[1]}</h2>`);
+                    continue;
+                }
+
+                // Bullet point: lines starting with - or •
+                const bullet = line.match(/^\s*[-•]\s+(.+)/);
+                if (bullet) {
+                    if (!inList) { output.push('<ul style="margin:6px 0 6px 8px;padding-left:16px;">'); inList = true; }
+                    output.push(`<li style="margin-bottom:4px;">${bullet[1]}</li>`);
+                    continue;
+                }
+
+                // Numbered list
+                const numbered = line.match(/^\s*\d+\.\s+(.+)/);
+                if (numbered) {
+                    if (!inList) { output.push('<ol style="margin:6px 0 6px 8px;padding-left:16px;">'); inList = true; }
+                    output.push(`<li style="margin-bottom:4px;">${numbered[1]}</li>`);
+                    continue;
+                }
+
+                // Close list if we hit a non-list line
+                if (inList) { output.push('</ul>'); inList = false; }
+
+                // Empty line = paragraph break
+                if (line.trim() === '') {
+                    output.push('<div style="height:8px;"></div>');
+                    continue;
+                }
+
+                // Normal text line
+                output.push(`<div style="margin-bottom:3px;line-height:1.6;">${line}</div>`);
+            }
+
+            if (inList) output.push('</ul>');
+            return output.join('');
         }
+
 
         function formatCitations(text) {
             return text.replace(/\[(\d+)\]/g, (match, num) => {

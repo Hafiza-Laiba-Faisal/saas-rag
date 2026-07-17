@@ -18,10 +18,7 @@ export class DbStore {
     const metadata: Record<string, any> = { ...document.metadata, tenant_id: tenantId, knowledge_base_id: knowledgeBaseId, source };
     if (sourceUrl) metadata['source_url'] = sourceUrl;
 
-    await this.prisma.$executeRawUnsafe(
-      `DELETE FROM chunks WHERE document_id = ?`,
-      [document.documentId]
-    );
+    await this.prisma.chunk.deleteMany({ where: { documentId: document.documentId } });
 
     await this.prisma.document.upsert({
       where: { documentId: document.documentId },
@@ -107,6 +104,14 @@ export class DbStore {
       chunks = chunks.filter(c => metadataMatches(c.metadata, filters!));
     }
     return chunks;
+  }
+
+  async listChunksForDocument(tenantId: string, knowledgeBaseId: string, documentId: string): Promise<Chunk[]> {
+    const rows = await this.prisma.chunk.findMany({
+      where: { tenantId, knowledgeBaseId, documentId },
+      orderBy: { ordinal: 'asc' },
+    });
+    return rows.map(rowToChunk);
   }
 
   async listDocuments(tenantId: string, knowledgeBaseId: string): Promise<any[]> {

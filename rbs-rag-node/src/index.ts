@@ -11,36 +11,61 @@ import { DbStore } from './store.js';
 import { createEngineFromTenant, RagEngine } from './engine.js';
 import { routes } from './routes/index.js';
 
+// Prevent crashes from unhandled rejections (e.g. Qdrant not available)
+process.on('unhandledRejection', (reason) => {
+  console.warn('Unhandled rejection:', (reason as Error)?.message || reason);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const config = loadConfig();
-const prisma = new PrismaClient();
+
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'file:./dev.db';
+}
+
+let prisma: PrismaClient;
+try {
+  prisma = new PrismaClient();
+} catch {
+  console.error('Failed to initialize Prisma. Ensure DATABASE_URL is set.');
+  process.exit(1);
+}
+
 const adminStore = new AdminStore(prisma);
 const dbStore = new DbStore(prisma);
 
 const app = express();
 const engineCache = new Map<string, RagEngine>();
 
-app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(helmet({ crossOriginResourcePolicy: false, contentSecurityPolicy: false }));
 app.use(cors({ origin: '*' }));
 app.use(compression());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Static files
 const staticDir = path.resolve(__dirname, '../static');
-app.use('/static', express.static(staticDir));
 
-// SPA routes
-app.get('/', (_req, res) => res.sendFile(path.join(staticDir, 'index.html')));
-app.get('/client', (_req, res) => res.sendFile(path.join(staticDir, 'client.html')));
-app.get('/widget', (_req, res) => res.sendFile(path.join(staticDir, 'widget.html')));
+const oneYear = 365 * 24 * 60 * 60 * 1000;
+app.use('/assets', express.static(path.join(staticDir, 'assets'), {
+  maxAge: oneYear,
+  immutable: true,
+}));
+app.use(express.static(staticDir));
 
-// Mount all API routes
 app.use('/api/v1', routes(config, adminStore, dbStore, engineCache));
 
-// Health endpoint
+// Serve client.html for /client route
+app.get('/client', (req, res) => {
+  res.sendFile(path.join(staticDir, 'client.html'));
+});
+
+// Serve widget.html for /widget route
+app.get('/widget', (req, res) => {
+  res.sendFile(path.join(staticDir, 'widget.html'));
+});
+
 app.get('/api/v1/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -50,6 +75,12 @@ app.get('/api/v1/health', (_req, res) => {
   });
 });
 
+// Serve index.html (SPA) for all other non-API routes
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/v1')) return next();
+  res.sendFile(path.join(staticDir, 'index.html'));
+});
+
 const PORT = config.port;
 app.listen(PORT, () => {
   console.log(`RAG Node server running on http://localhost:${PORT}`);
@@ -57,7 +88,6 @@ app.listen(PORT, () => {
   console.log(`Widget: http://localhost:${PORT}/widget`);
 });
 
-// Graceful shutdown
 process.on('SIGINT', async () => {
   await prisma.$disconnect();
   process.exit(0);
