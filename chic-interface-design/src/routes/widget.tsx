@@ -1,287 +1,301 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, useEffect, useRef } from "react";
-import { ArrowLeft, Minus, Send, X, Loader2 } from "lucide-react";
-import { streamChat, StreamChunk } from "@/lib/streaming";
-import { renderMarkdown } from "@/lib/markdown-renderer";
+import { ArrowLeft, Copy, Check, Play, RefreshCw, Code2 } from "lucide-react";
 
 export const Route = createFileRoute("/widget")({
   head: () => ({
     meta: [
-      { title: "Chat Widget Preview — TenBit RAG" },
-      { name: "description", content: "Preview of the embeddable TenBit RAG chat widget." },
+      { title: "Chat Widget — TenBit RAG" },
+      { name: "description", content: "Embed the TenBit RAG chat widget on any page." },
     ],
   }),
   component: WidgetPage,
 });
 
+// Track injected script so we can re-inject when config changes
+let injectedScript: HTMLScriptElement | null = null;
+
+function injectWidgetScript(apiUrl: string, tenant: string, key: string, botName: string) {
+  // Remove existing widget if present
+  if (injectedScript && injectedScript.parentNode) {
+    injectedScript.parentNode.removeChild(injectedScript);
+    injectedScript = null;
+  }
+  // Also remove leftover DOM from previous run
+  document.getElementById("rbs-widget-btn")?.remove();
+  document.getElementById("rbs-widget-box")?.remove();
+  document.querySelectorAll("style").forEach((s) => {
+    if (s.textContent?.includes("rbs-widget-btn")) s.remove();
+  });
+  // Reset guard so widget.js re-runs
+  (window as any).__RBSWidgetLoaded = false;
+
+  const script = document.createElement("script");
+  script.src = `${apiUrl}/widget.js?t=${Date.now()}`;
+  script.setAttribute("data-key", key);
+  script.setAttribute("data-tenant", tenant);
+  script.setAttribute("data-api-url", apiUrl);
+  script.setAttribute("data-name", botName || "Assistant");
+  document.body.appendChild(script);
+  injectedScript = script;
+}
+
 function WidgetPage() {
-  return (
-    <div className="min-h-screen">
-      <header className="mx-auto flex max-w-5xl items-center justify-between px-6 py-6">
-        <Link to="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Link>
-        <div className="text-sm text-muted-foreground">Widget preview</div>
-      </header>
+  const [apiUrl, setApiUrl]   = useState("http://localhost:3001");
+  const [tenant, setTenant]   = useState("");
+  const [apiKey, setApiKey]   = useState("");
+  const [botName, setBotName] = useState("Assistant");
 
-      <div className="mx-auto max-w-5xl px-6 pb-16">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
-            Your customers see this <span className="gradient-text">on any page</span>.
-          </h1>
-          <p className="mt-3 text-muted-foreground">A branded assistant with cited answers. Add ?api_key=YOUR_KEY to the URL.</p>
-        </div>
+  const [tested,  setTested]  = useState(false);
+  const [copied,  setCopied]  = useState(false);
+  const [error,   setError]   = useState("");
 
-        {/* Mock browser + widget */}
-        <div className="panel mx-auto mt-10 max-w-4xl overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-border bg-elevated/60 px-4 py-2.5">
-            <span className="h-3 w-3 rounded-full bg-destructive/60" />
-            <span className="h-3 w-3 rounded-full bg-warning/60" />
-            <span className="h-3 w-3 rounded-full bg-success/60" />
-            <div className="mx-auto rounded-md border border-border bg-panel px-3 py-1 text-xs text-muted-foreground">
-              acme.com
-            </div>
-          </div>
-          <div className="relative h-[520px] bg-[radial-gradient(600px_400px_at_10%_10%,rgba(99,102,241,0.15),transparent),radial-gradient(600px_400px_at_90%_20%,rgba(56,189,248,0.1),transparent)]">
-            <div className="p-10 opacity-40">
-              <div className="h-8 w-40 rounded bg-elevated" />
-              <div className="mt-6 h-3 w-64 rounded bg-elevated" />
-              <div className="mt-2 h-3 w-80 rounded bg-elevated" />
-              <div className="mt-2 h-3 w-72 rounded bg-elevated" />
-              <div className="mt-8 grid grid-cols-3 gap-4">
-                <div className="h-24 rounded-lg bg-elevated" />
-                <div className="h-24 rounded-lg bg-elevated" />
-                <div className="h-24 rounded-lg bg-elevated" />
-              </div>
-            </div>
-
-            <div className="absolute bottom-6 right-6 w-[360px] max-w-[90%]">
-              <Widget />
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface Source {
-  document_name: string;
-  chunk_id: string;
-  score?: number;
-  content?: string;
-  index?: number;
-  section?: string;
-}
-
-interface ChatMessage {
-  role: "bot" | "user";
-  text: string;
-  sources?: Source[];
-  isStreaming?: boolean;
-}
-
-function Widget() {
-  const [apiKey, setApiKey] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string>("");
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: "bot", text: "Hello! I can answer questions grounded in our verified database. How can I help you today?" },
-  ]);
-  const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll to bottom when messages update
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
+  // Restore from localStorage on mount
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const key = urlParams.get("api_key");
-    if (key) {
-      setApiKey(key);
-    }
-
-    let sid = localStorage.getItem("rbs_rag_widget_session");
-    if (!sid) {
-      sid = crypto.randomUUID();
-      localStorage.setItem("rbs_rag_widget_session", sid);
-    }
-    setSessionId(sid);
+    setApiUrl(localStorage.getItem("wt_api_url")   || "http://localhost:3001");
+    setTenant(localStorage.getItem("wt_tenant")    || "");
+    setApiKey(localStorage.getItem("wt_api_key")   || "");
+    setBotName(localStorage.getItem("wt_bot_name") || "Assistant");
   }, []);
 
-  const send = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = input.trim();
-    if (!q || !apiKey) return;
-    setInput("");
-    // Append user message + empty bot placeholder in one update to avoid index drift
-    setMessages((m) => [
-      ...m,
-      { role: "user", text: q },
-      { role: "bot", text: "", isStreaming: true },
-    ]);
-    setIsLoading(true);
+  // Cleanup widget when leaving page
+  useEffect(() => {
+    return () => {
+      injectedScript?.remove();
+      injectedScript = null;
+      document.getElementById("rbs-widget-btn")?.remove();
+      document.getElementById("rbs-widget-box")?.remove();
+      (window as any).__RBSWidgetLoaded = false;
+    };
+  }, []);
 
-    try {
-      await streamChat(
-        "/api/v1/chat/stream",
-        { query: q, session_id: sessionId, user_id: "widget-user" },
-        { "X-API-Key": apiKey },
-        {
-          onChunk: (chunk: StreamChunk) => {
-            setMessages((m) => {
-              const updated = [...m];
-              const last = updated[updated.length - 1];
-              if (last?.role === "bot") {
-                updated[updated.length - 1] = {
-                  ...last,
-                  text: last.text + chunk.text,
-                  isStreaming: !chunk.done,
-                };
-              }
-              return updated;
-            });
-          },
-          onComplete: (_fullText, citations) => {
-            setMessages((m) => {
-              const updated = [...m];
-              const last = updated[updated.length - 1];
-              if (last?.role === "bot") {
-                const parsed = parseLLMResponse(last.text);
-                updated[updated.length - 1] = {
-                  ...last,
-                  isStreaming: false,
-                  parsed,
-                  sources: citations?.map((c) => ({
-                    document_name: c.document_name,
-                    chunk_id: c.chunk_id,
-                    index: c.index,
-                    section: c.section,
-                  })),
-                };
-              }
-              return updated;
-            });
-            setIsLoading(false);
-          },
-          onError: (error) => {
-            setMessages((m) => {
-              const updated = [...m];
-              const last = updated[updated.length - 1];
-              if (last?.role === "bot") {
-                updated[updated.length - 1] = {
-                  role: "bot",
-                  text: `Error: ${error.message}`,
-                  isStreaming: false,
-                };
-              }
-              return updated;
-            });
-            setIsLoading(false);
-          },
-        }
-      );
-    } catch (e) {
-      setMessages((m) => [
-        ...m.slice(0, -1),
-        { role: "bot", text: `Error: ${e instanceof Error ? e.message : "Failed to connect"}` },
-      ]);
-      setIsLoading(false);
+  const embedCode =
+`<script
+  src="${apiUrl}/widget.js"
+  data-tenant="${tenant}"
+  data-key="${apiKey}"
+  data-api-url="${apiUrl}"
+  data-name="${botName}"
+></script>`;
+
+  const handleTest = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (!apiKey.trim() || !tenant.trim()) {
+      setError("Tenant ID and API Key are required.");
+      return;
     }
+    localStorage.setItem("wt_api_url",   apiUrl.trim());
+    localStorage.setItem("wt_tenant",    tenant.trim());
+    localStorage.setItem("wt_api_key",   apiKey.trim());
+    localStorage.setItem("wt_bot_name",  botName.trim());
+
+    injectWidgetScript(apiUrl.trim(), tenant.trim(), apiKey.trim(), botName.trim());
+    setTested(true);
   };
 
-  const clearConversation = () => {
-    const newSessionId = crypto.randomUUID();
-    localStorage.setItem("rbs_rag_widget_session", newSessionId);
-    setSessionId(newSessionId);
-    setMessages([
-      { role: "bot", text: "Hello! I can answer questions grounded in our verified database. How can I help you today?" },
-    ]);
+  const handleReset = () => {
+    injectedScript?.remove();
+    injectedScript = null;
+    document.getElementById("rbs-widget-btn")?.remove();
+    document.getElementById("rbs-widget-box")?.remove();
+    (window as any).__RBSWidgetLoaded = false;
+    setTested(false);
+  };
+
+  const copyEmbed = () => {
+    navigator.clipboard.writeText(embedCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="flex h-[440px] flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl backdrop-blur">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border bg-[image:var(--gradient-subtle)] px-4 py-3">
-        <div className="flex items-center gap-2.5">
-          <div className="grid h-8 w-8 place-items-center rounded-md bg-[image:var(--gradient-primary)] text-sm font-bold text-primary-foreground">
-            A
-          </div>
-          <div>
-            <div className="text-sm font-semibold">Acme Assistant</div>
-            <div className="flex items-center gap-1.5 text-[10px] text-success">
-              <span className="h-1.5 w-1.5 rounded-full bg-success" /> Online
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-1 text-muted-foreground">
-          <button className="rounded p-1 hover:bg-elevated"><Minus className="h-3.5 w-3.5" /></button>
-          <button className="rounded p-1 hover:bg-elevated"><X className="h-3.5 w-3.5" /></button>
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
-        {messages.map((m, i) =>
-          m.role === "user" ? (
-            <div key={i} className="flex justify-end">
-              <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
-                {m.text}
-              </div>
-            </div>
-          ) : (
-            <div key={i} className="max-w-[85%] space-y-2">
-              <div className="rounded-2xl rounded-tl-sm border border-border bg-elevated px-3 py-2 text-sm">
-                {m.isStreaming ? (
-                  <>
-                    {m.text ? renderMarkdown(m.text) : <Loader2 className="h-4 w-4 animate-spin" />}
-                    {m.text && <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse" />}
-                  </>
-                ) : (
-                  renderMarkdown(m.text)
-                )}
-              </div>
-              {m.sources && m.sources.length > 0 && !m.isStreaming && (
-                <div className="flex flex-wrap gap-1 px-3">
-                  {m.sources.map((s, idx) => (
-                    <span
-                      key={idx}
-                      className="cursor-pointer rounded bg-accent-teal/10 px-1.5 py-0.5 text-xs font-semibold text-accent-teal hover:bg-accent-teal hover:text-background"
-                      title={s.section ? `${s.document_name} - ${s.section}` : s.document_name}
-                    >
-                      [{idx + 1}]
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          ),
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      <form onSubmit={send} className="flex items-center gap-2 border-t border-border p-3">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your question…"
-          className="input flex-1 text-sm"
-          disabled={isLoading || !apiKey}
-        />
-        <button
-          type="submit"
-          className="grid h-9 w-9 place-items-center rounded-md bg-[image:var(--gradient-primary)] text-primary-foreground hover:opacity-90 disabled:opacity-50"
-          disabled={isLoading || !apiKey}
+    <div className="min-h-screen">
+      {/* ── Nav ── */}
+      <header className="mx-auto flex max-w-3xl items-center justify-between px-6 py-6">
+        <Link
+          to="/"
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
         >
-          {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-        </button>
-      </form>
+          <ArrowLeft className="h-4 w-4" /> Back
+        </Link>
+        <div className="text-sm text-muted-foreground">Widget Embed Tester</div>
+      </header>
+
+      <div className="mx-auto max-w-3xl space-y-6 px-6 pb-20">
+        {/* ── Hero ── */}
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">
+            Test &amp; Embed the Chat Widget
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Fill in your details, click <strong>Run Test</strong> — the chat bubble appears
+            on this page so you can verify it works. Then copy the embed snippet.
+          </p>
+        </div>
+
+        {/* ── Config Form ── */}
+        <div className="panel p-6">
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Configuration
+            </h2>
+            {tested && (
+              <button
+                onClick={handleReset}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-elevated hover:text-foreground"
+              >
+                <RefreshCw className="h-3 w-3" /> Reset
+              </button>
+            )}
+          </div>
+
+          <form onSubmit={handleTest} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {/* API URL */}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                  API Base URL
+                </label>
+                <input
+                  type="url"
+                  value={apiUrl}
+                  onChange={(e) => setApiUrl(e.target.value)}
+                  placeholder="http://localhost:3001"
+                  className="input w-full"
+                  disabled={tested}
+                  required
+                />
+              </div>
+
+              {/* Bot name */}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                  Bot Name <span className="opacity-50">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={botName}
+                  onChange={(e) => setBotName(e.target.value)}
+                  placeholder="Assistant"
+                  className="input w-full"
+                  disabled={tested}
+                />
+              </div>
+
+              {/* Tenant */}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                  Tenant ID <span className="text-destructive">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={tenant}
+                  onChange={(e) => setTenant(e.target.value)}
+                  placeholder="test3"
+                  className="input w-full font-mono text-sm"
+                  disabled={tested}
+                  required
+                />
+              </div>
+
+              {/* API Key */}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                  API Key <span className="text-destructive">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="rbs_rag_sk_xxxxxxxxxxxxxxxx"
+                  className="input w-full font-mono text-sm"
+                  disabled={tested}
+                  required
+                />
+              </div>
+            </div>
+
+            {error && (
+              <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {error}
+              </p>
+            )}
+
+            {!tested ? (
+              <button
+                type="submit"
+                className="inline-flex items-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-5 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
+              >
+                <Play className="h-4 w-4" />
+                Run Test
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-4 py-2.5 text-sm text-success">
+                <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+                Widget injected — look for the chat bubble at the bottom-right of this page.
+              </div>
+            )}
+          </form>
+        </div>
+
+        {/* ── Embed Code ── */}
+        <div className="panel p-6">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Code2 className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Embed Snippet
+              </h2>
+            </div>
+            <button
+              onClick={copyEmbed}
+              disabled={!apiKey.trim() || !tenant.trim()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-elevated hover:text-foreground disabled:opacity-40"
+            >
+              {copied
+                ? <><Check className="h-3 w-3 text-success" /> Copied!</>
+                : <><Copy className="h-3 w-3" /> Copy</>
+              }
+            </button>
+          </div>
+
+          <pre className="overflow-x-auto rounded-lg border border-border bg-elevated/50 p-4 font-mono text-xs leading-relaxed text-foreground whitespace-pre">
+            {embedCode}
+          </pre>
+
+          <p className="mt-3 text-xs text-muted-foreground">
+            Paste this before the closing{" "}
+            <code className="rounded bg-elevated px-1 py-0.5">&lt;/body&gt;</code>{" "}
+            tag on any webpage. No framework required — works on plain HTML,
+            WordPress, Webflow, etc.
+          </p>
+        </div>
+
+        {/* ── How it works ── */}
+        <div className="panel p-6">
+          <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            How it works
+          </h2>
+          <ol className="space-y-3 text-sm text-muted-foreground">
+            {[
+              ["Get your API key", "Copy a tenant API key from the Admin dashboard → Tenants."],
+              ["Add the snippet", "Paste the embed code into any page's HTML before </body>."],
+              ["Widget loads", "A floating chat bubble appears. Visitors click it to ask questions."],
+              ["Streamed answers", "Responses come from your RAG pipeline with source citations."],
+            ].map(([title, desc], i) => (
+              <li key={i} className="flex gap-3">
+                <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-bold text-primary">
+                  {i + 1}
+                </span>
+                <span>
+                  <strong className="text-foreground">{title}</strong> — {desc}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
     </div>
   );
 }
