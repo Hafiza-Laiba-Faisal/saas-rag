@@ -33,7 +33,6 @@ import {
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, getAuthToken } from "@/lib/api";
-import { parseLLMResponse, ParsedContent } from "@/lib/text-parser";
 import { renderMarkdown } from "@/lib/markdown-renderer";
 
 
@@ -1219,7 +1218,7 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
-  const [chatTurns, setChatTurns] = useState<Array<{ role: string; content: string; parsed?: ParsedContent }>>([]);
+  const [chatTurns, setChatTurns] = useState<Array<{ role: string; content: string }>>([]);
   const [contexts, setContexts] = useState<any[]>([]);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
@@ -1331,11 +1330,10 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
         }
       }
 
-      // Parse the final response for structured display
-      const parsed = parseLLMResponse(fullText);
+      // Final update — mark streaming done
       setChatTurns((prev) => {
         const updated = [...prev];
-        updated[updated.length - 1] = { role: "assistant", content: fullText, parsed };
+        updated[updated.length - 1] = { role: "assistant", content: fullText };
         return updated;
       });
 
@@ -1459,38 +1457,27 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
           {chatTurns.length === 0 ? (
             <Bubble role="bot">👋 Ask a question about this tenant's indexed corpus.</Bubble>
           ) : (
-            chatTurns.map((turn, i) => (
-              <Bubble key={i} role={turn.role === "user" ? "user" : "bot"}>
-                {turn.role === "assistant" ? (
-                  turn.parsed ? (
-                    <div className="space-y-3">
-                      {turn.parsed.sections.map((section, idx) => (
-                        <div key={idx} className="space-y-1">
-                          {section.title !== "Response" && section.title !== "Section 1" && (
-                            <div className="text-xs font-semibold text-primary uppercase tracking-wider">{section.title}</div>
-                          )}
-                          {section.content && <div>{renderMarkdown(section.content)}</div>}
-                          {section.items && section.items.length > 0 && (
-                            <ul className="mt-2 space-y-1">
-                              {section.items.map((item, itemIdx) => (
-                                <li key={itemIdx} className="flex items-start gap-2 text-sm">
-                                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-                                  <span>{renderMarkdown(item)}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+            chatTurns.map((turn, i) => {
+              // During streaming the last assistant turn starts empty — skip it,
+              // the spinner bubble below handles that state
+              const isStreamingPlaceholder =
+                streaming && turn.role === "assistant" && i === chatTurns.length - 1 && !turn.content;
+              if (isStreamingPlaceholder) return null;
+              return (
+                <Bubble key={i} role={turn.role === "user" ? "user" : "bot"}>
+                  {turn.role === "assistant" ? (
+                    <>
+                      {renderMarkdown(turn.content)}
+                      {streaming && i === chatTurns.length - 1 && turn.content && (
+                        <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse align-middle" />
+                      )}
+                    </>
                   ) : (
-                    <span dangerouslySetInnerHTML={{ __html: formatCitations(turn.content) }} />
-                  )
-                ) : (
-                  turn.content
-                )}
-              </Bubble>
-            ))
+                    turn.content
+                  )}
+                </Bubble>
+              );
+            })
           )}
           {(loading || streaming) && (
             <Bubble role="bot">
