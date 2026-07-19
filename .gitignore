@@ -32,3 +32,11 @@ Thumbs.db
 # IDE
 .vscode/
 .opencode/
+
+# Scraped test pages (large binaries, not project code)
+data/test-pages/
+
+# Stale build artifacts
+rbs-rag-node/static/assets/index-*.js
+rbs-rag-node/static/assets/index-*.css
+rbs-rag-node/static/assets/styles-*.css

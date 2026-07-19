@@ -630,6 +630,141 @@ export function routes(
     }
   });
 
+  // ===================== ENHANCED SCRAPER (external microservice) =====================
+  import {
+    scrapeSingle, scrapeSmart, startRecursiveCrawl,
+    getRecursiveStatus, scrapeWordPress, scrapeFacebook,
+    getFbJobStatus, scrapeProfile, scrapeAndIngest,
+  } from '../scraperClient.js';
+
+  const SCRAPE_TYPES = ['single', 'smart', 'recursive', 'wordpress', 'facebook', 'profile'] as const;
+
+  router.post('/scrape/enhanced', resolveClientTenant, async (req, res) => {
+    try {
+      const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
+              include_media, fb_c_user, fb_xs, fb_max_posts, fb_scroll_rounds,
+              fb_date_from, fb_date_to, profile_platform, profile_username,
+              workers, respect_robots, allowed_domains } = req.body;
+
+      let result: any;
+      switch (scrape_type || 'single') {
+        case 'smart':
+          result = await scrapeSmart(url, timeout || 30);
+          break;
+        case 'recursive':
+          result = await startRecursiveCrawl(url, max_depth || 3, max_pages || 50, workers || 1, allowed_domains);
+          break;
+        case 'wordpress':
+          result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false);
+          break;
+        case 'facebook':
+          result = await scrapeFacebook(url, fb_c_user || '', fb_xs || '', fb_max_posts || 20, fb_scroll_rounds || 5, fb_date_from || '', fb_date_to || '');
+          break;
+        case 'profile':
+          result = await scrapeProfile(profile_platform || '', profile_username || '');
+          break;
+        default:
+          result = await scrapeSingle(url, format || 'markdown');
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/tenants/:tenantId/scrape/enhanced', requireAdmin, async (req, res) => {
+    try {
+      const tenant = await adminStore.getTenant(req.params.tenantId);
+      if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+
+      const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
+              include_media, fb_c_user, fb_xs, fb_max_posts, fb_scroll_rounds,
+              fb_date_from, fb_date_to, profile_platform, profile_username,
+              workers, respect_robots, allowed_domains } = req.body;
+
+      let result: any;
+      switch (scrape_type || 'single') {
+        case 'smart':
+          result = await scrapeSmart(url, timeout || 30);
+          break;
+        case 'recursive':
+          result = await startRecursiveCrawl(url, max_depth || 3, max_pages || 50, workers || 1, allowed_domains);
+          break;
+        case 'wordpress':
+          result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false);
+          break;
+        case 'facebook':
+          result = await scrapeFacebook(url, fb_c_user || '', fb_xs || '', fb_max_posts || 20, fb_scroll_rounds || 5, fb_date_from || '', fb_date_to || '');
+          break;
+        case 'profile':
+          result = await scrapeProfile(profile_platform || '', profile_username || '');
+          break;
+        default:
+          result = await scrapeSingle(url, format || 'markdown');
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/scrape/recursive/:jobId/status', resolveClientTenant, async (req, res) => {
+    try {
+      const status = await getRecursiveStatus(req.params.jobId);
+      res.json(status);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/scrape/facebook/:jobId/status', resolveClientTenant, async (req, res) => {
+    try {
+      const status = await getFbJobStatus(req.params.jobId);
+      res.json(status);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/scrape/enhanced/ingest', resolveClientTenant, async (req, res) => {
+    try {
+      const tenant = (req as TenantRequest).tenant;
+      const engine = await getOrCreateEngine(tenant);
+      const result = await scrapeAndIngest(config, dbStore, engine, req.body.url, tenant.tenantId, 'default', req.body.scrape_type || 'single', { timeout: req.body.timeout });
+      if (result.status === 'completed') {
+        await adminStore.logActivity(tenant.tenantId, 'INFO', 'scrape_ingest', `Scraped & ingested ${req.body.url} -> ${result.document}`, { url: req.body.url, document: result.document });
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ status: 'failed', error: err.message });
+    }
+  });
+
+  router.post('/tenants/:tenantId/scrape/enhanced/ingest', requireAdmin, async (req, res) => {
+    try {
+      const tenant = await adminStore.getTenant(req.params.tenantId);
+      if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+      const engine = await getOrCreateEngine(tenant);
+      const result = await scrapeAndIngest(config, dbStore, engine, req.body.url, req.params.tenantId, 'default', req.body.scrape_type || 'single', { timeout: req.body.timeout });
+      if (result.status === 'completed') {
+        await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_ingest', `Scraped & ingested ${req.body.url} -> ${result.document}`, { url: req.body.url, document: result.document });
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ status: 'failed', error: err.message });
+    }
+  });
+
+  router.get('/scrape/health', async (_req, res) => {
+    try {
+      const resp = await fetch(`${process.env.SCRAPER_SERVICE_URL || 'http://scraper_service:8000'}/`);
+      const data = await resp.json();
+      res.json(data);
+    } catch (err: any) {
+      res.json({ service: 'unavailable', error: err.message });
+    }
+  });
+
   // ===================== TERMINAL EXEC =====================
   router.post('/terminal/exec', requireAdmin, async (req, res) => {
     const { command, tenant_id } = req.body;

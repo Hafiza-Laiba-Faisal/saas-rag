@@ -103,16 +103,21 @@ services:
 
   scraper_service:
     build:
-      context: ./scraper-service-main
+      context: ./scraper-service
       dockerfile: Dockerfile
     container_name: tenbit-scraper
     restart: unless-stopped
     networks:
       - rag_network
+    ports:
+      - "8002:8000"
     volumes:
       - scraper_data:/app/data
+      - scraper_data:/app/downloads
     env_file:
       - .env
+    environment:
+      - DEEPCRAWL_API_KEY=${DEEPCRAWL_API_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s

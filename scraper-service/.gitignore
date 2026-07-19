@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Environment
+.env
+
+# Downloads / Outputs
+downloads/
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright browsers
+ms-playwright/

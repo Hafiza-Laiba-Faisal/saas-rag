@@ -1178,6 +1178,141 @@ async def get_scrape_job(tenant_id: str, job_id: str, _admin=Depends(require_adm
     return job.to_dict()
 
 
+# ── Enhanced Scraper Endpoints (smart crawl, wordpress, facebook, deepcrawl) ──
+
+class EnhancedScrapeRequest(BaseModel):
+    url: str
+    scrape_type: str = "single"  # single, smart, recursive, wordpress, facebook, profile
+    max_pages: int = 50
+    max_depth: int = 3
+    timeout: int = 30
+    format: str = "markdown"
+    # WordPress
+    include_pages: bool = True
+    include_media: bool = True
+    # Facebook
+    fb_c_user: str = ""
+    fb_xs: str = ""
+    fb_max_posts: int = 20
+    fb_scroll_rounds: int = 5
+    fb_date_from: str = ""
+    fb_date_to: str = ""
+    # Profile
+    profile_platform: str = ""
+    profile_username: str = ""
+    # Recursive crawl
+    workers: int = 1
+    respect_robots: bool = True
+    allowed_domains: list[str] | None = None
+
+
+@app.post("/api/v1/scrape/enhanced")
+async def enhanced_scrape(req: EnhancedScrapeRequest, tenant=Depends(_resolve_client_tenant)):
+    _validate_scrape_url(req.url)
+    scraper = _get_scraper_service()
+    result = None
+
+    if req.scrape_type == "smart":
+        result = scraper.crawl_smart(req.url, timeout=req.timeout)
+    elif req.scrape_type == "recursive":
+        result = scraper.crawl_recursive(req.url, max_depth=req.max_depth, max_pages=req.max_pages,
+                                           workers=req.workers, respect_robots=req.respect_robots,
+                                           allowed_domains=req.allowed_domains)
+    elif req.scrape_type == "wordpress":
+        result = scraper.scrape_wordpress(req.url, max_pages=req.max_pages,
+                                           include_pages=req.include_pages, include_media=req.include_media)
+    elif req.scrape_type == "facebook":
+        result = scraper.scrape_facebook(req.url, c_user=req.fb_c_user, xs=req.fb_xs,
+                                          max_posts=req.fb_max_posts, scroll_rounds=req.fb_scroll_rounds,
+                                          date_from=req.fb_date_from, date_to=req.fb_date_to)
+    elif req.scrape_type == "profile":
+        result = scraper.scrape_profile(req.profile_platform, req.profile_username)
+    else:
+        result = scraper.crawl_single(req.url, format=req.format)
+
+    return result
+
+
+@app.post("/api/v1/tenants/{tenant_id}/scrape/enhanced")
+async def tenant_enhanced_scrape(tenant_id: str, req: EnhancedScrapeRequest, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    _validate_scrape_url(req.url)
+    scraper = _get_scraper_service()
+    result = None
+
+    if req.scrape_type == "smart":
+        result = scraper.crawl_smart(req.url, timeout=req.timeout)
+    elif req.scrape_type == "recursive":
+        result = scraper.crawl_recursive(req.url, max_depth=req.max_depth, max_pages=req.max_pages,
+                                           workers=req.workers, respect_robots=req.respect_robots,
+                                           allowed_domains=req.allowed_domains)
+    elif req.scrape_type == "wordpress":
+        result = scraper.scrape_wordpress(req.url, max_pages=req.max_pages,
+                                           include_pages=req.include_pages, include_media=req.include_media)
+    elif req.scrape_type == "facebook":
+        result = scraper.scrape_facebook(req.url, c_user=req.fb_c_user, xs=req.fb_xs,
+                                          max_posts=req.fb_max_posts, scroll_rounds=req.fb_scroll_rounds,
+                                          date_from=req.fb_date_from, date_to=req.fb_date_to)
+    elif req.scrape_type == "profile":
+        result = scraper.scrape_profile(req.profile_platform, req.profile_username)
+    else:
+        result = scraper.crawl_single(req.url, format=req.format)
+
+    return result
+
+
+@app.get("/api/v1/scrape/recursive/{job_id}/status")
+async def get_recursive_job_status(job_id: str, tenant=Depends(_resolve_client_tenant)):
+    scraper = _get_scraper_service()
+    return scraper.get_recursive_status(job_id)
+
+
+@app.get("/api/v1/scrape/recursive/jobs")
+async def list_recursive_jobs(tenant=Depends(_resolve_client_tenant)):
+    scraper = _get_scraper_service()
+    return {"jobs": scraper.list_recursive_jobs()}
+
+
+@app.get("/api/v1/scrape/platforms")
+async def get_scrape_platforms():
+    scraper = _get_scraper_service()
+    return {"platforms": scraper.get_platforms()}
+
+
+@app.get("/api/v1/scrape/health")
+async def scraper_health():
+    scraper = _get_scraper_service()
+    return scraper.health()
+
+
+@app.post("/api/v1/tenants/{tenant_id}/scrape/enhanced/ingest")
+async def enhanced_scrape_and_ingest(tenant_id: str, req: EnhancedScrapeRequest, _admin=Depends(require_admin)):
+    from rbs_rag.services.scraper_service import scrape_and_ingest as _scrape_and_ingest
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    _validate_scrape_url(req.url)
+    config = _get_tenant_config(tenant)
+    store = SQLiteRagStore(Path(config.storage.path))
+    result = _scrape_and_ingest(config, store, req.url, tenant_id, scrape_type=req.scrape_type, timeout=req.timeout)
+    if result["status"] == "completed":
+        admin_store.log_activity(tenant_id, "INFO", "scrape_ingest",
+                                  f"Scraped and ingested {req.url} -> {result.get('document', '')}")
+    return result
+
+
+@app.post("/api/v1/scrape/enhanced/ingest")
+async def client_enhanced_scrape_and_ingest(req: EnhancedScrapeRequest, tenant=Depends(_resolve_client_tenant)):
+    from rbs_rag.services.scraper_service import scrape_and_ingest as _scrape_and_ingest
+    _validate_scrape_url(req.url)
+    config = _get_tenant_config(tenant)
+    store = SQLiteRagStore(Path(config.storage.path))
+    result = _scrape_and_ingest(config, store, req.url, tenant["tenant_id"], scrape_type=req.scrape_type, timeout=req.timeout)
+    return result
+
+
 @app.post("/api/v1/tenants/{tenant_id}/ocr")
 async def ocr_document(tenant_id: str, file: UploadFile = File(...), _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
