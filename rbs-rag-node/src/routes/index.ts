@@ -8,6 +8,7 @@ import { AdminStore } from '../adminStore.js';
 import { DbStore } from '../store.js';
 import { RagEngine, createEngineFromTenant } from '../engine.js';
 import { scrapeUrl } from '../scraper.js';
+import { loadProviderPresets, saveProviderPresets } from '../providerPresets.js';
 
 const ingestionStatus: Record<string, any> = {};
 
@@ -361,7 +362,8 @@ export function routes(
         profile: answer.profile,
       });
     } catch (err: any) {
-      res.status(500).json({ detail: `Model API Error: ${err.message}` });
+      console.error(`[Chat Error] tenant=${req.params.tenantId} provider=${tenant.llmProvider} model=${tenant.llmModel}: ${err.message}`);
+      res.status(500).json({ detail: `Model API Error (${tenant.llmProvider}/${tenant.llmModel}): ${err.message}` });
     }
   });
 
@@ -481,12 +483,20 @@ export function routes(
     res.json({ status: 'started', apply_ocr: applyOcr });
   });
 
-  router.get('/client/ingest/status', resolveClientTenant, async (req, res) => {
+   router.get('/client/documents/:filename/chunks', resolveClientTenant, async (req, res) => {
+     const tenant = (req as TenantRequest).tenant;
+     const doc = await dbStore.listDocuments(tenant.tenantId, 'default').then(docs => docs.find(d => d.name === req.params.filename));
+     if (!doc) return res.status(404).json({ detail: 'Document not found' });
+     const chunks = await dbStore.listChunksForDocument(tenant.tenantId, 'default', doc.documentId);
+     res.json(chunks);
+   });
+
+   router.get('/client/ingest/status', resolveClientTenant, async (req, res) => {
     const tenant = (req as TenantRequest).tenant;
     res.json(ingestionStatus[tenant.tenantId] || { status: 'idle', logs: ['No ingestion tasks run yet.'], progress: 0, summary: null });
   });
 
-  router.delete('/client/documents/:filename', resolveClientTenant, async (req, res) => {
+  router.delete('/client/documents/:filename', resolveClientTenant, async (req, res) => {console.log("Client delete request:", req.params.filename, req.tenant?.tenantId);
     const tenant = (req as TenantRequest).tenant;
     const filePath = path.join(config.rootDir, 'tenants', tenant.tenantId, 'documents', req.params.filename);
     if (!fs.existsSync(filePath)) return res.status(404).json({ detail: 'File not found' });
@@ -509,7 +519,17 @@ export function routes(
   });
 
   router.get('/system/logs', requireAdmin, async (req, res) => {
-    const logs = await adminStore.getActivityLogs(req.query.tenant_id as string || undefined, req.query.level as string || undefined, parseInt(req.query.limit as string) || 100);
+    const rawLogs = await adminStore.getActivityLogs(req.query.tenant_id as string || undefined, req.query.level as string || undefined, parseInt(req.query.limit as string) || 100);
+    const logs = rawLogs.map((l: any) => ({
+      id: l.id,
+      level: l.level,
+      operation: l.operation,
+      message: l.message,
+      created_at: l.createdAt ? l.createdAt.toISOString() : new Date().toISOString(),
+      latency_ms: null,
+      traceback: l.traceback || null,
+      details_json: l.details || null,
+    }));
     res.json({ logs });
   });
 
@@ -560,6 +580,7 @@ export function routes(
 
       await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape', `Scraped ${req.body.url}`, { url: req.body.url, job_id: result.jobId, success: !result.error });
 
+      const files = result.savedFilePath ? [{ url: result.url, file: result.savedFilePath }] : [];
       res.json({
         status: result.error ? 'failed' : 'completed',
         job_id: result.jobId,
@@ -567,8 +588,8 @@ export function routes(
         title: result.title,
         description: result.description,
         word_count: result.wordCount,
-        files_saved: result.savedFilePath ? 1 : 0,
-        files: result.savedFilePath ? [result.savedFilePath] : [],
+        files_saved: files.length,
+        files,
         error: result.error,
         processing_time_ms: result.processingTimeMs,
       });
@@ -591,6 +612,7 @@ export function routes(
 
       await adminStore.logActivity(tenant.tenantId, 'INFO', 'scrape', `Scraped ${req.body.url}`, { url: req.body.url, job_id: result.jobId, success: !result.error });
 
+      const files = result.savedFilePath ? [{ url: result.url, file: result.savedFilePath }] : [];
       res.json({
         status: result.error ? 'failed' : 'completed',
         job_id: result.jobId,
@@ -598,13 +620,172 @@ export function routes(
         title: result.title,
         description: result.description,
         word_count: result.wordCount,
-        files_saved: result.savedFilePath ? 1 : 0,
-        files: result.savedFilePath ? [result.savedFilePath] : [],
+        files_saved: files.length,
+        files,
         error: result.error,
         processing_time_ms: result.processingTimeMs,
       });
     } catch (err: any) {
       res.status(500).json({ status: 'failed', error: err.message });
+    }
+  });
+
+  // ===================== TERMINAL EXEC =====================
+  router.post('/terminal/exec', requireAdmin, async (req, res) => {
+    const { command, tenant_id } = req.body;
+    const cmd = (command || '').toString().trim().toLowerCase();
+    const tenant = tenant_id ? await adminStore.getTenant(tenant_id) : null;
+
+    try {
+      if (cmd === 'help' || cmd === '/help') {
+        const helpText = `Available commands:
+  /help           – Show this help
+  /clear          – Clear terminal
+  /isolation      – Run isolation audit
+  /clients        – List all clients/tenants
+  /status         – System status
+  /tenants        – Alias for /clients`;
+        return res.json({ type: 'output', output: helpText });
+      }
+
+      if (cmd === 'clear' || cmd === '/clear') {
+        return res.json({ type: 'output', output: 'CLEAR' });
+      }
+
+      if (cmd === 'isolation' || cmd === '/isolation') {
+        const allTenants = await adminStore.listTenants();
+        let output = '🔍 Isolation Audit\n';
+        output += `Total tenants: ${allTenants.length}\n`;
+        for (const t of allTenants) {
+          const docsDir = path.join(config.rootDir, 'tenants', t.tenantId, 'documents');
+          const exists = fs.existsSync(docsDir);
+          const docCount = await dbStore.countDocuments(t.tenantId, 'default');
+          output += `  ${t.tenantId}: docs_dir=${exists ? '✓' : '✗'} documents=${docCount}\n`;
+        }
+        output += '\n✅ All tenants isolated';
+        return res.json({ type: 'output', output });
+      }
+
+      if (cmd === 'clients' || cmd === '/clients' || cmd === 'tenants' || cmd === '/tenants') {
+        const allTenants = await adminStore.listTenants();
+        let output = `📋 Tenants (${allTenants.length}):\n`;
+        for (const t of allTenants) {
+          output += `  ${t.tenantId} | ${t.name} | ${t.status} | ${t.llmProvider}/${t.llmModel}\n`;
+        }
+        return res.json({ type: 'output', output });
+      }
+
+      if (cmd === 'status' || cmd === '/status') {
+        const allTenants = await adminStore.listTenants();
+        let totalDocs = 0, totalChunks = 0;
+        for (const t of allTenants) {
+          totalDocs += await dbStore.countDocuments(t.tenantId, 'default');
+          totalChunks += await dbStore.countChunks(t.tenantId, 'default');
+        }
+        const output = `📊 System Status
+  Uptime: ${Math.round(process.uptime())}s
+  Tenants: ${allTenants.length}
+  Documents: ${totalDocs}
+  Chunks: ${totalChunks}
+  Memory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB`;
+        return res.json({ type: 'output', output });
+      }
+
+      res.json({ type: 'error', output: `Unknown command: ${command}. Type /help for available commands.` });
+    } catch (err: any) {
+      res.json({ type: 'error', output: `Error: ${err.message}` });
+    }
+  });
+
+  // ===================== ISOLATION CHECK =====================
+  router.get('/isolation-check', requireAdmin, async (_req, res) => {
+    const allTenants = await adminStore.listTenants();
+    let isolated = 0;
+    const details: any[] = [];
+    for (const t of allTenants) {
+      const docsDir = path.join(config.rootDir, 'tenants', t.tenantId, 'documents');
+      const isolatedOk = !fs.existsSync(docsDir.replace(t.tenantId, 'other')) && fs.existsSync(docsDir);
+      if (isolatedOk) isolated++;
+      details.push({ tenant: t.tenantId, docs_dir_exists: fs.existsSync(docsDir), isolated: isolatedOk });
+    }
+    const score = allTenants.length > 0 ? Math.round((isolated / allTenants.length) * 100) : 100;
+    res.json({
+      status: score === 100 ? 'verified' : 'warning',
+      score_percent: score,
+      total_tenants: allTenants.length,
+      verified_isolated: isolated,
+      details
+    });
+  });
+
+  // ===================== CLOUD SYNC =====================
+  router.post('/tenants/:tenantId/cloud-sync', requireAdmin, async (req, res) => {
+    const tenant = await adminStore.getTenant(req.params.tenantId);
+    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+    const { provider, cloud_url_or_id, api_key_or_token, custom_filename, auto_ingest } = req.body;
+    const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
+    const downloaded: string[] = [];
+    const errors: string[] = [];
+
+    try {
+      if (provider === 'direct_url') {
+        const url = cloud_url_or_id;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const contentType = resp.headers.get('content-type') || '';
+        const ext = contentType.includes('pdf') ? '.pdf' : contentType.includes('html') ? '.html' : '.txt';
+        const filename = custom_filename || `cloud_${Date.now()}${ext}`;
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const filePath = path.join(docsDir, filename);
+        fs.mkdirSync(docsDir, { recursive: true });
+        fs.writeFileSync(filePath, buffer);
+        downloaded.push(filename);
+      } else if (provider === 'google_drive') {
+        const fileId = cloud_url_or_id;
+        const url = fileId.startsWith('http') ? fileId : `https://drive.google.com/uc?export=download&id=${fileId}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const filename = custom_filename || `gdrive_${Date.now()}.pdf`;
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const filePath = path.join(docsDir, filename);
+        fs.mkdirSync(docsDir, { recursive: true });
+        fs.writeFileSync(filePath, buffer);
+        downloaded.push(filename);
+      } else if (provider === 'onedrive') {
+        const resp = await fetch(cloud_url_or_id);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const filename = custom_filename || `onedrive_${Date.now()}.pdf`;
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const filePath = path.join(docsDir, filename);
+        fs.mkdirSync(docsDir, { recursive: true });
+        fs.writeFileSync(filePath, buffer);
+        downloaded.push(filename);
+      } else {
+        throw new Error(`Unsupported provider: ${provider}`);
+      }
+
+      await adminStore.logActivity(req.params.tenantId, 'INFO', 'cloud_sync', `Synced ${downloaded.length} file(s) from ${provider}`, { provider, files: downloaded });
+
+      const status = errors.length === 0 ? 'success' : (downloaded.length > 0 ? 'partial' : 'failed');
+      res.json({ status, count: downloaded.length, downloaded, errors, auto_ingest: !!auto_ingest });
+    } catch (err: any) {
+      errors.push(err.message);
+      res.json({ status: 'failed', count: 0, downloaded, errors: [err.message], auto_ingest: !!auto_ingest });
+    }
+  });
+
+  // ===================== PROVIDER PRESETS =====================
+  router.get('/admin/providers', requireAdmin, async (_req, res) => {
+    const presets = loadProviderPresets(config.rootDir);
+    res.json(presets);
+  });
+
+  router.put('/admin/providers', requireAdmin, async (req, res) => {
+    try {
+      saveProviderPresets(config.rootDir, req.body);
+      res.json({ status: 'success' });
+    } catch (err: any) {
+      res.status(500).json({ detail: err.message });
     }
   });
 

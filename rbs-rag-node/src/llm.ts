@@ -1,5 +1,4 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import OpenAI from 'openai';
 import { StreamingChunk } from './types/models.js';
 
 const HTML_TAG_RE = /<\/?[a-zA-Z][a-zA-Z0-9]*[^>]*>/g;
@@ -83,6 +82,7 @@ export class LLMClient {
 
   async generate(messages: Array<{ role: string; content: string }>): Promise<string> {
     const { provider, apiKey, model, baseUrl, fallbackModels } = this.config;
+    if (!apiKey) throw new Error(`LLM API key is empty for provider "${provider}". Add a valid API key in tenant config.`);
     const models = [model, ...fallbackModels].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
     let lastError: Error | null = null;
@@ -111,6 +111,7 @@ export class LLMClient {
     messages: Array<{ role: string; content: string }>
   ): Promise<AsyncGenerator<StreamingChunk>> {
     const { provider, apiKey, model, baseUrl, fallbackModels } = this.config;
+    if (!apiKey) throw new Error(`LLM API key is empty for provider "${provider}". Add a valid API key in tenant config.`);
     const models = [model, ...fallbackModels].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
     for (const m of models) {
@@ -152,14 +153,22 @@ export class LLMClient {
     apiKey: string,
     baseUrl: string | null
   ): Promise<string> {
-    const client = new OpenAI({ apiKey, baseURL: baseUrl || undefined });
-    const resp = await client.chat.completions.create({
-      model,
-      messages: messages as any,
-      temperature: 0.2,
+    const url = `${(baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')}/chat/completions`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, messages, temperature: 0.2 }),
+      signal: AbortSignal.timeout(60000),
     });
-    const content = resp.choices[0]?.message?.content || '';
-    return cleanLlmText(content);
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API error ${response.status}: ${errText}`);
+    }
+    const data = await response.json() as any;
+    return cleanLlmText(data.choices?.[0]?.message?.content || '');
   }
 
   private async generateAnthropic(

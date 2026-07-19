@@ -1,0 +1,12 @@
+cd /home/tenbitsolutions/Documents/Tenbit/3-ongoing-projects/RAG/rbs-rag-node
+./scripts/sync-frontend.sh
+
+
+cd /home/tenbitsolutions/Documents/Tenbit/3-ongoing-projects/RAG/rbs-rag-node
+bash scripts/start-dev.sh
+
+
+tail -f .logs/server.log
+tail -f .logs/frontend.log
+
+tail -f .logs/server.log

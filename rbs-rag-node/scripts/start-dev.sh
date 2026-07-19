@@ -17,10 +17,11 @@ fi
 
 # ── Kill old processes ──
 echo "[1/6] Cleaning up old processes..."
-lsof -ti:3001 2>/dev/null | xargs kill -9 2>/dev/null || true
-lsof -ti:6333  2>/dev/null | xargs kill -9 2>/dev/null || true
+for port in 3001 6333 8000 5173 5174 5175 5176 5177 5178 5179 5180; do
+  lsof -ti:${port} 2>/dev/null | xargs kill -9 2>/dev/null || true
+done
 docker stop rag-qdrant 2>/dev/null || true
-docker stop ocr_service 2>/dev/null || true
+docker stop tenbit-ocr 2>/dev/null || true
 sleep 1
 echo "  ✔ Done"
 
@@ -35,24 +36,53 @@ fi
 
 # ── Start Qdrant ──
 echo "[3/6] Starting Qdrant (Docker)..."
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'rag-qdrant'; then
-  echo "  ✔ Qdrant already running"
+if ! docker info >/dev/null 2>&1; then
+  echo "  ⚠ Docker daemon is not reachable — skipping Qdrant"
 else
-  docker run -d --rm --name rag-qdrant \
-    -p 6333:6333 -p 6334:6334 \
-    qdrant/qdrant:latest 2>&1 | sed 's/^/  /'
-  echo "  ✔ Qdrant started"
-  sleep 2
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'rag-qdrant'; then
+    echo "  ✔ Qdrant already running"
+  else
+    docker run -d --rm --name rag-qdrant \
+      -p 6333:6333 -p 6334:6334 \
+      qdrant/qdrant:latest 2>&1 | sed 's/^/  /'
+    echo "  ✔ Qdrant started"
+    sleep 2
+  fi
 fi
 
 # ── Start OCR Service ──
-echo "[3.5/6] Starting OCR Service (Docker)..."
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'ocr_service'; then
+echo "[3.5/6] Starting OCR Service..."
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'tenbit-ocr'; then
   echo "  ✔ OCR Service already running"
 else
-  (cd ../ && docker compose up -d --build ocr_service 2>&1 | sed 's/^/  /')
-  echo "  ✔ OCR Service started"
-  sleep 2
+  if ! docker info >/dev/null 2>&1; then
+    echo "  ⚠ Docker daemon is not reachable — trying local OCR fallback"
+  else
+    if (cd ../ && docker compose --file docker-compose.yml up -d --build ocr_service 2>&1 | sed 's/^/  /'); then
+      echo "  ✔ OCR Service started via Docker"
+      sleep 2
+    else
+      echo "  ⚠ OCR Service Docker startup failed; trying local fallback"
+    fi
+  fi
+
+  if [ -d "$ROOT/../ocr-service-main" ]; then
+    (
+      cd "$ROOT/../ocr-service-main"
+      PYTHON_BIN="$ROOT/../.venv/bin/python"
+      if [ ! -x "$PYTHON_BIN" ]; then
+        PYTHON_BIN="python3"
+      fi
+      export PYTHONPATH="$ROOT/../ocr-service-main"
+      "$PYTHON_BIN" -m pip install --quiet pydantic-settings pillow slowapi pymupdf python-multipart httpx opencv-python-headless
+      "$PYTHON_BIN" -m uvicorn main:app --app-dir "$ROOT/../ocr-service-main" --host 0.0.0.0 --port 8000 > "$ROOT/.logs/ocr.log" 2>&1
+    ) &
+    OCR_PID=$!
+    echo $OCR_PID > "$ROOT/.logs/ocr.pid"
+    echo "  ✔ OCR Service started locally (PID: $OCR_PID)"
+  else
+    echo "  ⚠ OCR Service not found — continuing without OCR"
+  fi
 fi
 
 # ── Prisma setup + seed ──

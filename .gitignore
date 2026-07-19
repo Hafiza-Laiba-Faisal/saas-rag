@@ -10,3 +10,25 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+chic-interface-design/.git_backup/
+
+# Node.js
+node_modules/
+rbs-rag-node/node_modules/
+rbs-rag-node/dist/
+rbs-rag-node/.logs/
+
+# SSL certs
+nginx/ssl/*.crt
+nginx/ssl/*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VSIX
+*.vsix
+
+# IDE
+.vscode/
+.opencode/
