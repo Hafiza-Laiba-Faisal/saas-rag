@@ -33,18 +33,28 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
     if not job:
         return
 
+    CRAWL_TIMEOUT = 300
+
+    def update_job(pct: int, msg: str):
+        job.progress = pct
+        job.message = msg
+
     async def run():
         job.status = "running"
         job.progress = 0
         job.message = "Starting full site crawl..."
 
         crawler = AutoCrawler(output_base=str(_output_base))
-        result = await crawler.crawl(
-            url=req.url,
-            max_depth=req.max_depth,
-            max_pages=req.max_pages,
-            download_images=req.download_images,
-            download_pdfs=req.download_pdfs,
+        crawler.set_progress_callback(update_job)
+        result = await asyncio.wait_for(
+            crawler.crawl(
+                url=req.url,
+                max_depth=req.max_depth,
+                max_pages=req.max_pages,
+                download_images=req.download_images,
+                download_pdfs=req.download_pdfs,
+            ),
+            timeout=CRAWL_TIMEOUT,
         )
 
         if result.error:
@@ -77,6 +87,10 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
 
     try:
         asyncio.run(run())
+    except asyncio.TimeoutError:
+        job.status = "error"
+        job.error = "Crawl timed out after 5 minutes"
+        job.message = "Crawl timed out — site may have too many images or slow responses"
     except Exception as e:
         job.status = "error"
         job.error = str(e)

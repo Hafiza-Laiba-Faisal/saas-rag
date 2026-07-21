@@ -61,14 +61,20 @@ class AutoCrawler:
         self.asset_ext = AssetExtractor()
         self.wp_detector = WordPressDetector()
         self.output_base = Path(output_base)
-        self._html_cache = {}  # In-memory HTML cache: URL -> FetchResult
+        self._html_cache = {}
+        self._progress_cb = None
+
+    def set_progress_callback(self, cb):
+        self._progress_cb = cb
+
+    def _update_progress(self, pct: int, msg: str):
+        if self._progress_cb:
+            self._progress_cb(pct, msg)
+        logger.info("[%d%%] %s", pct, msg)
 
     async def _fetch_url(self, url: str, timeout: int = 20) -> FetchResult:
         if url not in self._html_cache:
-            logger.info("Fetching new page URL: %s", url)
             self._html_cache[url] = await self.fetcher.get(url, timeout=timeout)
-        else:
-            logger.info("Using cached HTML for: %s", url)
         return self._html_cache[url]
 
     async def crawl(
@@ -86,6 +92,7 @@ class AutoCrawler:
         out_dir.mkdir(parents=True, exist_ok=True)
         result.output_dir = str(out_dir)
 
+        self._update_progress(2, "Fetching homepage...")
         try:
             fetch_result = await self._fetch_url(url)
             if not fetch_result.ok:
@@ -99,16 +106,16 @@ class AutoCrawler:
             is_wp = self.wp_detector.detect(html, url)
             result.is_wordpress = is_wp
 
+            self._update_progress(8, "Detecting languages...")
             langs = await self._detect_languages(url, html)
             result.languages = langs
-            logger.info("Languages detected: %s", langs)
 
             all_pages: list[dict] = []
             all_media: list[dict] = []
 
             if is_wp:
                 result.strategy_used = "wordpress_rest_api"
-                logger.info("WordPress detected — using REST API")
+                self._update_progress(10, "WordPress detected — fetching via REST API...")
                 from .wordpress_scraper import WordPressScraper
                 wp = WordPressScraper()
                 wp_result = await wp.scrape(url, max_pages=10, include_pages=True, include_media=True)
@@ -132,6 +139,7 @@ class AutoCrawler:
             result.pages = all_pages
 
             domain = urlparse(url).netloc.lower()
+            self._update_progress(15, "Discovering pages via recursive crawl...")
             discovered = await self._recursive_discover(url, max_depth, max_pages)
             discovered_urls = {p["url"] for p in all_pages}
             new_pages = [p for p in discovered if p["url"] not in discovered_urls]
@@ -168,6 +176,7 @@ class AutoCrawler:
             result.content_files = content_files
 
             if download_images:
+                self._update_progress(65, "Discovering images...")
                 all_images = await self._discover_all_images(all_pages, page_title_map)
                 result.images = all_images
                 imgs_by_lang: dict[str, list[dict]] = {}
@@ -176,6 +185,7 @@ class AutoCrawler:
                     img_lang = _lang_from_url(pu, domain, default_lang=primary_lang)
                     imgs_by_lang.setdefault(img_lang, []).append(img)
 
+                self._update_progress(70, f"Downloading {len(all_images)} images...")
                 total_dl = 0
                 for lang_code, lang_imgs in sorted(imgs_by_lang.items()):
                     lang_dir = out_dir / "images" / lang_code
@@ -187,6 +197,7 @@ class AutoCrawler:
                 result.stats["images_discovered"] = len(all_images)
 
             if download_pdfs:
+                self._update_progress(85, "Discovering documents...")
                 wp_docs = [m for m in all_media if m.get("mime") in ("application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")]
                 html_docs = await self._discover_pdfs_from_pages(all_pages)
                 existing_urls = {p["url"] for p in wp_docs}
@@ -197,12 +208,14 @@ class AutoCrawler:
                 result.pdfs = wp_docs
                 docs_dir = out_dir / "documents"
                 docs_dir.mkdir(parents=True, exist_ok=True)
+                self._update_progress(90, f"Downloading {len(wp_docs)} documents...")
                 downloaded = await self._bulk_download(
                     wp_docs, docs_dir, "document", key="url"
                 )
                 result.stats["pdfs_downloaded"] = downloaded
                 result.stats["pdfs_discovered"] = len(wp_docs)
 
+            self._update_progress(95, "Saving results...")
             meta = {
                 "site": url,
                 "is_wordpress": is_wp,
@@ -238,6 +251,7 @@ class AutoCrawler:
             logger.exception("AutoCrawl failed for %s", url)
 
         result.elapsed_ms = round((time.monotonic() - start) * 1000, 2)
+        self._update_progress(100, result.error or f"Crawl complete — {result.stats.get('pages_found', 0)} pages, {result.stats.get('images_downloaded', 0)} images")
         return result
 
     async def _detect_languages(self, url: str, html: str) -> list[str]:
