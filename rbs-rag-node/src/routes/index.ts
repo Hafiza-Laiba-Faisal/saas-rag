@@ -737,16 +737,27 @@ export function routes(
 
       const result = await tryScraperOrFallback(req, tenant);
 
-      const scrapedText = result?.data?.text || result?.data?.markdown || result?.data?.readability?.clean_text || result?.data?.readability?.markdown || '';
-      if (result?.success && scrapedText) {
+      if (result?.success) {
         const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
         fs.mkdirSync(docsDir, { recursive: true });
-        const siteSlug = (result.data.url || req.body.url || '').replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_');
+        const siteSlug = (result.data?.url || req.body.url || '').replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_');
         const ts = Date.now();
         const filename = `scraped_${siteSlug}_${ts}.md`;
-        const contentMarkdown = result?.data?.markdown || result?.data?.readability?.markdown || scrapedText;
-        const wordCount = scrapedText.split(/\s+/).filter(Boolean).length;
-        const content = `---\nurl: ${result.data.url || req.body.url}\ntitle: ${result.data.title || ''}\ndescription: ${result.data.description || ''}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${contentMarkdown}`;
+
+        const d = result.data || {};
+        const title = d.title || '';
+        const description = d.description || '';
+        let body = d.markdown || d.readability?.markdown || d.readability?.clean_text || '';
+        if (!body && d.json) {
+          try { const j = JSON.parse(d.json); body = j.content || j.text || JSON.stringify(j, null, 2); } catch { body = d.json; }
+        }
+        if (!body && d.text) body = d.text;
+        if (!body && d.links) {
+          body = `Links:\n${(d.links as any[]).map((l: any) => `- [${l.text || l.url}](${l.url})`).join('\n')}`;
+        }
+
+        const wordCount = body.split(/\s+/).filter(Boolean).length;
+        const content = `---\nurl: ${d.url || req.body.url}\ntitle: ${title}\ndescription: ${description}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${body}`;
         fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
         result.saved_file = filename;
         await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Scraped ${req.body.url} -> ${filename}`, { url: req.body.url, filename });
