@@ -1334,6 +1334,15 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                     </div>
                   )}
                 </div>
+              ) : scrapeResult?.data?.job_id ? (
+                <div>
+                  <div className="flex items-center gap-2 font-semibold mb-1">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span className="capitalize">{scrapeResult.data.status || "pending"}</span>
+                  </div>
+                  <div className="text-muted-foreground">{scrapeResult.data.message || "Crawl started"}</div>
+                  {scrapeResult.data.poll_url && <div className="text-muted-foreground text-[10px] mt-1">Job ID: {scrapeResult.data.job_id}</div>}
+                </div>
               ) : (
                 <div className="text-destructive">❌ {scrapeResult.error || scrapeResult?.data?.error || "Scrape failed"}</div>
               )}
@@ -1348,6 +1357,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                 <span className="font-semibold capitalize">{scrapeJobStatus.data?.status || "running"}</span>
               </div>
               {scrapeJobStatus.data?.message && <div className="mt-1 text-muted-foreground">{scrapeJobStatus.data.message}</div>}
+              {scrapeJobStatus.data?.error && <div className="mt-1 text-destructive text-[10px] whitespace-pre-wrap">{scrapeJobStatus.data.error}</div>}
               {scrapeJobStatus.data?.progress !== undefined && (
                 <div className="mt-2 h-1.5 rounded-full bg-elevated overflow-hidden">
                   <div className="h-full rounded-full bg-primary" style={{ width: `${scrapeJobStatus.data.progress}%` }} />
