@@ -13,6 +13,7 @@ import {
   FileText,
   Gauge,
   Globe,
+  Info,
   KeyRound,
   Link2,
   Loader2,
@@ -1161,11 +1162,18 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
             ))}
           </div>
 
+          {/* Mode info */}
+          {scrapeConfig.mode === "single" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Single: fetches content from one URL — extracts title, description, and text. Simple single-page scrape.</span></p>}
+          {scrapeConfig.mode === "smart" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Smart: same as Single but automatically falls back to DeepCrawl API on bot blocks (403/429). Good for Cloudflare / blocked sites.</span></p>}
+          {scrapeConfig.mode === "recursive" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Recursive: starts from the seed URL and follows all internal links up to max depth. Runs as a background job — returns a job_id, poll status to track progress.</span></p>}
+          {scrapeConfig.mode === "full" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Full Site: full crawl like Recursive, but also downloads images and PDFs. Background job — crawled files are served from /crawl-output/.</span></p>}
+          {scrapeConfig.mode === "wordpress" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>WordPress: WordPress-only. Tries the WP REST API first, falls back to HTML parsing. Fetches posts, pages, media, and metadata in one shot.</span></p>}
+
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_auto]">
             <Field label="URL">
               <input className="input font-mono text-xs" value={scrapeConfig.url} onChange={(e) => updateScrape('url', e.target.value)} placeholder="https://example.com/page" />
             </Field>
-            {(scrapeConfig.mode === "recursive" || scrapeConfig.mode === "single" || scrapeConfig.mode === "smart" || scrapeConfig.mode === "full") && (
+            {(scrapeConfig.mode === "recursive" || scrapeConfig.mode === "full") && (
               <>
                 <Field label="Max depth">
                   <input className="input" type="number" value={scrapeConfig.depth} onChange={(e) => updateScrape('depth', Number(e.target.value))} />

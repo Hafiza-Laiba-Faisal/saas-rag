@@ -758,7 +758,7 @@ export function routes(
     }
   });
 
-  router.get('/scrape/recursive/:jobId/status', resolveClientTenant, async (req, res) => {
+  router.get('/scrape/recursive/:jobId/status', requireAdmin, async (req, res) => {
     try {
       const status = await getRecursiveStatus(req.params.jobId);
       res.json(status);
