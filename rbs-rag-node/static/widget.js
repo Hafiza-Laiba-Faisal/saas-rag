@@ -275,21 +275,68 @@
     }
   }
 
-  // ── Minimal markdown renderer ────────────────────────────────────────────
+  // ── Markdown renderer with links, images, map embeds ────────────────────
+  function isImageExt(url) {
+    return /\.(jpg|jpeg|png|gif|svg|webp|bmp)(\?|#|$)/i.test(url);
+  }
+  function isMapUrl(url) {
+    return /(google\.com\/maps|maps\.google|maps\.app\.goo\.gl|openstreetmap\.org)/i.test(url);
+  }
+  function makeMapEmbed(url) {
+    var m = url.match(/[?&]q=([^&]+)/);
+    if (m) return 'https://maps.google.com/maps?q=' + encodeURIComponent(decodeURIComponent(m[1])) + '&output=embed';
+    m = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (m) return 'https://maps.google.com/maps?q=' + m[1] + ',' + m[2] + '&output=embed';
+    m = url.match(/\/place\/([^/@?]+)/);
+    if (m) return 'https://maps.google.com/maps?q=' + encodeURIComponent(decodeURIComponent(m[1])) + '&output=embed';
+    return '';
+  }
+  function renderUrl(url, linkText) {
+    var escapedUrl = url.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (isImageExt(url)) {
+      return '<span class="rbs-img-wrap" style="display:block;margin:6px 0"><img src="' + escapedUrl + '" alt="' + (linkText || '').replace(/"/g, '&quot;') + '" loading="lazy" style="max-width:100%;border-radius:8px;max-height:200px" onerror="this.style.display=\'none\'" />' + (linkText ? '<span style="display:block;font-size:11px;opacity:.7;margin-top:2px">' + linkText.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>' : '') + '</span>';
+    }
+    if (isMapUrl(url)) {
+      var embedUrl = makeMapEmbed(url);
+      var html = '<a href="' + escapedUrl + '" target="_blank" rel="noopener" style="color:#a5b4fc;text-decoration:underline;font-size:12px">📍 Open in Google Maps</a>';
+      if (embedUrl) html += '<div style="margin-top:4px"><iframe src="' + embedUrl + '" width="100%" height="160" style="border-radius:8px;border:1px solid rgba(255,255,255,.1)" loading="lazy" allowfullscreen></iframe></div>';
+      return html;
+    }
+    var displayText = linkText || url;
+    return '<a href="' + escapedUrl + '" target="_blank" rel="noopener" style="color:#a5b4fc;text-decoration:underline;word-break:break-all">' + displayText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</a>';
+  }
   function simpleMarkdown(text) {
-    return text
+    var escaped = text
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/^### (.+)$/gm, '<strong>$1</strong>')
-      .replace(/^## (.+)$/gm, '<strong>$1</strong>')
-      .replace(/^# (.+)$/gm, '<strong>$1</strong>')
-      .replace(/^\s*[-*] (.+)$/gm, '<li>$1</li>')
-      .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
-      .replace(/\n{2,}/g, '</p><p>')
-      .replace(/^(?!<[uo]l|<p|<strong|<em)(.+)$/gm, '<p>$1</p>')
-      .replace(/<p><\/p>/g, '');
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Convert [text](url) → links/images/maps
+    escaped = escaped.replace(/!?\[([^\]]*)\]\(([^)]+)\)/g, function (_, linkText, rawUrl) {
+      return renderUrl(rawUrl, linkText);
+    });
+
+    // Convert bare URLs
+    escaped = escaped.replace(/(https?:\/\/[^\s()<>]+(?:\.[^\s()<>]+)*[^\s()<>!.,;:?])/g, function (url) {
+      return renderUrl(url, '');
+    });
+
+    // Headings
+    escaped = escaped.replace(/^### (.+)$/gm, '<strong class="rws-h">$1</strong>');
+    escaped = escaped.replace(/^## (.+)$/gm, '<strong class="rws-h">$1</strong>');
+    escaped = escaped.replace(/^# (.+)$/gm, '<strong class="rws-h">$1</strong>');
+
+    // Lists
+    escaped = escaped.replace(/^\s*[-*•] (.+)$/gm, '<li>$1</li>');
+    escaped = escaped.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul style="margin:4px 0 4px 12px;padding:0">$1</ul>');
+
+    // Paragraphs
+    escaped = escaped.replace(/\n{2,}/g, '</p><p>');
+    escaped = escaped.replace(/^(?!<[uo]l|<p|<a|<div|<strong|<em|<span)(.+)$/gm, '<p>$1</p>');
+    escaped = escaped.replace(/<p><\/p>/g, '');
+
+    return escaped;
   }
 
   // ── Public API ───────────────────────────────────────────────────────────

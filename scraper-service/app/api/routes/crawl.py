@@ -5,6 +5,7 @@ Client → Validate → Fetcher → Detectors → Parser → Extractor → Forma
 from __future__ import annotations
 import time
 import threading
+import logging
 from fastapi import APIRouter, Query, BackgroundTasks
 from pydantic import BaseModel
 from core.fetcher.async_httpx_fetcher import AsyncHttpxFetcher
@@ -22,6 +23,8 @@ from jobs.job_store import JobStore
 from schemas.base import ApiResponse, Metrics
 
 router = APIRouter(prefix="/crawl", tags=["crawl"])
+
+logger = logging.getLogger(__name__)
 
 # Job store for recursive crawls
 _crawl_jobs = JobStore(max_jobs=20)
@@ -62,6 +65,8 @@ async def crawl(req: CrawlRequest):
         return ApiResponse.fail("validator", "invalid_url",
                                 "URL must start with http:// or https://")
 
+    logger.info("Crawl request: url=%s format=%s", url, req.format)
+
     metrics = Metrics()
 
     # ── Stage 1: Fetch ────────────────────────────────────────────────────────
@@ -69,10 +74,12 @@ async def crawl(req: CrawlRequest):
     try:
         result = await _fetcher.get(url, timeout=30)
     except Exception as e:
+        logger.error("Crawl fetch failed: url=%s error=%s", url, e)
         return ApiResponse.fail("fetcher", "request_failed", str(e))
     metrics.fetch_time_ms = round((time.monotonic() - t0) * 1000, 2)
 
     if not result.ok:
+        logger.warning("Crawl bad status: url=%s status=%s", url, result.status_code)
         return ApiResponse.fail("fetcher", f"http_{result.status_code}",
                                 f"Server returned {result.status_code}")
 
@@ -121,6 +128,9 @@ async def crawl(req: CrawlRequest):
             {"title": page_data["title"]}, []
         )
 
+    logger.info("Crawl success: url=%s title=%s links=%d time=%.0fms",
+                final_url, page_data["title"], page_data["link_count"],
+                (time.monotonic() - t0) * 1000)
     return ApiResponse.ok(data=page_data, metrics=metrics)
 
 
@@ -159,19 +169,29 @@ async def smart_crawl(req: SmartCrawlRequest):
     if not url.startswith(("http://", "https://")):
         return ApiResponse.fail("validator", "invalid_url", "URL must start with http:// or https://")
 
+    logger.info("Smart crawl: url=%s timeout=%s", url, req.timeout)
     result = await _engine.scrape(url, timeout=req.timeout)
+    logger.info("Smart crawl done: url=%s adapter=%s quality=%s elapsed=%sms",
+                url, result.adapter_used, result.quality_score, result.elapsed_ms)
+
+    text = result.readability.get("clean_text", "") if result.readability else ""
+    markdown = result.readability.get("markdown", "") if result.readability else ""
 
     return ApiResponse.ok({
         "url": result.url,
         "status_code": result.status_code,
         "title": result.title,
         "description": result.description,
+        "text": text,
+        "markdown": markdown,
         "html_length": result.html_length,
         "links_count": result.links_count,
         "content_type": result.content_type,
         "metadata": result.metadata,
         "links": result.links[:50],
         "detectors": result.detectors,
+        "readability": result.readability,
+        "assets": result.assets,
         "quality_score": result.quality_score,
         "quality_level": result.quality_level,
         "adapter_used": result.adapter_used,

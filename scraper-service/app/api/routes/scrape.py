@@ -5,6 +5,7 @@ No scraping logic. Only job orchestration.
 from __future__ import annotations
 import threading
 import json
+import logging
 from fastapi import APIRouter, HTTPException
 from schemas.scraper import FbScrapeRequest, ProfileScrapeRequest
 from jobs.job_store import default_job_store
@@ -13,6 +14,8 @@ from storage.sqlite_storage import default_storage
 from config.settings import MAX_SCROLL_ROUNDS_UNLIMITED
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
+
+logger = logging.getLogger(__name__)
 
 
 # ── Background worker ─────────────────────────────────────────────────────────
@@ -27,6 +30,7 @@ def _run_scrape_job(job_id: str, url: str, cookies: dict, browser: str,
     job.status   = "running"
     job.progress = 10
     job.message  = "Browser launch ho raha hai..."
+    logger.info("Scrape job started: job_id=%s url=%s", job_id, url)
     try:
         def on_progress(pct: int, msg: str = ""):
             job.progress = pct
@@ -41,6 +45,7 @@ def _run_scrape_job(job_id: str, url: str, cookies: dict, browser: str,
         if "error" in result:
             job.status = "error"
             job.error  = result.get("message", "Scraping fail ho gaya")
+            logger.error("Scrape job failed: job_id=%s error=%s", job_id, job.error)
             return
 
         if result.get("posts") or result.get("reels"):
@@ -57,10 +62,12 @@ def _run_scrape_job(job_id: str, url: str, cookies: dict, browser: str,
         job.status   = "done"
         job.progress = 100
         job.message  = f"{result.get('posts_count',0)} posts, {result.get('reels_count',0)} reels!"
+        logger.info("Scrape job done: job_id=%s %s", job_id, job.message)
     except Exception as e:
         job.status = "error"
         job.error  = str(e)
         job.message = str(e)
+        logger.exception("Scrape job exception: job_id=%s", job_id)
 
 
 # ── FB Posts ──────────────────────────────────────────────────────────────────
@@ -68,6 +75,7 @@ def _run_scrape_job(job_id: str, url: str, cookies: dict, browser: str,
 @router.post("/fb-posts")
 def scrape_fb_posts(req: FbScrapeRequest):
     url = req.page_url
+    logger.info("FB posts scrape requested: url=%s max_posts=%s", url, req.max_posts)
 
     # Resolve cookies
     req_cookies = {"c_user": req.c_user, "xs": req.xs,
@@ -96,6 +104,7 @@ def scrape_fb_posts(req: FbScrapeRequest):
         daemon=True,
     )
     t.start()
+    logger.info("FB scrape job created: job_id=%s", job.job_id)
     return {"job_id": job.job_id, "status": "pending", "message": "Scraping shuru ho rahi hai..."}
 
 
@@ -118,6 +127,7 @@ API_PLATFORMS      = {"instagram", "twitter"}
 def scrape_profile(req: ProfileScrapeRequest):
     platform = req.platform.lower().strip()
     username = req.username.strip().lstrip("@")
+    logger.info("Profile scrape: platform=%s username=%s", platform, username)
     if not username:
         raise HTTPException(400, "Username is required")
     if platform not in (API_PLATFORMS | SELENIUM_PLATFORMS):
@@ -205,6 +215,7 @@ async def scrape_wordpress(req: WordPressScrapeRequest):
     Returns posts, pages, media, and metadata in one shot.
     """
     url = req.url.strip()
+    logger.info("WordPress scrape: url=%s max_pages=%s", url, req.max_pages)
     if not url.startswith(("http://", "https://")):
         return ApiResponse.fail("validator", "invalid_url",
                                 "URL must start with http:// or https://")

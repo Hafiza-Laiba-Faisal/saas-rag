@@ -600,10 +600,11 @@ function ClientDocumentsTab({
     setScraping(true);
     setScrapeResult(null);
     try {
-      const res = await fetch("/api/v1/client/scrape", {
+      const body: any = { url: scrapeUrl, scrape_type: crawlToggle ? "recursive" : "smart", max_depth: scrapeDepth, max_pages: scrapePages };
+      const res = await fetch("/api/v1/scrape/enhanced", {
         method: "POST",
         headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ url: scrapeUrl, max_depth: scrapeDepth, max_pages: scrapePages, crawl: crawlToggle }),
+        body: JSON.stringify(body),
       });
       setScrapeResult(await res.json());
       onDocsChange();

@@ -8,6 +8,11 @@ import { AdminStore } from '../adminStore.js';
 import { DbStore } from '../store.js';
 import { RagEngine, createEngineFromTenant } from '../engine.js';
 import { scrapeUrl } from '../scraper.js';
+import {
+  scrapeSingle, scrapeSmart, startRecursiveCrawl,
+  getRecursiveStatus, scrapeWordPress, scrapeFacebook,
+  getFbJobStatus, scrapeProfile, scrapeAndIngest,
+} from '../scraperClient.js';
 import { loadProviderPresets, saveProviderPresets } from '../providerPresets.js';
 
 const ingestionStatus: Record<string, any> = {};
@@ -259,17 +264,18 @@ export function routes(
     const docs = await dbStore.listDocuments(req.params.tenantId, 'default');
     for (const d of docs) ingestedMap[d.documentId] = d;
     const files = fs.readdirSync(docsDir).filter(f => fs.statSync(path.join(docsDir, f)).isFile());
-    const result = files.map(name => {
+    const result = await Promise.all(files.map(async name => {
       const filePath = path.join(docsDir, name);
       const stat = fs.statSync(filePath);
       const docId = crypto.createHash('sha1').update(filePath).digest('hex');
       const ingested = ingestedMap[docId];
+      const chunks = ingested ? await dbStore.countChunksForDocument(req.params.tenantId, 'default', docId) : 0;
       return {
         name, size_bytes: stat.size, ingested: !!ingested,
-        chunks: 0, extension: path.extname(name).replace('.', ''),
+        chunks, extension: path.extname(name).replace('.', ''),
         source: ingested?.source || 'upload',
       };
-    });
+    }));
     res.json(result);
   });
 
@@ -430,13 +436,14 @@ export function routes(
     const docs = await dbStore.listDocuments(tenant.tenantId, 'default');
     for (const d of docs) ingestedMap[d.documentId] = d;
     const files = fs.readdirSync(docsDir).filter(f => fs.statSync(path.join(docsDir, f)).isFile());
-    const result = files.map(name => {
+    const result = await Promise.all(files.map(async name => {
       const filePath = path.join(docsDir, name);
       const stat = fs.statSync(filePath);
       const docId = crypto.createHash('sha1').update(filePath).digest('hex');
       const ingested = ingestedMap[docId];
-      return { name, size_bytes: stat.size, ingested: !!ingested, chunks: 0, extension: path.extname(name).replace('.', '') };
-    });
+      const chunks = ingested ? await dbStore.countChunksForDocument(tenant.tenantId, 'default', docId) : 0;
+      return { name, size_bytes: stat.size, ingested: !!ingested, chunks, extension: path.extname(name).replace('.', '') };
+    }));
     res.json(result);
   });
 
@@ -496,7 +503,7 @@ export function routes(
     res.json(ingestionStatus[tenant.tenantId] || { status: 'idle', logs: ['No ingestion tasks run yet.'], progress: 0, summary: null });
   });
 
-  router.delete('/client/documents/:filename', resolveClientTenant, async (req, res) => {console.log("Client delete request:", req.params.filename, req.tenant?.tenantId);
+  router.delete('/client/documents/:filename', resolveClientTenant, async (req, res) => {console.log("Client delete request:", req.params.filename, (req as any).tenant?.tenantId);
     const tenant = (req as TenantRequest).tenant;
     const filePath = path.join(config.rootDir, 'tenants', tenant.tenantId, 'documents', req.params.filename);
     if (!fs.existsSync(filePath)) return res.status(404).json({ detail: 'File not found' });
@@ -631,67 +638,41 @@ export function routes(
   });
 
   // ===================== ENHANCED SCRAPER (external microservice) =====================
-  import {
-    scrapeSingle, scrapeSmart, startRecursiveCrawl,
-    getRecursiveStatus, scrapeWordPress, scrapeFacebook,
-    getFbJobStatus, scrapeProfile, scrapeAndIngest,
-  } from '../scraperClient.js';
-
   const SCRAPE_TYPES = ['single', 'smart', 'recursive', 'wordpress', 'facebook', 'profile'] as const;
 
   router.post('/scrape/enhanced', resolveClientTenant, async (req, res) => {
     try {
-      const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
-              include_media, fb_c_user, fb_xs, fb_max_posts, fb_scroll_rounds,
-              fb_date_from, fb_date_to, profile_platform, profile_username,
-              workers, respect_robots, allowed_domains } = req.body;
-
-      let result: any;
-      switch (scrape_type || 'single') {
-        case 'smart':
-          result = await scrapeSmart(url, timeout || 30);
-          break;
-        case 'recursive':
-          result = await startRecursiveCrawl(url, max_depth || 3, max_pages || 50, workers || 1, allowed_domains);
-          break;
-        case 'wordpress':
-          result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false);
-          break;
-        case 'facebook':
-          result = await scrapeFacebook(url, fb_c_user || '', fb_xs || '', fb_max_posts || 20, fb_scroll_rounds || 5, fb_date_from || '', fb_date_to || '');
-          break;
-        case 'profile':
-          result = await scrapeProfile(profile_platform || '', profile_username || '');
-          break;
-        default:
-          result = await scrapeSingle(url, format || 'markdown');
-      }
+      const tenant = (req as TenantRequest).tenant;
+      const result = await tryScraperOrFallback(req, tenant);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  router.post('/tenants/:tenantId/scrape/enhanced', requireAdmin, async (req, res) => {
+  async function tryScraperOrFallback(req: Request, tenant: any): Promise<any> {
+    const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
+            include_media, fb_c_user, fb_xs, fb_max_posts, fb_scroll_rounds,
+            fb_date_from, fb_date_to, profile_platform, profile_username,
+            workers, respect_robots, allowed_domains, content_type,
+            deepcrawl, playwright } = req.body;
+
+    const extraOpts: any = {};
+    if (content_type) extraOpts.content_type = content_type;
+    if (deepcrawl) extraOpts.deepcrawl = true;
+    if (playwright) extraOpts.playwright = true;
+
     try {
-      const tenant = await adminStore.getTenant(req.params.tenantId);
-      if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
-
-      const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
-              include_media, fb_c_user, fb_xs, fb_max_posts, fb_scroll_rounds,
-              fb_date_from, fb_date_to, profile_platform, profile_username,
-              workers, respect_robots, allowed_domains } = req.body;
-
       let result: any;
       switch (scrape_type || 'single') {
         case 'smart':
-          result = await scrapeSmart(url, timeout || 30);
+          result = await scrapeSmart(url, timeout || 30, extraOpts);
           break;
         case 'recursive':
-          result = await startRecursiveCrawl(url, max_depth || 3, max_pages || 50, workers || 1, allowed_domains);
+          result = await startRecursiveCrawl(url, max_depth || 3, max_pages || 50, workers || 1, allowed_domains, extraOpts);
           break;
         case 'wordpress':
-          result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false);
+          result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false, extraOpts);
           break;
         case 'facebook':
           result = await scrapeFacebook(url, fb_c_user || '', fb_xs || '', fb_max_posts || 20, fb_scroll_rounds || 5, fb_date_from || '', fb_date_to || '');
@@ -700,8 +681,81 @@ export function routes(
           result = await scrapeProfile(profile_platform || '', profile_username || '');
           break;
         default:
-          result = await scrapeSingle(url, format || 'markdown');
+          result = await scrapeSingle(url, format || 'markdown', extraOpts);
       }
+      return result;
+    } catch (err: any) {
+      const statusMatch = err?.message?.match(/Scraper API error (\d+)/);
+      const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+      const isServerError = statusCode >= 400;
+      const isConnError = err?.cause?.code === 'ECONNREFUSED' || err?.cause?.code === 'ECONNRESET'
+        || err?.message?.includes('ECONNREFUSED') || err?.message?.includes('fetch failed')
+        || err?.message?.includes('connect') || err?.message?.includes('econnrefused')
+        || isServerError;
+
+      if (!isConnError) throw err;
+
+      const docsDir = path.join(config.rootDir, 'tenants', tenant.tenantId, 'documents');
+      fs.mkdirSync(docsDir, { recursive: true });
+
+      const type = scrape_type || 'single';
+      if (type === 'wordpress' || type === 'facebook' || type === 'profile') {
+        return { success: false, error: `Scraper microservice is offline. '${type}' scraping requires the scraper service. Use 'single', 'smart', or 'recursive' mode as fallback.` };
+      }
+
+      const localResult = await scrapeUrl({
+        url,
+        crawl: type === 'smart' || type === 'recursive',
+        fullSite: type === 'recursive',
+        maxPages: max_pages || 100,
+        maxDepth: max_depth || 3,
+      }, docsDir);
+
+      if (localResult.error) {
+        return { success: false, error: localResult.error };
+      }
+
+      return {
+        success: true,
+        data: {
+          title: localResult.title,
+          description: localResult.description,
+          text: localResult.text,
+          markdown: localResult.text,
+          url: localResult.url,
+          word_count: localResult.wordCount,
+          links: localResult.links,
+          images: localResult.images,
+          quality_score: 1.0,
+          quality_level: 'fallback',
+        },
+        metrics: { source: 'local_fallback', processing_time_ms: localResult.processingTimeMs },
+      };
+    }
+  }
+
+  router.post('/tenants/:tenantId/scrape/enhanced', requireAdmin, async (req, res) => {
+    try {
+      const tenant = await adminStore.getTenant(req.params.tenantId);
+      if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+
+      const result = await tryScraperOrFallback(req, tenant);
+
+      const scrapedText = result?.data?.text || result?.data?.markdown || result?.data?.readability?.clean_text || result?.data?.readability?.markdown || '';
+      if (result?.success && scrapedText) {
+        const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
+        fs.mkdirSync(docsDir, { recursive: true });
+        const siteSlug = (result.data.url || req.body.url || '').replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_');
+        const ts = Date.now();
+        const filename = `scraped_${siteSlug}_${ts}.md`;
+        const contentMarkdown = result?.data?.markdown || result?.data?.readability?.markdown || scrapedText;
+        const wordCount = scrapedText.split(/\s+/).filter(Boolean).length;
+        const content = `---\nurl: ${result.data.url || req.body.url}\ntitle: ${result.data.title || ''}\ndescription: ${result.data.description || ''}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${contentMarkdown}`;
+        fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
+        result.saved_file = filename;
+        await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Scraped ${req.body.url} -> ${filename}`, { url: req.body.url, filename });
+      }
+
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -757,11 +811,23 @@ export function routes(
 
   router.get('/scrape/health', async (_req, res) => {
     try {
-      const resp = await fetch(`${process.env.SCRAPER_SERVICE_URL || 'http://scraper_service:8000'}/`);
+      const resp = await fetch(`${process.env.SCRAPER_SERVICE_URL || 'http://localhost:8002'}/`);
       const data = await resp.json();
       res.json(data);
     } catch (err: any) {
       res.json({ service: 'unavailable', error: err.message });
+    }
+  });
+
+  router.get('/scrape/logs', async (req, res) => {
+    try {
+      const lines = (req.query.lines as string) || '50';
+      const resp = await fetch(`${process.env.SCRAPER_SERVICE_URL || 'http://localhost:8002'}/logs?lines=${lines}`);
+      if (!resp.ok) return res.json({ logs: [] });
+      const data = await resp.json();
+      res.json(data);
+    } catch {
+      res.json({ logs: [] });
     }
   });
 
@@ -919,6 +985,289 @@ export function routes(
     try {
       saveProviderPresets(config.rootDir, req.body);
       res.json({ status: 'success' });
+    } catch (err: any) {
+      res.status(500).json({ detail: err.message });
+    }
+  });
+
+  // ===================== CRAWL OUTPUT =====================
+  const crawlOutputBase = path.join(config.rootDir, '..', '..', 'scraper-service', 'crawl_output');
+
+  router.get('/crawl-output', requireAdmin, async (_req, res) => {
+    try {
+      if (!fs.existsSync(crawlOutputBase)) {
+        return res.json({ sites: [] });
+      }
+      const sites = fs.readdirSync(crawlOutputBase).filter(item => {
+        const itemPath = path.join(crawlOutputBase, item);
+        return fs.statSync(itemPath).isDirectory();
+      });
+      const siteData = sites.map(site => {
+        const sitePath = path.join(crawlOutputBase, site);
+        const indexPath = path.join(sitePath, 'index.json');
+        let metadata = null;
+        if (fs.existsSync(indexPath)) {
+          try {
+            metadata = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+          } catch {
+            // ignore parse errors
+          }
+        }
+        return {
+          site,
+          metadata,
+          hasImages: fs.existsSync(path.join(sitePath, 'images')),
+          hasPdfs: fs.existsSync(path.join(sitePath, 'pdfs')),
+          hasPages: fs.existsSync(path.join(sitePath, 'pages')),
+        };
+      });
+      res.json({ sites: siteData });
+    } catch (err: any) {
+      res.status(500).json({ detail: err.message });
+    }
+  });
+
+  router.get('/crawl-output/:site', requireAdmin, async (req, res) => {
+    try {
+      const { site } = req.params;
+      const sitePath = path.join(crawlOutputBase, site);
+      if (!fs.existsSync(sitePath)) {
+        return res.status(404).json({ detail: 'Site not found' });
+      }
+      const indexPath = path.join(sitePath, 'index.json');
+      let metadata = null;
+      if (fs.existsSync(indexPath)) {
+        try {
+          metadata = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+        } catch {
+          // ignore parse errors
+        }
+      }
+      
+      // Get file listings
+      const files: any = { images: [], pdfs: [], pages: [] };
+      
+      if (fs.existsSync(path.join(sitePath, 'images'))) {
+        const imagesDir = path.join(sitePath, 'images');
+        const listImages = (dir: string, base: string = '') => {
+          const items = fs.readdirSync(dir);
+          items.forEach(item => {
+            const itemPath = path.join(dir, item);
+            if (fs.statSync(itemPath).isDirectory()) {
+              listImages(itemPath, `${base}${item}/`);
+            } else {
+              files.images.push(`${base}${item}`);
+            }
+          });
+        };
+        listImages(imagesDir);
+      }
+      
+      if (fs.existsSync(path.join(sitePath, 'pdfs'))) {
+        files.pdfs = fs.readdirSync(path.join(sitePath, 'pdfs'));
+      }
+      
+      if (fs.existsSync(path.join(sitePath, 'pages'))) {
+        const pagesDir = path.join(sitePath, 'pages');
+        const listPages = (dir: string, base: string = '') => {
+          const items = fs.readdirSync(dir);
+          items.forEach(item => {
+            const itemPath = path.join(dir, item);
+            if (fs.statSync(itemPath).isDirectory()) {
+              listPages(itemPath, `${base}${item}/`);
+            } else {
+              files.pages.push(`${base}${item}`);
+            }
+          });
+        };
+        listPages(pagesDir);
+      }
+      
+      res.json({ site, metadata, files });
+    } catch (err: any) {
+      res.status(500).json({ detail: err.message });
+    }
+  });
+
+  router.get('/crawl-output/:site/*', requireAdmin, async (req, res) => {
+    try {
+      const { site } = req.params;
+      const filePath = req.params[0]; // wildcard parameter
+      const fullPath = path.join(crawlOutputBase, site, filePath);
+      if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+        return res.status(404).json({ detail: 'File not found' });
+      }
+      const ext = path.extname(fullPath).toLowerCase();
+      const mimeTypes: Record<string, string> = {
+        '.pdf': 'application/pdf',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+        '.md': 'text/markdown',
+        '.json': 'application/json',
+        '.txt': 'text/plain',
+      };
+      res.type(mimeTypes[ext] || 'application/octet-stream').sendFile(fullPath);
+    } catch (err: any) {
+      res.status(500).json({ detail: err.message });
+    }
+  });
+
+  router.post('/crawl-output/:site/import', requireAdmin, async (req, res) => {
+    try {
+      const { site } = req.params;
+      const { tenantId } = req.body;
+      if (!tenantId) {
+        return res.status(400).json({ detail: 'Missing tenantId' });
+      }
+      
+      const sitePath = path.join(crawlOutputBase, site);
+      if (!fs.existsSync(sitePath)) {
+        return res.status(404).json({ detail: 'Site not found' });
+      }
+      
+      const tenantDocsDir = path.join(config.rootDir, 'tenants', tenantId, 'documents');
+      if (!fs.existsSync(tenantDocsDir)) {
+        fs.mkdirSync(tenantDocsDir, { recursive: true });
+      }
+      
+      let importedCount = 0;
+      
+      // Import pages (markdown files)
+      const pagesDir = path.join(sitePath, 'pages');
+      if (fs.existsSync(pagesDir)) {
+        const copyFiles = (dir: string, subPath: string = '') => {
+          const items = fs.readdirSync(dir);
+          items.forEach(item => {
+            const itemPath = path.join(dir, item);
+            if (fs.statSync(itemPath).isDirectory()) {
+              copyFiles(itemPath, `${subPath}${item}/`);
+            } else if (item.endsWith('.md') || item.endsWith('.txt')) {
+              const flatName = `crawl_${site}_${subPath.replace(/\//g, '_')}${item}`;
+              const destPath = path.join(tenantDocsDir, flatName);
+              fs.copyFileSync(itemPath, destPath);
+              importedCount++;
+            }
+          });
+        };
+        copyFiles(pagesDir);
+      }
+      
+      // Import PDFs (and images stored in pdfs/ dir)
+      const pdfExts = ['.pdf', '.jpg', '.jpeg', '.png', '.svg', '.webp', '.gif'];
+      const pdfsDir = path.join(sitePath, 'pdfs');
+      if (fs.existsSync(pdfsDir)) {
+        const pdfs = fs.readdirSync(pdfsDir);
+        pdfs.forEach(pdf => {
+          if (pdfExts.some(ext => pdf.toLowerCase().endsWith(ext))) {
+            const srcPath = path.join(pdfsDir, pdf);
+            const destPath = path.join(tenantDocsDir, `crawl_${site}_${pdf}`);
+            fs.copyFileSync(srcPath, destPath);
+            importedCount++;
+          }
+        });
+      }
+      
+      // Import images (language subdirectories)
+      const imagesDir = path.join(sitePath, 'images');
+      if (fs.existsSync(imagesDir)) {
+        const copyImages = (dir: string, subPath: string = '') => {
+          const items = fs.readdirSync(dir);
+          items.forEach(item => {
+            const itemPath = path.join(dir, item);
+            if (fs.statSync(itemPath).isDirectory()) {
+              copyImages(itemPath, `${subPath}${item}/`);
+            } else if (pdfExts.some(ext => item.toLowerCase().endsWith(ext))) {
+              const flatName = `crawl_${site}_img_${subPath.replace(/\//g, '_')}${item}`;
+              const destPath = path.join(tenantDocsDir, flatName);
+              fs.copyFileSync(itemPath, destPath);
+              importedCount++;
+            }
+          });
+        };
+        copyImages(imagesDir);
+      }
+
+      res.json({ success: true, imported_count: importedCount });
+    } catch (err: any) {
+      res.status(500).json({ detail: err.message });
+    }
+  });
+
+  router.post('/crawl-output/import-all', requireAdmin, async (req, res) => {
+    try {
+      const { tenantId } = req.body;
+      if (!tenantId) return res.status(400).json({ detail: 'Missing tenantId' });
+
+      const tenantDocsDir = path.join(config.rootDir, 'tenants', tenantId, 'documents');
+      fs.mkdirSync(tenantDocsDir, { recursive: true });
+
+      if (!fs.existsSync(crawlOutputBase)) {
+        return res.json({ success: true, imported_count: 0, message: 'No crawl output directory found' });
+      }
+
+      const sites = fs.readdirSync(crawlOutputBase).filter(item => {
+        const itemPath = path.join(crawlOutputBase, item);
+        return fs.statSync(itemPath).isDirectory();
+      });
+
+      let totalImported = 0;
+      const results: Record<string, number> = {};
+
+      for (const site of sites) {
+        const sitePath = path.join(crawlOutputBase, site);
+        let importedCount = 0;
+
+        const pagesDir = path.join(sitePath, 'pages');
+        if (fs.existsSync(pagesDir)) {
+          const copyFiles = (dir: string, subPath: string = '') => {
+            const items = fs.readdirSync(dir);
+            items.forEach(item => {
+              const itemPath = path.join(dir, item);
+              if (fs.statSync(itemPath).isDirectory()) {
+                copyFiles(itemPath, `${subPath}${item}/`);
+              } else if (item.endsWith('.md') || item.endsWith('.txt')) {
+                const flatName = `crawl_${site}_${subPath.replace(/\//g, '_')}${item}`;
+                const destPath = path.join(tenantDocsDir, flatName);
+                fs.copyFileSync(itemPath, destPath);
+                importedCount++;
+              }
+            });
+          };
+          copyFiles(pagesDir);
+        }
+
+        const pdfExts = ['.pdf', '.jpg', '.jpeg', '.png', '.svg', '.webp', '.gif'];
+        const pdfsDir = path.join(sitePath, 'pdfs');
+        if (fs.existsSync(pdfsDir)) {
+          fs.readdirSync(pdfsDir).forEach(pdf => {
+            if (pdfExts.some(ext => pdf.toLowerCase().endsWith(ext))) {
+              const destPath = path.join(tenantDocsDir, `crawl_${site}_${pdf}`);
+              fs.copyFileSync(path.join(pdfsDir, pdf), destPath);
+              importedCount++;
+            }
+          });
+        }
+
+        if (importedCount > 0) {
+          results[site] = importedCount;
+          totalImported += importedCount;
+        }
+      }
+
+      // Trigger ingestion after bulk import
+      if (totalImported > 0) {
+        const tenant = await adminStore.getTenant(tenantId);
+        if (tenant) {
+          const engine = await getOrCreateEngine(tenant);
+          engine.ingest(tenantId, 'default', false).catch(() => {});
+        }
+      }
+
+      await adminStore.logActivity(tenantId, 'INFO', 'crawl_import_all', `Imported ${totalImported} files from ${sites.length} sites`, { sites: Object.keys(results), counts: results });
+
+      res.json({ success: true, sites_imported: Object.keys(results).length, imported_count: totalImported, site_details: results });
     } catch (err: any) {
       res.status(500).json({ detail: err.message });
     }

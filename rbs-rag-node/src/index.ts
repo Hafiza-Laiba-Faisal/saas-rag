@@ -5,6 +5,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import { PrismaClient } from '@prisma/client';
+import { QdrantClient } from '@qdrant/js-client-rest';
 import { loadConfig } from './config.js';
 import { AdminStore } from './adminStore.js';
 import { DbStore } from './store.js';
@@ -66,10 +67,18 @@ app.get('/widget', (req, res) => {
   res.sendFile(path.join(staticDir, 'widget.html'));
 });
 
-app.get('/api/v1/health', (_req, res) => {
+app.get('/api/v1/health', async (_req, res) => {
+  let qdrantStatus = 'disconnected';
+  try {
+    const qdrantUrl = `${config.qdrant?.https ? 'https' : 'http'}://${config.qdrant?.host || 'localhost'}:${config.qdrant?.port || 6333}`;
+    const qdrant = new QdrantClient({ url: qdrantUrl, apiKey: config.qdrant?.apiKey || undefined, checkCompatibility: false });
+    await qdrant.getCollections();
+    qdrantStatus = 'connected';
+  } catch { /* qdrant not available */ }
   res.json({
     status: 'ok',
     db: 'connected',
+    qdrant: qdrantStatus,
     version: '1.0.0',
     uptime_seconds: Math.round(process.uptime()),
   });

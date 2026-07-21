@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowLeft,
   BookOpen,
+  ChevronDown,
   ChevronRight,
   Cloud,
   Code2,
@@ -756,7 +757,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [source, setSource] = useState<"files" | "web" | "cloud">("files");
+  const [source, setSource] = useState<"files" | "web" | "cloud" | "crawl">("files");
   const [uploading, setUploading] = useState(false);
   const [scrapeUrl, setScrapeUrl] = useState("");
   const [scrapeDepth, setScrapeDepth] = useState(3);
@@ -764,13 +765,95 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const [scraping, setScraping] = useState(false);
   const [scrapeResult, setScrapeResult] = useState<any>(null);
   const [applyOcrUpload, setApplyOcrUpload] = useState(false);
-  const [crawlToggle, setCrawlToggle] = useState(false);
+  const [scrapeMode, setScrapeMode] = useState<string>("smart");
+  const [scrapeFormat, setScrapeFormat] = useState<string>("json");
+  const [scrapeContentType, setScrapeContentType] = useState<string>("all");
+  const [scrapeTimeout, setScrapeTimeout] = useState(30);
+  const [scrapeWorkers, setScrapeWorkers] = useState(1);
+  const [scrapeRespectRobots, setScrapeRespectRobots] = useState(true);
+  const [scrapeIncludePages, setScrapeIncludePages] = useState(true);
+  const [scrapeIncludeMedia, setScrapeIncludeMedia] = useState(true);
+  const [scrapeFbCUser, setScrapeFbCUser] = useState("");
+  const [scrapeFbXs, setScrapeFbXs] = useState("");
+  const [scrapeFbMaxPosts, setScrapeFbMaxPosts] = useState(20);
+  const [scrapeFbScrollRounds, setScrapeFbScrollRounds] = useState(5);
+  const [scrapeFbDateFrom, setScrapeFbDateFrom] = useState("");
+  const [scrapeFbDateTo, setScrapeFbDateTo] = useState("");
+  const [scrapeProfilePlatform, setScrapeProfilePlatform] = useState("");
+  const [scrapeProfileUsername, setScrapeProfileUsername] = useState("");
+  const [scrapeDeepCrawl, setScrapeDeepCrawl] = useState(false);
+  const [scrapeImages, setScrapeImages] = useState(false);
+  const [scrapePdfs, setScrapePdfs] = useState(false);
+  const [scrapePlaywright, setScrapePlaywright] = useState(false);
+  const [scrapeJobId, setScrapeJobId] = useState<string | null>(null);
+  const [scrapeJobStatus, setScrapeJobStatus] = useState<any>(null);
   const [ingesting, setIngesting] = useState(false);
   const [ingestProgress, setIngestProgress] = useState<{ status: string; progress: number; logs: string[]; summary?: any } | null>(null);
   const [viewDoc, setViewDoc] = useState<string | null>(null);
   const [chunks, setChunks] = useState<any[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
   const [cloudProvider, setCloudProvider] = useState<string | null>(null);
+  const [selectedCrawlSite, setSelectedCrawlSite] = useState<string | null>(null);
+
+  const { data: crawlSites } = useQuery({
+    queryKey: ["crawl-sites"],
+    queryFn: async () => {
+      try {
+        const res = await apiFetch("/crawl-output");
+        return res.json();
+      } catch { return { sites: [] }; }
+    },
+    enabled: source === "crawl",
+  });
+
+  const { data: selectedCrawlSiteData, refetch: refetchCrawlSiteData } = useQuery({
+    queryKey: ["crawl-site-data", selectedCrawlSite],
+    queryFn: async () => {
+      if (!selectedCrawlSite) return null;
+      try {
+        const res = await apiFetch(`/crawl-output/${selectedCrawlSite}`);
+        return res.json();
+      } catch { return null; }
+    },
+    enabled: !!selectedCrawlSite && source === "crawl",
+  });
+
+  const { data: scraperHealth } = useQuery({
+    queryKey: ["scraper-health"],
+    queryFn: async () => {
+      try {
+        const res = await apiFetch("/scrape/health");
+        if (!res.ok) return { alive: false };
+        const data = await res.json();
+        return { alive: data.service !== 'unavailable', service: data.service, version: data.version };
+      } catch { return { alive: false }; }
+    },
+    refetchInterval: 15000,
+  });
+
+  const [scraperLogsExpanded, setScraperLogsExpanded] = useState(true);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const [scraperLogsAutoScroll, setScraperLogsAutoScroll] = useState(true);
+
+  const { data: scraperLogs = [] } = useQuery({
+    queryKey: ["scraper-logs"],
+    queryFn: async () => {
+      try {
+        const res = await apiFetch("/scrape/logs?lines=50");
+        if (!res.ok) return [];
+        const body = await res.json();
+        return body.logs || [];
+      } catch { return []; }
+    },
+    refetchInterval: 3000,
+    enabled: scraperHealth?.alive === true,
+  });
+
+  useEffect(() => {
+    if (scraperLogsAutoScroll && logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
+  }, [scraperLogs, scraperLogsAutoScroll]);
 
   const { data: docs = [], refetch: refetchDocs } = useQuery({
     queryKey: ["documents", tenantId],
@@ -803,18 +886,44 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     if (!scrapeUrl || !tenantId) return;
     setScraping(true);
     setScrapeResult(null);
+    setScrapeJobId(null);
+    setScrapeJobStatus(null);
     try {
-      const res = await apiFetch(`/tenants/${tenantId}/scrape`, {
+      const body: any = {
+        url: scrapeUrl,
+        scrape_type: scrapeMode,
+        format: scrapeFormat,
+        max_depth: scrapeDepth,
+        max_pages: scrapePages,
+        timeout: scrapeTimeout,
+        include_pages: scrapeIncludePages,
+        include_media: scrapeIncludeMedia,
+        fb_c_user: scrapeFbCUser,
+        fb_xs: scrapeFbXs,
+        fb_max_posts: scrapeFbMaxPosts,
+        fb_scroll_rounds: scrapeFbScrollRounds,
+        fb_date_from: scrapeFbDateFrom,
+        fb_date_to: scrapeFbDateTo,
+        profile_platform: scrapeProfilePlatform,
+        profile_username: scrapeProfileUsername,
+        workers: scrapeWorkers,
+        respect_robots: scrapeRespectRobots,
+        deepcrawl: scrapeDeepCrawl,
+        playwright: scrapePlaywright,
+      };
+      if (scrapeContentType !== "all") body.content_type = scrapeContentType;
+      if (scrapeImages) body.content_type = 'images';
+      if (scrapePdfs) body.content_type = 'pdfs';
+      const res = await apiFetch(`/tenants/${tenantId}/scrape/enhanced`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: scrapeUrl,
-          max_depth: scrapeDepth,
-          max_pages: scrapePages,
-          crawl: crawlToggle,
-        }),
+        body: JSON.stringify(body),
       });
-      setScrapeResult(await res.json());
+      const result = await res.json();
+      setScrapeResult(result);
+      if ((scrapeMode === "recursive" || scrapeMode === "facebook") && result?.data?.job_id) {
+        setScrapeJobId(result.data.job_id);
+      }
       refetchDocs();
     } catch (e: any) {
       setScrapeResult({ status: "failed", error: e.message });
@@ -822,6 +931,22 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       setScraping(false);
     }
   }
+
+  // Poll recursive crawl job status
+  useEffect(() => {
+    if (!scrapeJobId || !tenantId) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch(`/scrape/recursive/${scrapeJobId}/status`);
+        const status = await res.json();
+        setScrapeJobStatus(status);
+        if (status?.data?.status === "completed" || status?.data?.status === "error") {
+          clearInterval(interval);
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [scrapeJobId, tenantId]);
 
   async function handleIngest(applyOcr = false) {
     if (!tenantId) return;
@@ -883,12 +1008,68 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   }
 
+  async function handleImportCrawlOutput(site: string) {
+    if (!tenantId) return;
+    try {
+      const res = await apiFetch(`/crawl-output/${site}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        alert(`Imported ${result.imported_count} files from ${site}`);
+        refetchDocs();
+      } else {
+        alert("Import failed: " + (result.error || "Unknown error"));
+      }
+    } catch (e: any) {
+      alert("Import failed: " + e.message);
+    }
+  }
+
+  function ScrapeHistory({ tenantId }: { tenantId?: string }) {
+    const { data: logs = [] } = useQuery({
+      queryKey: ["scrape-history", tenantId],
+      queryFn: async () => {
+        const res = await apiFetch(`/system/logs?tenant_id=${tenantId || ""}&operation=scrape&limit=20`);
+        const body = await res.json();
+        return (body.logs || body || []).filter((l: any) => l.operation === "scrape" || l.operation === "scrape_ingest");
+      },
+      enabled: !!tenantId,
+      refetchInterval: 10000,
+    });
+    if (!logs.length) return null;
+    return (
+      <div className="mt-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Scrape History</h4>
+        <div className="max-h-40 overflow-y-auto rounded border border-border divide-y divide-border">
+          {logs.map((l: any, i: number) => {
+            const details = l.details_json ? (typeof l.details_json === "string" ? JSON.parse(l.details_json) : l.details_json) : {};
+            const url = details?.url || l.message?.match(/https?:\/\/[^\s]+/)?.[0] || "";
+            return (
+              <div key={l.id || i} className="flex items-center gap-3 px-3 py-2 text-[10px] hover:bg-elevated/40">
+                <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${l.level === "error" ? "bg-destructive" : "text-success"}`} />
+                <span className="font-mono text-muted-foreground shrink-0">{new Date(l.created_at).toLocaleString()}</span>
+                <span className="text-foreground/80 truncate">{url || l.message}</span>
+                <span className={`ml-auto shrink-0 ${details?.success !== false ? "text-success" : "text-destructive"}`}>
+                  {details?.success !== false ? "✅" : "❌"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-4">
         <SourceCard active={source === "files"} onClick={() => setSource("files")} accent="amber" icon={Upload} title="File upload" desc="PDF, DOCX, MD, TXT, CSV, HTML" />
         <SourceCard active={source === "web"} onClick={() => setSource("web")} accent="sky" icon={Globe} title="Web scraping" desc="Crawl a URL. Auto-clean, chunk & index." />
         <SourceCard active={source === "cloud"} onClick={() => setSource("cloud")} accent="emerald" icon={Cloud} title="Cloud sync" desc="Google Drive, Notion, Confluence, S3" />
+        <SourceCard active={source === "crawl"} onClick={() => setSource("crawl")} accent="violet" icon={Database} title="Crawl output" desc="Browse scraped sites and import content" />
       </div>
 
       {source === "files" && (
@@ -966,17 +1147,47 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
 
       {source === "web" && (
         <div className="panel p-6">
+          {/* Scraper service health indicator */}
+          <div className="flex items-center gap-2 mb-4">
+            <span className={`w-2 h-2 rounded-full ${scraperHealth?.alive ? "bg-success" : "bg-destructive"}`} />
+            <span className="text-xs text-muted-foreground">
+              Scraper Service {scraperHealth?.alive ? `${scraperHealth.service} v${scraperHealth.version}` : "Offline"}
+            </span>
+          </div>
+
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Scrape a web page</h3>
-          <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_140px_auto]">
+
+          {/* Mode selector */}
+          <div className="mt-4 flex flex-wrap gap-2">
+            {[
+              { id: "single", label: "Single" },
+              { id: "smart", label: "Smart" },
+              { id: "recursive", label: "Recursive" },
+              { id: "wordpress", label: "WordPress" },
+              { id: "facebook", label: "Facebook" },
+              { id: "profile", label: "Profile" },
+            ].map((m) => (
+              <button key={m.id} onClick={() => setScrapeMode(m.id)}
+                className={`rounded px-3 py-1.5 text-xs font-medium border ${scrapeMode === m.id ? "bg-primary text-primary-foreground border-primary" : "bg-panel text-muted-foreground border-border hover:bg-elevated"}`}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_auto]">
             <Field label="URL">
-              <input className="input font-mono text-xs" value={scrapeUrl} onChange={(e) => setScrapeUrl(e.target.value)} placeholder="https://docs.example.com/page" />
+              <input className="input font-mono text-xs" value={scrapeUrl} onChange={(e) => setScrapeUrl(e.target.value)} placeholder="https://example.com/page" />
             </Field>
-            <Field label="Max depth">
-              <input className="input" type="number" value={scrapeDepth} onChange={(e) => setScrapeDepth(Number(e.target.value))} />
-            </Field>
-            <Field label="Max pages">
-              <input className="input" type="number" value={scrapePages} onChange={(e) => setScrapePages(Number(e.target.value))} />
-            </Field>
+            {(scrapeMode === "recursive" || scrapeMode === "single" || scrapeMode === "smart") && (
+              <>
+                <Field label="Max depth">
+                  <input className="input" type="number" value={scrapeDepth} onChange={(e) => setScrapeDepth(Number(e.target.value))} />
+                </Field>
+                <Field label="Max pages">
+                  <input className="input" type="number" value={scrapePages} onChange={(e) => setScrapePages(Number(e.target.value))} />
+                </Field>
+              </>
+            )}
             <div className="flex items-end">
               <button disabled={scraping || !scrapeUrl} onClick={handleScrape} className="inline-flex h-[38px] items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
                 {scraping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
@@ -984,15 +1195,167 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
               </button>
             </div>
           </div>
-          <div className="mt-3 flex items-center gap-6">
-            <label className="inline-flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={crawlToggle} onChange={(e) => setCrawlToggle(e.target.checked)} className="accent-primary" />
-              <span className="text-xs text-muted-foreground">Crawl linked pages</span>
-            </label>
+
+          {/* Contextual options based on mode */}
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            {scrapeMode === "smart" && (
+              <>
+                <Field label="Timeout (s)">
+                  <input className="input" type="number" value={scrapeTimeout} onChange={(e) => setScrapeTimeout(Number(e.target.value))} />
+                </Field>
+                <Field label="Content type">
+                  <select className="input text-xs" value={scrapeContentType} onChange={(e) => setScrapeContentType(e.target.value)}>
+                    <option value="all">All</option>
+                    <option value="text">Text only</option>
+                    <option value="images">Images</option>
+                    <option value="pdfs">PDFs</option>
+                  </select>
+                </Field>
+                <Field label="Format">
+                  <select className="input text-xs" value={scrapeFormat} onChange={(e) => setScrapeFormat(e.target.value)}>
+                    <option value="json">JSON</option>
+                    <option value="markdown">Markdown</option>
+                  </select>
+                </Field>
+              </>
+            )}
+            {scrapeMode === "single" && (
+              <Field label="Format">
+                <select className="input text-xs" value={scrapeFormat} onChange={(e) => setScrapeFormat(e.target.value)}>
+                  <option value="json">JSON</option>
+                  <option value="markdown">Markdown</option>
+                </select>
+              </Field>
+            )}
+            {scrapeMode === "recursive" && (
+              <>
+                <Field label="Workers">
+                  <input className="input" type="number" value={scrapeWorkers} onChange={(e) => setScrapeWorkers(Number(e.target.value))} min={1} max={10} />
+                </Field>
+                <label className="flex items-center gap-2 mt-6 cursor-pointer">
+                  <input type="checkbox" checked={scrapeRespectRobots} onChange={(e) => setScrapeRespectRobots(e.target.checked)} className="accent-primary" />
+                  <span className="text-xs text-muted-foreground">Respect robots.txt</span>
+                </label>
+              </>
+            )}
+            {scrapeMode === "wordpress" && (
+              <>
+                <Field label="Max pages">
+                  <input className="input" type="number" value={scrapePages} onChange={(e) => setScrapePages(Number(e.target.value))} />
+                </Field>
+                <label className="flex items-center gap-2 mt-6 cursor-pointer">
+                  <input type="checkbox" checked={scrapeIncludePages} onChange={(e) => setScrapeIncludePages(e.target.checked)} className="accent-primary" />
+                  <span className="text-xs text-muted-foreground">Include pages</span>
+                </label>
+                <label className="flex items-center gap-2 mt-6 cursor-pointer">
+                  <input type="checkbox" checked={scrapeIncludeMedia} onChange={(e) => setScrapeIncludeMedia(e.target.checked)} className="accent-primary" />
+                  <span className="text-xs text-muted-foreground">Include media</span>
+                </label>
+              </>
+            )}
+            {scrapeMode === "facebook" && (
+              <>
+                <Field label="C User">
+                  <input className="input font-mono text-xs" value={scrapeFbCUser} onChange={(e) => setScrapeFbCUser(e.target.value)} placeholder="Facebook cookie c_user" />
+                </Field>
+                <Field label="XS">
+                  <input className="input font-mono text-xs" value={scrapeFbXs} onChange={(e) => setScrapeFbXs(e.target.value)} placeholder="Facebook cookie xs" />
+                </Field>
+                <Field label="Max posts">
+                  <input className="input" type="number" value={scrapeFbMaxPosts} onChange={(e) => setScrapeFbMaxPosts(Number(e.target.value))} />
+                </Field>
+                <Field label="Scroll rounds">
+                  <input className="input" type="number" value={scrapeFbScrollRounds} onChange={(e) => setScrapeFbScrollRounds(Number(e.target.value))} />
+                </Field>
+                <Field label="Date from">
+                  <input className="input text-xs" type="date" value={scrapeFbDateFrom} onChange={(e) => setScrapeFbDateFrom(e.target.value)} />
+                </Field>
+                <Field label="Date to">
+                  <input className="input text-xs" type="date" value={scrapeFbDateTo} onChange={(e) => setScrapeFbDateTo(e.target.value)} />
+                </Field>
+              </>
+            )}
+            {scrapeMode === "profile" && (
+              <>
+                <Field label="Platform">
+                  <select className="input text-xs" value={scrapeProfilePlatform} onChange={(e) => setScrapeProfilePlatform(e.target.value)}>
+                    <option value="">Select platform</option>
+                    <option value="instagram">Instagram</option>
+                    <option value="twitter">Twitter / X</option>
+                    <option value="facebook">Facebook</option>
+                    <option value="reddit">Reddit</option>
+                    <option value="github">GitHub</option>
+                    <option value="tiktok">TikTok</option>
+                    <option value="pinterest">Pinterest</option>
+                  </select>
+                </Field>
+                <Field label="Username">
+                  <input className="input font-mono text-xs" value={scrapeProfileUsername} onChange={(e) => setScrapeProfileUsername(e.target.value)} placeholder="username" />
+                </Field>
+              </>
+            )}
           </div>
+
+          {/* Additional Options — sab modes ke liye common */}
+          <div className="mt-4 pt-4 border-t border-border">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Additional Options</h4>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={scrapeDeepCrawl} onChange={(e) => setScrapeDeepCrawl(e.target.checked)} className="accent-primary" />
+                <span className="text-xs text-muted-foreground">DeepCrawl (bypass bot protection)</span>
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={scrapeImages} onChange={(e) => setScrapeImages(e.target.checked)} className="accent-primary" />
+                <span className="text-xs text-muted-foreground">Images</span>
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={scrapePdfs} onChange={(e) => setScrapePdfs(e.target.checked)} className="accent-primary" />
+                <span className="text-xs text-muted-foreground">PDFs</span>
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={scrapePlaywright} onChange={(e) => setScrapePlaywright(e.target.checked)} className="accent-primary" />
+                <span className="text-xs text-muted-foreground">Playwright (browser rendering)</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Scrape result */}
           {scrapeResult && (
-            <div className="mt-3 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
-              {scrapeResult.status === "completed" ? (
+            <div className="mt-4 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
+              {scrapeResult?.data?.title ? (
+                <div>
+                  <div className="text-success font-semibold mb-1">✅ {scrapeResult.data.title}</div>
+                  <div className="text-muted-foreground">Links: {scrapeResult.data.links_count} | Adapter: {scrapeResult.data.adapter_used} | Quality: {scrapeResult.data.quality_score}/{scrapeResult.data.quality_level}</div>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {scrapeResult.data.content_type && <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px]">Type: {scrapeResult.data.content_type}</span>}
+                    {scrapeResult.data.html_length && <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px]">HTML: {scrapeResult.data.html_length}B</span>}
+                    {scrapeResult.data.elapsed_ms && <span className="rounded bg-elevated px-1.5 py-0.5 text-[10px]">Time: {scrapeResult.data.elapsed_ms}ms</span>}
+                  </div>
+                  {scrapeResult.data.error && <div className="text-destructive mt-1">{scrapeResult.data.error}</div>}
+                </div>
+              ) : scrapeResult?.data?.stats?.title ? (
+                <div>
+                  <div className="text-success font-semibold mb-1">✅ {scrapeResult.data.stats.title}</div>
+                  <div className="text-muted-foreground">
+                    WordPress: {scrapeResult.data.is_wordpress ? "Yes" : "No"} | Posts: {scrapeResult.data.stats.posts_found} | Pages: {scrapeResult.data.stats.pages_found} | Media: {scrapeResult.data.stats.media_found} | PDFs: {scrapeResult.data.stats.pdf_count}
+                  </div>
+                  {scrapeResult.data.posts?.length > 0 && (
+                    <div className="mt-2">
+                      <span className="text-[10px] text-muted-foreground">Posts:</span>
+                      <div className="max-h-24 overflow-y-auto space-y-1 mt-1">
+                        {scrapeResult.data.posts.slice(0, 10).map((p: any, i: number) => (
+                          <div key={i} className="flex items-center gap-2 text-muted-foreground text-[10px]">
+                            <span className="text-success">●</span>
+                            <span className="truncate">{p.title}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {scrapeResult.data.error && <div className="text-destructive mt-1">{scrapeResult.data.error}</div>}
+                  {scrapeResult.data.elapsed_ms && <div className="text-muted-foreground mt-1 text-[10px]">Time: {scrapeResult.data.elapsed_ms}ms</div>}
+                </div>
+              ) : scrapeResult.status === "completed" ? (
                 <div>
                   <div className="text-success font-semibold mb-1">✅ Scraped {scrapeResult.files_saved} file(s) from {scrapeResult.url}</div>
                   {scrapeResult.files?.length > 0 && (
@@ -1007,7 +1370,207 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                   )}
                 </div>
               ) : (
-                <div className="text-destructive">❌ Scrape failed: {scrapeResult.error || "Unknown error"}</div>
+                <div className="text-destructive">❌ {scrapeResult.error || scrapeResult?.data?.error || "Scrape failed"}</div>
+              )}
+            </div>
+          )}
+
+          {/* Job status */}
+          {scrapeJobStatus && (
+            <div className="mt-3 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${scrapeJobStatus.data?.status === "completed" ? "bg-success" : scrapeJobStatus.data?.status === "error" ? "bg-destructive" : "bg-amber-400 animate-pulse"}`} />
+                <span className="font-semibold capitalize">{scrapeJobStatus.data?.status || "running"}</span>
+              </div>
+              {scrapeJobStatus.data?.message && <div className="mt-1 text-muted-foreground">{scrapeJobStatus.data.message}</div>}
+              {scrapeJobStatus.data?.progress !== undefined && (
+                <div className="mt-2 h-1.5 rounded-full bg-elevated overflow-hidden">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${scrapeJobStatus.data.progress}%` }} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Scrape History ── */}
+          <ScrapeHistory tenantId={tenantId} />
+
+          {/* ── Live Scraper Logs ── */}
+          {scraperHealth?.alive && (
+            <div className="mt-4 rounded-lg border border-border overflow-hidden">
+              <button
+                onClick={() => setScraperLogsExpanded(!scraperLogsExpanded)}
+                className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:bg-elevated/40"
+              >
+                <span>Live Scraper Logs</span>
+                <span className="text-[10px]">{scraperLogsExpanded ? "[-]" : "[+]"}</span>
+              </button>
+              {scraperLogsExpanded && (
+                <div className="border-t border-border">
+                  <div
+                    ref={logsContainerRef}
+                    className="max-h-48 overflow-y-auto bg-[#0d1117] p-2 font-mono text-[11px] leading-relaxed"
+                    style={{ scrollBehavior: "smooth" }}
+                  >
+                    {scraperLogs.length === 0 ? (
+                      <div className="text-muted-foreground italic">No scraper logs available</div>
+                    ) : (
+                      scraperLogs.map((log: any, i: number) => {
+                        const levelColor =
+                          log.level === "ERROR"   ? "text-red-400" :
+                          log.level === "WARNING" ? "text-yellow-400" :
+                          log.level === "INFO"    ? "text-green-400" :
+                          "text-gray-400";
+                        return (
+                          <div key={i} className="flex gap-2">
+                            <span className="shrink-0 text-gray-500 select-none">
+                              {log.timestamp?.split(".")[0]?.split("T")?.[1]?.slice(0, 8) || ""}
+                            </span>
+                            <span className={`shrink-0 w-14 ${levelColor}`}>{log.level}</span>
+                            <span className="text-gray-400 shrink-0">{log.name?.split(".").pop()}</span>
+                            <span className="text-gray-200">{log.message}</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between border-t border-border px-3 py-1">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={scraperLogsAutoScroll}
+                        onChange={(e) => setScraperLogsAutoScroll(e.target.checked)}
+                        className="accent-primary"
+                      />
+                      <span className="text-[10px] text-muted-foreground">Auto-scroll</span>
+                    </label>
+                    <span className="text-[10px] text-muted-foreground">
+                      Refreshing every 3s · {scraperLogs.length} lines
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {source === "crawl" && (
+        <div className="panel p-6">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Crawl Output</h3>
+          <p className="mt-2 text-xs text-muted-foreground">Browse scraped sites from the scraper service and import content to tenant documents.</p>
+
+          {!selectedCrawlSite ? (
+            <div className="mt-4 space-y-3">
+              {crawlSites?.sites && crawlSites.sites.length > 0 ? (
+                <div className="grid gap-2">
+                  {crawlSites.sites.map((site: any) => (
+                    <button
+                      key={site.site}
+                      onClick={() => setSelectedCrawlSite(site.site)}
+                      className="flex items-center justify-between rounded-lg border border-border bg-elevated/50 px-4 py-3 text-sm hover:border-primary/50 hover:bg-elevated"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Globe className="h-4 w-4 text-primary" />
+                        <div className="text-left">
+                          <div className="font-medium">{site.site}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {site.metadata?.site || "Unknown site"}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                        {site.hasImages && <span className="rounded bg-elevated px-1.5 py-0.5">Images</span>}
+                        {site.hasPdfs && <span className="rounded bg-elevated px-1.5 py-0.5">PDFs</span>}
+                        {site.hasPages && <span className="rounded bg-elevated px-1.5 py-0.5">Pages</span>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-8 text-center text-xs text-muted-foreground">
+                  No crawl output found. Run a crawl first to generate content.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="mt-4 space-y-4">
+              <button
+                onClick={() => setSelectedCrawlSite(null)}
+                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                Back to sites
+              </button>
+
+              {selectedCrawlSiteData && (
+                <>
+                  <div className="panel p-4">
+                    <div className="flex items-center gap-3 mb-3">
+                      <Globe className="h-5 w-5 text-primary" />
+                      <div>
+                        <div className="font-semibold text-sm">{selectedCrawlSiteData.site}</div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {selectedCrawlSiteData.metadata?.site || "Unknown site"}
+                        </div>
+                      </div>
+                    </div>
+                    {selectedCrawlSiteData.metadata && (
+                      <div className="grid gap-2 text-[10px] text-muted-foreground">
+                        <div>Strategy: {selectedCrawlSiteData.metadata.strategy}</div>
+                        <div>WordPress: {selectedCrawlSiteData.metadata.is_wordpress ? "Yes" : "No"}</div>
+                        <div>Languages: {selectedCrawlSiteData.metadata.languages_found?.join(", ") || "—"}</div>
+                        <div>Crawled: {selectedCrawlSiteData.metadata.crawled_at}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="panel p-4">
+                      <div className="text-xs font-semibold mb-2">Pages ({selectedCrawlSiteData.files?.pages?.length || 0})</div>
+                      <div className="max-h-32 overflow-y-auto space-y-1">
+                        {selectedCrawlSiteData.files?.pages?.map((page: string, i: number) => (
+                          <div key={i} className="text-[10px] text-muted-foreground truncate font-mono">
+                            {page}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="panel p-4">
+                      <div className="text-xs font-semibold mb-2">Images ({selectedCrawlSiteData.files?.images?.length || 0})</div>
+                      <div className="max-h-32 overflow-y-auto space-y-1">
+                        {selectedCrawlSiteData.files?.images?.slice(0, 10).map((img: string, i: number) => (
+                          <div key={i} className="text-[10px] text-muted-foreground truncate font-mono">
+                            {img}
+                          </div>
+                        ))}
+                        {selectedCrawlSiteData.files?.images?.length > 10 && (
+                          <div className="text-[10px] text-muted-foreground">
+                            +{selectedCrawlSiteData.files.images.length - 10} more
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="panel p-4">
+                      <div className="text-xs font-semibold mb-2">PDFs ({selectedCrawlSiteData.files?.pdfs?.length || 0})</div>
+                      <div className="max-h-32 overflow-y-auto space-y-1">
+                        {selectedCrawlSiteData.files?.pdfs?.map((pdf: string, i: number) => (
+                          <div key={i} className="text-[10px] text-muted-foreground truncate font-mono">
+                            {pdf}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleImportCrawlOutput(selectedCrawlSite)}
+                    disabled={!tenantId}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    Import all content to tenant documents
+                  </button>
+                </>
               )}
             </div>
           )}
@@ -1221,7 +1784,7 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
   const [chatTurns, setChatTurns] = useState<Array<{ role: string; content: string }>>([]);
   const [contexts, setContexts] = useState<any[]>([]);
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [showPrompt, setShowPrompt] = useState(false);
+  const [showPromptSection, setShowPromptSection] = useState(false);
   const [drawerContext, setDrawerContext] = useState<any>(null);
   const turnsLoaded = useRef(false);
   const prevSessionRef = useRef<string | null>(null);
@@ -1237,6 +1800,20 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
     },
     enabled: !!tenantId && !!selectedSession
   });
+
+  const { data: tenantConfig } = useQuery({
+    queryKey: ["tenant-config", tenantId],
+    queryFn: async () => {
+      if (!tenantId) return null;
+      const res = await apiFetch(`/tenants/${tenantId}/config`);
+      return res.json();
+    },
+    enabled: !!tenantId,
+  });
+
+  useEffect(() => {
+    if (tenantConfig?.systemPrompt) setSystemPrompt(tenantConfig.systemPrompt);
+  }, [tenantConfig]);
 
   useEffect(() => {
     if (selectedSession !== prevSessionRef.current) {
@@ -1453,6 +2030,41 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
           <div className="text-sm font-semibold">{selectedSession || "New Chat"}</div>
           {error && <div className="text-xs text-destructive">{error}</div>}
         </div>
+        <div className="border-b border-border px-5 py-2">
+          <button
+            onClick={() => setShowPromptSection(!showPromptSection)}
+            className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition"
+          >
+            <Settings2 className="h-3 w-3" />
+            System Prompt
+            <ChevronDown className={`h-3 w-3 transition ${showPromptSection ? 'rotate-180' : ''}`} />
+          </button>
+          {showPromptSection && (
+            <div className="mt-2 flex gap-2">
+              <textarea
+                className="input flex-1 resize-none font-mono text-xs min-h-[80px]"
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="Custom system prompt for test queries..."
+              />
+              <button
+                onClick={async () => {
+                  if (!tenantId) return;
+                  try {
+                    await apiFetch(`/tenants/${tenantId}`, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ system_prompt: systemPrompt || null }),
+                    });
+                  } catch (e: any) { setError("Save failed: " + e.message); }
+                }}
+                className="self-start rounded-md bg-[image:var(--gradient-primary)] px-3 py-1.5 text-[11px] font-semibold text-primary-foreground hover:opacity-90"
+              >
+                Save
+              </button>
+            </div>
+          )}
+        </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5" id="chat-container">
           {chatTurns.length === 0 ? (
             <Bubble role="bot">👋 Ask a question about this tenant's indexed corpus.</Bubble>
@@ -1495,51 +2107,28 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
       </div>
 
       <div className="panel flex flex-col p-4">
-        <div className="flex gap-2 mb-3">
-          <button onClick={() => setShowPrompt(false)} className={`text-[11px] font-semibold uppercase tracking-wider transition ${showPrompt ? "text-muted-foreground" : "text-foreground"}`}>Chunks</button>
-          <button onClick={() => setShowPrompt(true)} className={`text-[11px] font-semibold uppercase tracking-wider transition ${showPrompt ? "text-foreground" : "text-muted-foreground"}`}>Prompt</button>
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+          Retrieved Chunks
         </div>
-        {showPrompt ? (
-          <div className="flex-1 flex flex-col gap-2">
-            <textarea
-              className="input flex-1 resize-none font-mono text-xs min-h-[120px]"
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder="Custom system prompt for test queries..."
-            />
-            <button onClick={async () => {
-              if (!tenantId) return;
-              try {
-                await apiFetch(`/tenants/${tenantId}`, {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ system_prompt: systemPrompt || null }),
-                });
-                setError("");
-              } catch (e: any) { setError("Save failed: " + e.message); }
-            }} className="text-[10px] text-primary hover:underline self-end">Save to backend</button>
-          </div>
-        ) : (
-          <div className="space-y-3 overflow-y-auto flex-1 text-sm">
-            {contexts.length === 0 ? (
-              <div className="text-center py-8 text-xs text-muted-foreground">Send a query to see retrieved chunks</div>
-            ) : (
-              contexts.map((ctx: any, i: number) => (
-                <div key={i} className="rounded-lg border border-border bg-elevated/50 p-3" style={{ cursor: "pointer" }} onClick={() => setDrawerContext(ctx)}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-semibold text-primary">{ctx.document_name || ctx.metadata?.document_name || "Document"}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {ctx.dense_score != null && `D:${ctx.dense_score.toFixed(3)} `}
-                      {ctx.sparse_score != null && `S:${ctx.sparse_score.toFixed(3)} `}
-                      {ctx.score != null && `R:${ctx.score.toFixed(3)}`}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground line-clamp-3">{ctx.text || ctx.content || "—"}</p>
+        <div className="space-y-3 overflow-y-auto flex-1 text-sm">
+          {contexts.length === 0 ? (
+            <div className="text-center py-8 text-xs text-muted-foreground">Send a query to see retrieved chunks</div>
+          ) : (
+            contexts.map((ctx: any, i: number) => (
+              <div key={i} className="rounded-lg border border-border bg-elevated/50 p-3" style={{ cursor: "pointer" }} onClick={() => setDrawerContext(ctx)}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-semibold text-primary">{ctx.document_name || ctx.metadata?.document_name || "Document"}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {ctx.dense_score != null && `D:${ctx.dense_score.toFixed(3)} `}
+                    {ctx.sparse_score != null && `S:${ctx.sparse_score.toFixed(3)} `}
+                    {ctx.score != null && `R:${ctx.score.toFixed(3)}`}
+                  </span>
                 </div>
-              ))
-            )}
-          </div>
-        )}
+                <p className="text-[11px] text-muted-foreground line-clamp-3">{ctx.text || ctx.content || "—"}</p>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       {drawerContext && (

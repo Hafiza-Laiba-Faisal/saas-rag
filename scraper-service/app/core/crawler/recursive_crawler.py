@@ -1,12 +1,13 @@
 """
 Recursive web crawler with full pipeline integration.
-Supports concurrent crawling, queue statistics, and timing breakdown.
+Supports concurrent crawling, queue statistics, timing breakdown, and file output.
 """
 from __future__ import annotations
 import time
 import asyncio
 import hashlib
 import uuid
+import json
 import logging
 from typing import Callable, Optional
 from dataclasses import dataclass, field
@@ -90,6 +91,7 @@ class RecursiveCrawler:
         workers: int = 1,
         on_page: Optional[Callable[[CrawlResult], None]] = None,
         on_progress: Optional[Callable[[CrawlStats], None]] = None,
+        output_dir: Optional[str] = None,
     ):
         self.seed_url = seed_url
         self.timeout = timeout
@@ -124,6 +126,9 @@ class RecursiveCrawler:
         self._lock = asyncio.Lock()
         self._seen_hashes: set[str] = set()
         self._start_time: float = 0
+
+        # Output directory for saving crawled data
+        self.output_dir = Path(output_dir) if output_dir else Path("crawl_output") / urlparse(seed_url).netloc.replace(".", "_")
 
 
     async def crawl(self) -> list[CrawlResult]:
@@ -201,6 +206,9 @@ class RecursiveCrawler:
         self.stats.external_skipped = q_stats.get("external_skipped", 0)
         self.stats.robots_skipped = q_stats.get("robots_skipped", 0)
         self.stats.max_depth_reached = q_stats.get("max_depth_reached", 0)
+
+        # Save results to disk
+        await self._save_results()
 
         return self.results
     async def _crawl_page(self, url: str, depth: int) -> CrawlResult:
@@ -330,6 +338,121 @@ class RecursiveCrawler:
             self.stats.images += 1
         else:
             self.stats.other_files += 1
+
+    async def _save_results(self):
+        """Save crawl results to disk in crawl_output directory."""
+        try:
+            # Create output directory
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            pages_dir = self.output_dir / "pages"
+            pages_dir.mkdir(exist_ok=True)
+
+            # Prepare data structures
+            pages_by_language = {}
+            pages_flat = []
+            content_files = []
+            media = []
+
+            # Process each crawled page
+            for result in self.results:
+                if result.error:
+                    continue
+
+                # Add to flat list
+                page_data = {
+                    "title": result.title or "Untitled",
+                    "url": result.url,
+                    "depth": result.depth,
+                    "source": "recursive",
+                    "status": result.status_code,
+                }
+                if result.description:
+                    page_data["description"] = result.description
+                pages_flat.append(page_data)
+
+                # Detect language from URL
+                domain = urlparse(self.seed_url).netloc.lower()
+                path = result.url.replace(f"https://{domain}", "").replace(f"http://{domain}", "").lstrip("/")
+                first_seg = path.split("/")[0] if path else "default"
+                known_langs = {"it", "fr", "de", "en", "es", "pt", "ru", "zh", "ja", "ko", "ar", "nl", "pl", "tr", "sv"}
+                lang = first_seg if first_seg in known_langs else "default"
+
+                # Add to language-specific list
+                if lang not in pages_by_language:
+                    pages_by_language[lang] = []
+                pages_by_language[lang].append({
+                    "title": result.title or "Untitled",
+                    "url": result.url,
+                    "source": "recursive",
+                    "type": "page"
+                })
+
+                # Save page content as markdown
+                if result.readability and (result.readability.get("markdown") or result.readability.get("clean_text")):
+                    lang_dir = pages_dir / lang
+                    lang_dir.mkdir(exist_ok=True)
+
+                    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in (result.title or "untitled")).strip()[:40]
+                    md_path = lang_dir / f"{safe_title}.md"
+
+                    content = f"# {result.title or 'Untitled'}\n\n"
+                    content += f"Source: {result.url}\n\n"
+                    content += "---\n\n"
+                    content += result.readability.get("markdown", "") or result.readability.get("clean_text", "")
+
+                    md_path.write_text(content, encoding="utf-8")
+
+                    content_files.append({
+                        "title": result.title or "Untitled",
+                        "url": result.url,
+                        "lang": lang,
+                        "file": f"pages/{lang}/{safe_title}.md",
+                        "text_length": len(result.readability.get("clean_text", "") or result.readability.get("markdown", ""))
+                    })
+
+                # Collect media/assets
+                if result.assets:
+                    for img in result.assets.get("images", []):
+                        media.append({
+                            "url": img.get("src", ""),
+                            "title": img.get("alt", "") or result.title,
+                            "mime": "image/*",
+                            "alt": img.get("alt", "")
+                        })
+
+            # Build index.json
+            index_data = {
+                "site": self.seed_url,
+                "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "strategy": "recursive",
+                "pages_by_language": dict(sorted(pages_by_language.items())),
+                "pages_flat": pages_flat,
+                "content_files": content_files,
+                "media": media[:100],  # Limit media list
+                "stats": {
+                    "total_pages": self.stats.total_pages,
+                    "successful": self.stats.successful,
+                    "failed": self.stats.failed,
+                    "html_pages": self.stats.html_pages,
+                    "pdf_files": self.stats.pdf_files,
+                    "images": self.stats.images,
+                    "total_time_sec": round(self.stats.total_time_sec, 2),
+                    "pages_per_second": round(self.stats.pages_per_second, 2),
+                }
+            }
+
+            # Write index.json
+            index_path = self.output_dir / "index.json"
+            index_path.write_text(
+                json.dumps(index_data, indent=2, default=str, ensure_ascii=False),
+                encoding="utf-8"
+            )
+
+            logging.info(f"Recursive crawl results saved to: {self.output_dir}")
+            logging.info(f"Total pages saved: {len(content_files)}")
+
+        except Exception as e:
+            logging.error(f"Failed to save crawl results: {e}")
 
     def get_stats(self) -> CrawlStats:
         """Get current crawl statistics."""

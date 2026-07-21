@@ -5,7 +5,8 @@ Run:
   cd app && ../venv/bin/uvicorn main:app --reload --port 8000
 """
 
-import sys, os
+import sys, os, logging
+from logging.handlers import RotatingFileHandler
 # Add project root so both `app.X` and direct imports work
 _root = os.path.dirname(os.path.dirname(__file__))   # scraper-service/
 _app  = os.path.dirname(__file__)                     # scraper-service/app/
@@ -20,7 +21,24 @@ import httpx
 
 from config.settings import APP_TITLE, APP_VERSION, MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS
 from core.fetcher import client as global_client
-from api.routes import auth, scrape, storage, proxy, crawl, recursive
+from api.routes import auth, scrape, storage, proxy, crawl, recursive, full_crawl, logs as logs_router
+from core.logs import in_memory_handler
+
+# ── Logging configuration ──────────────────────────────────────────────────────
+_log_dir = os.path.join(_root, ".logs")
+os.makedirs(_log_dir, exist_ok=True)
+_log_file = os.path.join(_log_dir, "scraper.log")
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="[%(asctime)s] %(levelname)-7s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler(_log_file, maxBytes=5 * 1024 * 1024, backupCount=3),
+        in_memory_handler,
+    ],
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,6 +70,8 @@ app.include_router(storage.router)
 app.include_router(proxy.router)
 app.include_router(crawl.router)
 app.include_router(recursive.router)
+app.include_router(full_crawl.router)
+app.include_router(logs_router.router)
 
 
 # ── Root ──────────────────────────────────────────────────────────────────────
@@ -62,13 +82,15 @@ def root():
         "version":  APP_VERSION,
         "docs":     "/docs",
         "endpoints": {
-            "crawl":           "POST /crawl  |  GET /crawl/test?url=...",
-            "smart_crawl":     "POST /crawl/smart (quality scoring + fallback)",
-            "recursive_crawl": "POST /crawl/recursive",
-            "fb_posts":        "POST /scrape/fb-posts",
-            "auth":            "POST /auth/fb-login",
-            "db":              "GET /db/posts",
-            "proxy":           "GET /proxy/media",
+            "crawl":            "POST /crawl  |  GET /crawl/test?url=...",
+            "smart_crawl":      "POST /crawl/smart (quality scoring + fallback)",
+            "recursive_crawl":  "POST /crawl/recursive",
+            "full_site_crawl":  "POST /crawl/full (unified: text + images + PDFs)",
+            "wp_scrape":        "POST /scrape/wordpress",
+            "fb_posts":         "POST /scrape/fb-posts",
+            "auth":             "POST /auth/fb-login",
+            "db":               "GET /db/posts",
+            "proxy":            "GET /proxy/media",
         },
     }
 

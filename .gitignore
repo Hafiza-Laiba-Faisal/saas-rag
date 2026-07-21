@@ -17,6 +17,14 @@ node_modules/
 rbs-rag-node/node_modules/
 rbs-rag-node/dist/
 rbs-rag-node/.logs/
+scraper-service/.logs/
+
+# Database files
+*.db
+
+# Scraper crawl output
+crawl_output/
+scraper-service/crawl_output/
 
 # SSL certs
 nginx/ssl/*.crt

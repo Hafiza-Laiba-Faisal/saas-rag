@@ -32,8 +32,12 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
   });
 
   if (response.status === 401) {
+    console.error('[API Error] 401 Unauthorized - Authentication failed');
     setAuthToken(null);
-    window.location.href = '/login'; // Redirect to login
+    // Small delay to allow error inspection before redirect
+    setTimeout(() => {
+      window.location.href = '/login'; // Redirect to login
+    }, 500);
   }
 
   if (!response.ok) {

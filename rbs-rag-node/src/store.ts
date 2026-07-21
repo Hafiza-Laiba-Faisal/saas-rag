@@ -134,6 +134,10 @@ export class DbStore {
     return this.prisma.chunk.count({ where: { tenantId, knowledgeBaseId } });
   }
 
+  async countChunksForDocument(tenantId: string, knowledgeBaseId: string, documentId: string): Promise<number> {
+    return this.prisma.chunk.count({ where: { tenantId, knowledgeBaseId, documentId } });
+  }
+
   async addSessionTurn(tenantId: string, sessionId: string, userId: string, role: string, content: string): Promise<void> {
     await this.prisma.sessionTurn.create({
       data: { tenantId, sessionId, userId, role, content },

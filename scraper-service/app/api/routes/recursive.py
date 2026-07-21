@@ -67,7 +67,9 @@ async def _execute_recursive_crawl(job_id: str, request: RecursiveCrawlRequest):
                     100
                 )
 
-        # Initialize crawler
+        # Initialize crawler with output directory
+        from pathlib import Path
+        output_dir = Path("crawl_output") / urlparse(request.url).netloc.replace(".", "_")
         crawler = RecursiveCrawler(
             seed_url=request.url,
             max_depth=request.max_depth,
@@ -80,6 +82,7 @@ async def _execute_recursive_crawl(job_id: str, request: RecursiveCrawlRequest):
             workers=request.workers,
             on_page=on_page,
             on_progress=on_progress,
+            output_dir=str(output_dir),
         )
 
         # Execute crawl
@@ -101,6 +104,7 @@ async def _execute_recursive_crawl(job_id: str, request: RecursiveCrawlRequest):
                 "pages_per_second": round(stats.pages_per_second, 2),
             },
             "queue_stats": crawler.scheduler.get_stats(),
+            "output_dir": str(crawler.output_dir),
         }
         job.status = "completed"
         job.progress = 100

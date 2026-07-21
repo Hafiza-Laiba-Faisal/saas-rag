@@ -13,7 +13,8 @@ import { RagEngine } from './engine.js';
 import { DbStore } from './store.js';
 import { LoadedDocument } from './types/models.js';
 
-const SCRAPER_BASE_URL = process.env.SCRAPER_SERVICE_URL || 'http://scraper_service:8000';
+const SCRAPER_BASE_URL = process.env.SCRAPER_SERVICE_URL || 'http://localhost:8002';
+const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || '';
 const DEEPCRAWL_API_KEY = process.env.DEEPCRAWL_API_KEY || '';
 
 interface ScraperResult {
@@ -35,9 +36,11 @@ interface ScraperApiResponse {
 
 async function callScraper(endpoint: string, payload: any): Promise<ScraperApiResponse> {
   const url = `${SCRAPER_BASE_URL}${endpoint}`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (SCRAPER_API_KEY) headers['X-API-Key'] = SCRAPER_API_KEY;
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(120000),
   });
@@ -45,22 +48,24 @@ async function callScraper(endpoint: string, payload: any): Promise<ScraperApiRe
     const errText = await response.text();
     throw new Error(`Scraper API error ${response.status}: ${errText}`);
   }
-  return response.json();
+  return response.json() as Promise<ScraperApiResponse>;
 }
 
 export async function scrapeSingle(
   url: string,
-  format: 'json' | 'markdown' = 'markdown'
+  format: 'json' | 'markdown' = 'markdown',
+  extraOpts: Record<string, any> = {}
 ): Promise<ScraperApiResponse> {
-  return callScraper('/crawl', { url, format });
+  return callScraper('/crawl', { url, format, ...extraOpts });
 }
 
 export async function scrapeSmart(
   url: string,
-  timeout = 30
+  timeout = 30,
+  extraOpts: Record<string, any> = {}
 ): Promise<ScraperApiResponse> {
-  const payload: any = { url, timeout };
-  if (DEEPCRAWL_API_KEY) payload.deepcrawl_api_key = DEEPCRAWL_API_KEY;
+  const payload: any = { url, timeout, ...extraOpts };
+  if (DEEPCRAWL_API_KEY && !extraOpts.deepcrawl) payload.deepcrawl_api_key = DEEPCRAWL_API_KEY;
   return callScraper('/crawl/smart', payload);
 }
 
@@ -69,12 +74,14 @@ export async function startRecursiveCrawl(
   maxDepth = 2,
   maxPages = 50,
   workers = 1,
-  allowedDomains?: string[]
+  allowedDomains?: string[],
+  extraOpts: Record<string, any> = {}
 ): Promise<ScraperApiResponse> {
   return callScraper('/crawl/recursive', {
     url, max_depth: maxDepth, max_pages: maxPages,
     workers, allowed_domains: allowedDomains || null,
     respect_robots: true,
+    ...extraOpts,
   });
 }
 
@@ -90,10 +97,12 @@ export async function scrapeWordPress(
   url: string,
   maxPages = 10,
   includePages = true,
-  includeMedia = true
+  includeMedia = true,
+  extraOpts: Record<string, any> = {}
 ): Promise<ScraperApiResponse> {
   return callScraper('/scrape/wordpress', {
     url, max_pages: maxPages, include_pages: includePages, include_media: includeMedia,
+    ...extraOpts,
   });
 }
 
@@ -116,7 +125,7 @@ export async function scrapeFacebook(
     }),
   });
   if (!resp.ok) throw new Error(`Facebook scrape failed: ${await resp.text()}`);
-  return resp.json();
+  return resp.json() as Promise<{ job_id: string; status: string; }>;
 }
 
 export async function getFbJobStatus(jobId: string): Promise<any> {

@@ -54,63 +54,74 @@ class ReadabilityExtractor:
         # Extract clean html
         clean_html = str(content_root)
 
-        # Generate markdown and clean text
-        markdown_lines = []
-        text_lines = []
+        _BLOCK_TAGS = {
+            "p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6",
+            "ul", "ol", "li", "blockquote", "table", "pre", "br"
+        }
 
-        def traverse(node):
+        def has_block_child(node) -> bool:
+            if hasattr(node, "children"):
+                for child in node.children:
+                    if child.name and child.name.lower() in _BLOCK_TAGS:
+                        return True
+            return False
+
+        def traverse(node) -> tuple[str, str]:
             if node.name is None:
                 # Text node
                 text = node.string
                 if text:
                     cleaned_text = re.sub(r"\s+", " ", text)
                     if cleaned_text.strip():
-                        return cleaned_text
-                return ""
+                        return cleaned_text, cleaned_text
+                return "", ""
 
-            # Check block elements or formatters
             tag_name = node.name.lower()
-            
-            # Sub-elements processing
-            child_contents = []
+
+            child_mds = []
+            child_txts = []
             for child in node.children:
-                res = traverse(child)
-                if res:
-                    child_contents.append(res)
-            
-            inner_text = " ".join(child_contents).strip()
-            if not inner_text and tag_name not in ["img"]:
-                return ""
+                md, txt = traverse(child)
+                if md:
+                    child_mds.append(md)
+                if txt:
+                    child_txts.append(txt)
+
+            inner_md = "".join(child_mds).strip()
+            inner_txt = "".join(child_txts).strip()
+
+            if not inner_md and tag_name not in ["img"]:
+                return "", ""
 
             if tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                 level = int(tag_name[1])
-                markdown_lines.append(f"\n\n{'#' * level} {inner_text}\n")
-                text_lines.append(inner_text)
-                return inner_text
+                return f"\n\n{'#' * level} {inner_md}\n\n", f"\n\n{inner_txt}\n\n"
 
-            elif tag_name in ["p", "div", "section", "article"]:
-                if inner_text:
-                    markdown_lines.append(f"\n\n{inner_text}\n")
-                    text_lines.append(inner_text)
-                return inner_text
+            elif tag_name == "p":
+                return f"\n\n{inner_md}\n\n", f"\n\n{inner_txt}\n\n"
+
+            elif tag_name in ["div", "section", "article"]:
+                if has_block_child(node):
+                    return inner_md, inner_txt
+                else:
+                    return f"\n\n{inner_md}\n\n", f"\n\n{inner_txt}\n\n"
 
             elif tag_name == "br":
-                markdown_lines.append("\n")
-                return "\n"
+                return "\n", "\n"
 
             elif tag_name in ["strong", "b"]:
-                return f"**{inner_text}**"
+                return f"**{inner_md}**", inner_txt
 
             elif tag_name in ["em", "i"]:
-                return f"*{inner_text}*"
+                return f"*{inner_md}*", inner_txt
 
             elif tag_name == "a":
                 href = node.get("href", "")
                 if href and self.base_url:
                     href = urljoin(self.base_url, href)
-                if inner_text and href:
-                    return f"[{inner_text}]({href})"
-                return inner_text
+                if inner_md and href:
+                    return f"[{inner_md}]({href})", inner_txt
+                return inner_md, inner_txt
 
             elif tag_name == "img":
                 src = node.get("src", "")
@@ -118,40 +129,37 @@ class ReadabilityExtractor:
                 if src and self.base_url:
                     src = urljoin(self.base_url, src)
                 if src:
-                    img_md = f"![{alt}]({src})"
-                    markdown_lines.append(f"\n{img_md}\n")
-                    return img_md
-                return ""
+                    return f"![{alt}]({src})", f"[{alt}]"
+                return "", ""
 
             elif tag_name in ["ul", "ol"]:
-                # Container tag, children are li. Just return cumulative text.
-                return inner_text
+                return f"\n\n{inner_md}\n\n", f"\n\n{inner_txt}\n\n"
 
             elif tag_name == "li":
-                if inner_text:
-                    markdown_lines.append(f"\n- {inner_text}")
-                    text_lines.append(inner_text)
-                return inner_text
+                return f"\n- {inner_md}", f"\n- {inner_txt}"
 
-            return inner_text
+            elif tag_name == "pre":
+                return f"\n\n```\n{inner_txt}\n```\n\n", f"\n\n{inner_txt}\n\n"
 
-        # Start traversal from root
-        traverse(content_root)
+            elif tag_name == "code":
+                return f"`{inner_txt}`", inner_txt
 
-        # Assemble markdown
-        markdown_content = "".join(markdown_lines).strip()
-        # Clean up double newlines
-        markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content)
+            elif tag_name == "blockquote":
+                return f"\n\n> {inner_md}\n\n", f"\n\n{inner_txt}\n\n"
 
-        # Assemble plain text
-        clean_text_content = "\n".join(text_lines).strip()
-        clean_text_content = re.sub(r"\n{3,}", "\n\n", clean_text_content)
+            return inner_md, inner_txt
+
+        markdown_content, clean_text_content = traverse(content_root)
+
+        # Assemble markdown & clean text with cleanups
+        markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content).strip()
+        clean_text_content = re.sub(r"\n{3,}", "\n\n", clean_text_content).strip()
 
         # If empty text or markdown, fallback to basic text representation
         if not clean_text_content:
             clean_text_content = content_root.get_text(separator="\n").strip()
             clean_text_content = re.sub(r"\n{3,}", "\n\n", clean_text_content)
-        
+
         if not markdown_content and clean_text_content:
             markdown_content = clean_text_content
 
