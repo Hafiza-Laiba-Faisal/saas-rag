@@ -34,7 +34,7 @@ interface ScraperApiResponse {
   metrics?: Record<string, any>;
 }
 
-async function callScraper(endpoint: string, payload: any): Promise<ScraperApiResponse> {
+export async function callScraper(endpoint: string, payload: any): Promise<ScraperApiResponse> {
   const url = `${SCRAPER_BASE_URL}${endpoint}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SCRAPER_API_KEY) headers['X-API-Key'] = SCRAPER_API_KEY;
@@ -48,7 +48,12 @@ async function callScraper(endpoint: string, payload: any): Promise<ScraperApiRe
     const errText = await response.text();
     throw new Error(`Scraper API error ${response.status}: ${errText}`);
   }
-  return response.json() as Promise<ScraperApiResponse>;
+  const result = await response.json() as ScraperApiResponse;
+  if (result.success === false) {
+    const errMsg = result.errors ? (Array.isArray(result.errors) ? result.errors.join('; ') : JSON.stringify(result.errors)) : 'Scraper returned success=false';
+    throw new Error(errMsg);
+  }
+  return result;
 }
 
 export async function scrapeSingle(
@@ -103,47 +108,6 @@ export async function scrapeWordPress(
   return callScraper('/scrape/wordpress', {
     url, max_pages: maxPages, include_pages: includePages, include_media: includeMedia,
     ...extraOpts,
-  });
-}
-
-export async function scrapeFacebook(
-  pageUrl: string,
-  cUser = '',
-  xs = '',
-  maxPosts = 20,
-  scrollRounds = 5,
-  dateFrom = '',
-  dateTo = ''
-): Promise<{ job_id: string; status: string }> {
-  const resp = await fetch(`${SCRAPER_BASE_URL}/scrape/fb-posts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      page_url: pageUrl, c_user: cUser, xs: xs,
-      max_posts: maxPosts, scroll_rounds: scrollRounds,
-      date_from: dateFrom, date_to: dateTo,
-    }),
-  });
-  if (!resp.ok) throw new Error(`Facebook scrape failed: ${await resp.text()}`);
-  return resp.json() as Promise<{ job_id: string; status: string; }>;
-}
-
-export async function getFbJobStatus(jobId: string): Promise<any> {
-  const resp = await fetch(`${SCRAPER_BASE_URL}/scrape/fb-posts/status/${jobId}`, {
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!resp.ok) throw new Error(`FB status fetch failed: ${resp.status}`);
-  return resp.json();
-}
-
-export async function scrapeProfile(
-  platform: string,
-  username: string,
-  browser = 'chrome',
-  proxy?: string
-): Promise<ScraperApiResponse> {
-  return callScraper('/scrape/profile', {
-    platform, username, browser, proxy: proxy || null,
   });
 }
 

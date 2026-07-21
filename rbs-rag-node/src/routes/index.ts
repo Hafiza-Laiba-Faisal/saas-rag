@@ -10,8 +10,7 @@ import { RagEngine, createEngineFromTenant } from '../engine.js';
 import { scrapeUrl } from '../scraper.js';
 import {
   scrapeSingle, scrapeSmart, startRecursiveCrawl,
-  getRecursiveStatus, scrapeWordPress, scrapeFacebook,
-  getFbJobStatus, scrapeProfile, scrapeAndIngest,
+  getRecursiveStatus, scrapeWordPress, scrapeAndIngest, callScraper,
 } from '../scraperClient.js';
 import { loadProviderPresets, saveProviderPresets } from '../providerPresets.js';
 
@@ -638,7 +637,7 @@ export function routes(
   });
 
   // ===================== ENHANCED SCRAPER (external microservice) =====================
-  const SCRAPE_TYPES = ['single', 'smart', 'recursive', 'wordpress', 'facebook', 'profile'] as const;
+  const SCRAPE_TYPES = ['single', 'smart', 'recursive', 'wordpress'] as const;
 
   router.post('/scrape/enhanced', resolveClientTenant, async (req, res) => {
     try {
@@ -652,13 +651,10 @@ export function routes(
 
   async function tryScraperOrFallback(req: Request, tenant: any): Promise<any> {
     const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
-            include_media, fb_c_user, fb_xs, fb_max_posts, fb_scroll_rounds,
-            fb_date_from, fb_date_to, profile_platform, profile_username,
-            workers, respect_robots, allowed_domains, content_type,
-            deepcrawl, playwright } = req.body;
+            include_media, workers, respect_robots, allowed_domains,
+            deepcrawl, playwright, download_images, download_pdfs } = req.body;
 
     const extraOpts: any = {};
-    if (content_type) extraOpts.content_type = content_type;
     if (deepcrawl) extraOpts.deepcrawl = true;
     if (playwright) extraOpts.playwright = true;
 
@@ -674,11 +670,11 @@ export function routes(
         case 'wordpress':
           result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false, extraOpts);
           break;
-        case 'facebook':
-          result = await scrapeFacebook(url, fb_c_user || '', fb_xs || '', fb_max_posts || 20, fb_scroll_rounds || 5, fb_date_from || '', fb_date_to || '');
-          break;
-        case 'profile':
-          result = await scrapeProfile(profile_platform || '', profile_username || '');
+        case 'full':
+          result = await callScraper('/crawl/full', {
+            url, max_depth: max_depth || 3, max_pages: max_pages || 50,
+            download_images: download_images ?? true, download_pdfs: download_pdfs ?? true,
+          });
           break;
         default:
           result = await scrapeSingle(url, format || 'markdown', extraOpts);
@@ -699,7 +695,7 @@ export function routes(
       fs.mkdirSync(docsDir, { recursive: true });
 
       const type = scrape_type || 'single';
-      if (type === 'wordpress' || type === 'facebook' || type === 'profile') {
+      if (type === 'wordpress') {
         return { success: false, error: `Scraper microservice is offline. '${type}' scraping requires the scraper service. Use 'single', 'smart', or 'recursive' mode as fallback.` };
       }
 
@@ -765,15 +761,6 @@ export function routes(
   router.get('/scrape/recursive/:jobId/status', resolveClientTenant, async (req, res) => {
     try {
       const status = await getRecursiveStatus(req.params.jobId);
-      res.json(status);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  router.get('/scrape/facebook/:jobId/status', resolveClientTenant, async (req, res) => {
-    try {
-      const status = await getFbJobStatus(req.params.jobId);
       res.json(status);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1093,11 +1080,14 @@ export function routes(
     try {
       const { site } = req.params;
       const filePath = req.params[0]; // wildcard parameter
-      const fullPath = path.join(crawlOutputBase, site, filePath);
-      if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+      const resolved = path.resolve(crawlOutputBase, site, filePath);
+      if (!resolved.startsWith(path.resolve(crawlOutputBase))) {
+        return res.status(403).json({ detail: 'Path traversal denied' });
+      }
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
         return res.status(404).json({ detail: 'File not found' });
       }
-      const ext = path.extname(fullPath).toLowerCase();
+      const ext = path.extname(resolved).toLowerCase();
       const mimeTypes: Record<string, string> = {
         '.pdf': 'application/pdf',
         '.png': 'image/png',
@@ -1108,7 +1098,7 @@ export function routes(
         '.json': 'application/json',
         '.txt': 'text/plain',
       };
-      res.type(mimeTypes[ext] || 'application/octet-stream').sendFile(fullPath);
+      res.type(mimeTypes[ext] || 'application/octet-stream').sendFile(resolved);
     } catch (err: any) {
       res.status(500).json({ detail: err.message });
     }

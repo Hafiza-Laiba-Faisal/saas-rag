@@ -4,6 +4,7 @@ Recursive crawler API — background jobs with full site crawling.
 from __future__ import annotations
 import threading
 from typing import Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 

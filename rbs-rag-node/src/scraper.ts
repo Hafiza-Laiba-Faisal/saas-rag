@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { execSync } from 'child_process';
 
 const PRIVATE_NETWORKS = [
   /^https?:\/\/localhost/i,
@@ -70,31 +69,6 @@ async function fetchUrl(url: string, signal?: AbortSignal): Promise<{ html: stri
   });
 
   const contentType = response.headers.get('content-type') || '';
-
-  if (response.status === 403 || response.status === 503) {
-    const body = await response.text();
-    if (body.includes('cloudflare') || body.includes('Attention Required') || body.includes('cf-browser-verification')) {
-      try {
-        const curlResult = execSync(
-          `curl -sL '${url.replace(/'/g, "'\\''")}' ` +
-          `-A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' ` +
-          `-H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' ` +
-          `-H 'Accept-Language: en-US,en;q=0.9' ` +
-          `-H 'Referer: https://www.google.com/' ` +
-          `--max-time 15`,
-          { encoding: 'utf-8', timeout: 20000 }
-        );
-        if (curlResult && curlResult.length > 500) {
-          return { html: curlResult, contentType };
-        }
-      } catch {}
-    }
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-  }
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-  }
 
   const html = await response.text();
   return { html, contentType };
@@ -297,60 +271,6 @@ async function scrapeSinglePage(
   return result;
 }
 
-async function crawlPages(
-  startUrl: string,
-  maxPages: number,
-  maxDepth: number,
-  signal?: AbortSignal
-): Promise<{ title: string; description: string; text: string; links: string[]; images: string[] }> {
-  const visited = new Set<string>();
-  const queue: { url: string; depth: number }[] = [{ url: startUrl, depth: 0 }];
-  const startParsed = new URL(startUrl);
-  const baseDomain = startParsed.hostname.replace(/^www\./, '');
-  const allTexts: string[] = [];
-  let allTitle = '';
-  let allDescription = '';
-  const allLinks = new Set<string>();
-  const allImages = new Set<string>();
-
-  while (queue.length > 0 && visited.size < maxPages) {
-    const { url, depth } = queue.shift()!;
-    if (visited.has(url) || depth > maxDepth) continue;
-    visited.add(url);
-
-    try {
-      const result = await scrapeSinglePage(url, signal);
-      if (result.text.trim()) {
-        allTexts.push(`--- Page: ${url} ---\n${result.text}`);
-      }
-      if (!allTitle && result.title) allTitle = result.title;
-      if (!allDescription && result.description) allDescription = result.description;
-      result.links.forEach(l => allLinks.add(l));
-      result.images.forEach(i => allImages.add(i));
-
-      if (depth < maxDepth) {
-        for (const link of result.links) {
-          try {
-            const parsed = new URL(link);
-            const linkDomain = parsed.hostname.replace(/^www\./, '');
-            if (linkDomain === baseDomain && !visited.has(link) && !parsed.pathname.match(/\.(pdf|jpg|png|gif|zip|css|js)$/i)) {
-              queue.push({ url: link, depth: depth + 1 });
-            }
-          } catch {}
-        }
-      }
-    } catch {}
-  }
-
-  return {
-    title: allTitle,
-    description: allDescription,
-    text: allTexts.join('\n\n'),
-    links: Array.from(allLinks),
-    images: Array.from(allImages),
-  };
-}
-
 export async function scrapeUrl(
   request: ScrapeRequest,
   tenantDir: string,
@@ -369,23 +289,12 @@ export async function scrapeUrl(
   }
 
   try {
-    const shouldCrawl = request.crawl || request.fullSite;
-    const maxPages = request.maxPages || (request.fullSite ? 50 : 10);
-    const maxDepth = request.maxDepth || (request.fullSite ? 3 : 1);
-
-    let result: { title: string; description: string; text: string; links: string[]; images: string[] };
-
-    if (shouldCrawl) {
-      result = await crawlPages(request.url, maxPages, maxDepth, signal);
-    } else {
-      result = await scrapeSinglePage(request.url, signal);
-    }
+    const result = await scrapeSinglePage(request.url, signal);
 
     const wordCount = result.text.split(/\s+/).filter(Boolean).length;
     const siteName = new URL(request.url).hostname.replace(/^www\./, '').replace(/[^a-z0-9]/gi, '_');
     const titleSlug = (result.title || 'page').toLowerCase().replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '').slice(0, 40);
-    const scrapeType = shouldCrawl ? 'fullsite' : 'page';
-    const fileName = `${siteName}_${titleSlug}_${scrapeType}_${jobId.slice(0, 8)}.txt`;
+    const fileName = `${siteName}_${titleSlug}_page_${jobId.slice(0, 8)}.txt`;
     const filePath = path.join(tenantDir, fileName);
 
     const content = [

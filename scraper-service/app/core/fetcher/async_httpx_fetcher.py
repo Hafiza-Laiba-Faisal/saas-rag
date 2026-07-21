@@ -1,5 +1,4 @@
 import time
-import os
 from abc import ABC, abstractmethod
 import httpx
 from typing import Optional
@@ -88,54 +87,6 @@ class AsyncHttpxFetcher(AsyncBaseFetcher):
                     cookies={},
                     error=None if status_code < 400 else f'HTTP {status_code}',
                 )
-
-            # Check if we got a bot block (403/429) and have DeepCrawl configured
-            api_key = os.environ.get("DEEPCRAWL_API_KEY") if status_code in {403, 429} else None
-            if api_key:
-                # Fallback to Deepcrawl API transparently
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.info(f"[DeepCrawl] Attempting fallback for {url} (status={status_code})")
-                try:
-                    payload = {
-                        "url": url,
-                        "includeHtml": True,
-                        "includeMarkdown": True,
-                        "includeMetadata": True,
-                        "includeLinks": True,
-                    }
-                    dc_headers = {
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    }
-                    async with httpx.AsyncClient(timeout=timeout) as dc_client:
-                        dc_resp = await dc_client.post(
-                            "https://api.deepcrawl.dev/read",
-                            headers=dc_headers,
-                            json=payload,
-                        )
-                    logger.info(f"[DeepCrawl] API response: {dc_resp.status_code}")
-                    if dc_resp.status_code == 200:
-                        dc_data = dc_resp.json()
-                        html_content = dc_data.get("html") or dc_data.get("cleanedHtml") or ""
-                        logger.info(f"[DeepCrawl] SUCCESS! Got {len(html_content)} chars of HTML")
-                        elapsed = (time.monotonic() - start) * 1000
-                        return FetchResult(
-                            url=url,
-                            status_code=200,
-                            content=html_content.encode("utf-8"),
-                            headers={**headers_dict, "content-type": "text/html"},
-                            elapsed_ms=round(elapsed, 2),
-                            final_url=final_url,
-                            cookies={},
-                            error=None,
-                        )
-                    else:
-                        logger.warning(f"[DeepCrawl] API failed with status {dc_resp.status_code}")
-                except Exception as dc_err:
-                    # Log the deepcrawl error and fall through to original 403/429 response
-                    logger.error(f"[DeepCrawl] Exception: {dc_err}", exc_info=True)
-                    pass
 
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > MAX_DOWNLOAD_SIZE:

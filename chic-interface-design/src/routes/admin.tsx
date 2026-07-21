@@ -773,14 +773,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const [scrapeRespectRobots, setScrapeRespectRobots] = useState(true);
   const [scrapeIncludePages, setScrapeIncludePages] = useState(true);
   const [scrapeIncludeMedia, setScrapeIncludeMedia] = useState(true);
-  const [scrapeFbCUser, setScrapeFbCUser] = useState("");
-  const [scrapeFbXs, setScrapeFbXs] = useState("");
-  const [scrapeFbMaxPosts, setScrapeFbMaxPosts] = useState(20);
-  const [scrapeFbScrollRounds, setScrapeFbScrollRounds] = useState(5);
-  const [scrapeFbDateFrom, setScrapeFbDateFrom] = useState("");
-  const [scrapeFbDateTo, setScrapeFbDateTo] = useState("");
-  const [scrapeProfilePlatform, setScrapeProfilePlatform] = useState("");
-  const [scrapeProfileUsername, setScrapeProfileUsername] = useState("");
+
   const [scrapeDeepCrawl, setScrapeDeepCrawl] = useState(false);
   const [scrapeImages, setScrapeImages] = useState(false);
   const [scrapePdfs, setScrapePdfs] = useState(false);
@@ -898,22 +891,14 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
         timeout: scrapeTimeout,
         include_pages: scrapeIncludePages,
         include_media: scrapeIncludeMedia,
-        fb_c_user: scrapeFbCUser,
-        fb_xs: scrapeFbXs,
-        fb_max_posts: scrapeFbMaxPosts,
-        fb_scroll_rounds: scrapeFbScrollRounds,
-        fb_date_from: scrapeFbDateFrom,
-        fb_date_to: scrapeFbDateTo,
-        profile_platform: scrapeProfilePlatform,
-        profile_username: scrapeProfileUsername,
         workers: scrapeWorkers,
         respect_robots: scrapeRespectRobots,
         deepcrawl: scrapeDeepCrawl,
         playwright: scrapePlaywright,
       };
       if (scrapeContentType !== "all") body.content_type = scrapeContentType;
-      if (scrapeImages) body.content_type = 'images';
-      if (scrapePdfs) body.content_type = 'pdfs';
+      body.download_images = scrapeImages;
+      body.download_pdfs = scrapePdfs;
       const res = await apiFetch(`/tenants/${tenantId}/scrape/enhanced`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -921,7 +906,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       });
       const result = await res.json();
       setScrapeResult(result);
-      if ((scrapeMode === "recursive" || scrapeMode === "facebook") && result?.data?.job_id) {
+      if ((scrapeMode === "recursive" || scrapeMode === "full") && result?.data?.job_id) {
         setScrapeJobId(result.data.job_id);
       }
       refetchDocs();
@@ -1163,9 +1148,8 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
               { id: "single", label: "Single" },
               { id: "smart", label: "Smart" },
               { id: "recursive", label: "Recursive" },
+              { id: "full", label: "Full Site" },
               { id: "wordpress", label: "WordPress" },
-              { id: "facebook", label: "Facebook" },
-              { id: "profile", label: "Profile" },
             ].map((m) => (
               <button key={m.id} onClick={() => setScrapeMode(m.id)}
                 className={`rounded px-3 py-1.5 text-xs font-medium border ${scrapeMode === m.id ? "bg-primary text-primary-foreground border-primary" : "bg-panel text-muted-foreground border-border hover:bg-elevated"}`}>
@@ -1178,7 +1162,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
             <Field label="URL">
               <input className="input font-mono text-xs" value={scrapeUrl} onChange={(e) => setScrapeUrl(e.target.value)} placeholder="https://example.com/page" />
             </Field>
-            {(scrapeMode === "recursive" || scrapeMode === "single" || scrapeMode === "smart") && (
+            {(scrapeMode === "recursive" || scrapeMode === "single" || scrapeMode === "smart" || scrapeMode === "full") && (
               <>
                 <Field label="Max depth">
                   <input className="input" type="number" value={scrapeDepth} onChange={(e) => setScrapeDepth(Number(e.target.value))} />
@@ -1253,45 +1237,15 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                 </label>
               </>
             )}
-            {scrapeMode === "facebook" && (
+            {scrapeMode === "full" && (
               <>
-                <Field label="C User">
-                  <input className="input font-mono text-xs" value={scrapeFbCUser} onChange={(e) => setScrapeFbCUser(e.target.value)} placeholder="Facebook cookie c_user" />
+                <Field label="Workers">
+                  <input className="input" type="number" value={scrapeWorkers} onChange={(e) => setScrapeWorkers(Number(e.target.value))} min={1} max={10} />
                 </Field>
-                <Field label="XS">
-                  <input className="input font-mono text-xs" value={scrapeFbXs} onChange={(e) => setScrapeFbXs(e.target.value)} placeholder="Facebook cookie xs" />
-                </Field>
-                <Field label="Max posts">
-                  <input className="input" type="number" value={scrapeFbMaxPosts} onChange={(e) => setScrapeFbMaxPosts(Number(e.target.value))} />
-                </Field>
-                <Field label="Scroll rounds">
-                  <input className="input" type="number" value={scrapeFbScrollRounds} onChange={(e) => setScrapeFbScrollRounds(Number(e.target.value))} />
-                </Field>
-                <Field label="Date from">
-                  <input className="input text-xs" type="date" value={scrapeFbDateFrom} onChange={(e) => setScrapeFbDateFrom(e.target.value)} />
-                </Field>
-                <Field label="Date to">
-                  <input className="input text-xs" type="date" value={scrapeFbDateTo} onChange={(e) => setScrapeFbDateTo(e.target.value)} />
-                </Field>
-              </>
-            )}
-            {scrapeMode === "profile" && (
-              <>
-                <Field label="Platform">
-                  <select className="input text-xs" value={scrapeProfilePlatform} onChange={(e) => setScrapeProfilePlatform(e.target.value)}>
-                    <option value="">Select platform</option>
-                    <option value="instagram">Instagram</option>
-                    <option value="twitter">Twitter / X</option>
-                    <option value="facebook">Facebook</option>
-                    <option value="reddit">Reddit</option>
-                    <option value="github">GitHub</option>
-                    <option value="tiktok">TikTok</option>
-                    <option value="pinterest">Pinterest</option>
-                  </select>
-                </Field>
-                <Field label="Username">
-                  <input className="input font-mono text-xs" value={scrapeProfileUsername} onChange={(e) => setScrapeProfileUsername(e.target.value)} placeholder="username" />
-                </Field>
+                <label className="flex items-center gap-2 mt-6 cursor-pointer">
+                  <input type="checkbox" checked={scrapeRespectRobots} onChange={(e) => setScrapeRespectRobots(e.target.checked)} className="accent-primary" />
+                  <span className="text-xs text-muted-foreground">Respect robots.txt</span>
+                </label>
               </>
             )}
           </div>
