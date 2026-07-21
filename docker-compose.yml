@@ -117,6 +117,7 @@ services:
     volumes:
       - scraper_data:/app/data
       - scraper_data:/app/downloads
+      - ./scraper-service/crawl_output:/app/crawl_output
     env_file:
       - .env
     environment:

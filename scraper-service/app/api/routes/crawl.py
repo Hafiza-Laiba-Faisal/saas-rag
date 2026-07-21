@@ -18,6 +18,7 @@ from core.detectors.login_detector import (
     CaptchaDetector, JavaScriptRequiredDetector,
 )
 from core.formatter.markdown_formatter import MarkdownFormatter, JsonFormatter
+from core.content.readability_extractor import ReadabilityExtractor
 from core.crawler.recursive_crawler import RecursiveCrawler, CrawlResult, CrawlStats
 from schemas.base import ApiResponse, Metrics
 
@@ -101,24 +102,33 @@ async def crawl(req: CrawlRequest):
     links     = _links_ext.extract(tree, final_url)
     metrics.extract_time_ms = round((time.monotonic() - t2) * 1000, 2)
 
-    # ── Stage 5: Format ───────────────────────────────────────────────────────
+    # ── Stage 5: Readability extraction ────────────────────────────────────────
+    t_read = time.monotonic()
+    readable = ReadabilityExtractor(base_url=final_url).extract(html)
+    metrics.readability_time_ms = round((time.monotonic() - t_read) * 1000, 2)
+
+    # ── Stage 6: Format ────────────────────────────────────────────────────────
     page_data = {
-        "url":        final_url,
-        "status":     result.status_code,
-        "title":      metadata.get("og_title") or metadata.get("title", ""),
-        "description": metadata.get("og_description") or metadata.get("description", ""),
-        "og_image":   metadata.get("og_image", ""),
-        "metadata":   metadata,
-        "links":      links["links"][:50],
-        "link_count": links["count"],
-        "detectors":  detected,
-        "html_length": len(html),
+        "url":          final_url,
+        "status":       result.status_code,
+        "title":        metadata.get("og_title") or metadata.get("title", ""),
+        "description":  metadata.get("og_description") or metadata.get("description", ""),
+        "og_image":     metadata.get("og_image", ""),
+        "metadata":     metadata,
+        "links":        links["links"][:50],
+        "link_count":   links["count"],
+        "detectors":    detected,
+        "html_length":  len(html),
+        "content_markdown": readable["markdown"],
+        "content_text":     readable["clean_text"],
     }
 
     if req.format == "markdown":
-        page_meta   = {"title": page_data["title"], "about": page_data["description"]}
-        formatted   = _md_fmt.format_page(page_meta, [])
-        page_data["markdown"] = formatted
+        header = f"# {page_data['title']}\n\n"
+        if page_data["description"]:
+            header += f"{page_data['description']}\n\n"
+        header += "---\n\n"
+        page_data["markdown"] = header + page_data["content_markdown"]
     else:
         page_data["json"] = _json_fmt.format_page(
             {"title": page_data["title"]}, []

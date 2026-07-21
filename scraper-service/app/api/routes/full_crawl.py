@@ -33,7 +33,7 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
     if not job:
         return
 
-    CRAWL_TIMEOUT = 300
+    CRAWL_TIMEOUT = 600
 
     def update_job(pct: int, msg: str):
         job.progress = pct
@@ -69,7 +69,10 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
             "strategy": result.strategy_used,
             "languages": result.languages,
             "pages_found": result.stats.get("pages_found", 0),
-            "content_files": len(result.content_files),
+            # Full list (title/url/lang/file/text_length) so callers can fetch each
+            # page's actual extracted content, not just a count.
+            "content_files": result.content_files,
+            "content_files_count": len(result.content_files),
             "images_discovered": result.stats.get("images_discovered", 0),
             "images_downloaded": result.stats.get("images_downloaded", 0),
             "pdfs_discovered": result.stats.get("pdfs_discovered", 0),
@@ -83,7 +86,12 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
         }
         job.status = "done"
         job.progress = 100
-        job.message = f"Crawl complete — {result.stats.get('pages_found', 0)} pages, {result.stats.get('images_downloaded', 0)} images, {result.stats.get('pdfs_downloaded', 0)} PDFs"
+        job.message = (
+            f"Crawl complete — {result.stats.get('pages_found', 0)} pages "
+            f"({len(result.content_files)} with extracted content), "
+            f"{result.stats.get('images_downloaded', 0)} images, "
+            f"{result.stats.get('pdfs_downloaded', 0)} PDFs"
+        )
 
     try:
         asyncio.run(run())

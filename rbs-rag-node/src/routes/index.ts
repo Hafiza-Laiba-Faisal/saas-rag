@@ -14,7 +14,30 @@ import {
 } from '../scraperClient.js';
 import { loadProviderPresets, saveProviderPresets } from '../providerPresets.js';
 
+const SCRAPER_BASE_URL = process.env.SCRAPER_SERVICE_URL || 'http://localhost:8002';
 const ingestionStatus: Record<string, any> = {};
+
+async function saveFullCrawlFiles(jobId: string, result: any, config: AppConfig, tenantId: string): Promise<number> {
+  const docsDir = path.join(config.rootDir, 'tenants', tenantId, 'documents');
+  fs.mkdirSync(docsDir, { recursive: true });
+  const files = result.content_files || [];
+  let saved = 0;
+  for (const cf of files) {
+    try {
+      const resp = await fetch(`${SCRAPER_BASE_URL}/crawl/full/output/${jobId}/${cf.file}`, { signal: AbortSignal.timeout(30000) });
+      if (!resp.ok) continue;
+      const pageBody = await resp.text();
+      if (!pageBody?.trim()) continue;
+      const wordCount = pageBody.split(/\s+/).filter(Boolean).length;
+      const slug = `scraped_${result.url?.replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_') || 'site'}`;
+      const filename = `${slug}_${cf.lang || 'default'}_${(cf.title || 'page').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}_${Date.now()}.md`;
+      const content = `---\nurl: ${cf.url}\ntitle: ${cf.title || ''}\nlanguage: ${cf.lang || ''}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${pageBody}`;
+      fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
+      saved++;
+    } catch { /* skip single file error */ }
+  }
+  return saved;
+}
 
 export function routes(
   config: AppConfig,
@@ -649,6 +672,29 @@ export function routes(
     }
   });
 
+  // Full-site crawl (`/crawl/full`) is a background job on the scraper service —
+  // it returns {job_id, status:'pending', poll_url} immediately, not the crawled
+  // content. Previously the caller treated that response as if it already held
+  // the final markdown/text, which is why saved files ended up with word_count: 0
+  // (the crawl hadn't even started producing content yet). Poll until the job
+  // finishes (or times out) and return the real result, which now includes the
+  // full `content_files` list (title/url/lang/file/text_length per page).
+  async function pollFullCrawlJob(
+    jobId: string,
+    { intervalMs = 3000, timeoutMs = 280000 }: { intervalMs?: number; timeoutMs?: number } = {}
+  ): Promise<any> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const statusResp: any = await callScraper(`/crawl/full/status/${jobId}`);
+      const job = statusResp?.data ?? statusResp;
+      if (job?.status === 'done' || job?.status === 'error') {
+        return job;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return { status: 'error', error: `Timed out waiting for full crawl job ${jobId} to finish` };
+  }
+
   async function tryScraperOrFallback(req: Request, tenant: any): Promise<any> {
     const { url, scrape_type, format, max_pages, max_depth, timeout, include_pages,
             include_media, workers, respect_robots, allowed_domains,
@@ -670,12 +716,13 @@ export function routes(
         case 'wordpress':
           result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false, extraOpts);
           break;
-        case 'full':
+        case 'full': {
           result = await callScraper('/crawl/full', {
             url, max_depth: max_depth || 3, max_pages: max_pages || 50,
             download_images: download_images ?? true, download_pdfs: download_pdfs ?? true,
           });
           break;
+        }
         default:
           result = await scrapeSingle(url, format || 'markdown', extraOpts);
       }
@@ -738,29 +785,68 @@ export function routes(
       const result = await tryScraperOrFallback(req, tenant);
 
       if (result?.success) {
+        const rawData = result.data || {};
+        const jobId = rawData.job_id || rawData.jobId;
+
+        // Background job (recursive / full crawl) — return job_id immediately, frontend will poll status
+        if (jobId) {
+          result.saved_file = null;
+          const { scrape_type, url } = req.body;
+          await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Started ${scrape_type || 'crawl'} of ${url} (job ${jobId})`, { url, job_id: jobId });
+          return res.json(result);
+        }
+
         const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
         fs.mkdirSync(docsDir, { recursive: true });
         const siteSlug = (result.data?.url || req.body.url || '').replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_');
         const ts = Date.now();
-        const filename = `scraped_${siteSlug}_${ts}.md`;
+        const d = rawData.result || rawData;
 
-        const d = result.data || {};
-        const title = d.title || '';
-        const description = d.description || '';
-        let body = d.markdown || d.readability?.markdown || d.readability?.clean_text || '';
-        if (!body && d.json) {
-          try { const j = JSON.parse(d.json); body = j.content || j.text || JSON.stringify(j, null, 2); } catch { body = d.json; }
-        }
-        if (!body && d.text) body = d.text;
-        if (!body && d.links) {
-          body = `Links:\n${(d.links as any[]).map((l: any) => `- [${l.text || l.url}](${l.url})`).join('\n')}`;
-        }
+        // Full-site crawls (scrape_type: 'full') finish as a job with a
+        // `content_files` array — one entry per crawled page — rather than a
+        // single markdown/text body. Save each page as its own document by
+        // fetching its extracted content from the scraper service's output
+        // route. Falling through to the single-body logic below for these
+        // is what previously produced empty (word_count: 0) files.
+        if (Array.isArray(d.content_files) && jobId) {
+          const savedFiles: string[] = [];
+          for (const cf of d.content_files) {
+            try {
+              const fileResp: any = await callScraper(`/crawl/full/output/${jobId}/${cf.file}`);
+              const pageBody = typeof fileResp === 'string' ? fileResp : (fileResp?.data ?? '');
+              if (!pageBody) continue;
+              const pageWordCount = String(pageBody).split(/\s+/).filter(Boolean).length;
+              const pageSlug = (cf.title || cf.url || 'page').toString().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+              const filename = `scraped_${siteSlug}_${cf.lang || 'default'}_${pageSlug}_${ts}.md`;
+              const content = `---\nurl: ${cf.url}\ntitle: ${cf.title || ''}\nlanguage: ${cf.lang || ''}\nscraped_at: ${new Date().toISOString()}\nword_count: ${pageWordCount}\n---\n\n${pageBody}`;
+              fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
+              savedFiles.push(filename);
+            } catch {
+              continue;
+            }
+          }
+          result.saved_files = savedFiles;
+          result.saved_file = savedFiles[0];
+          await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Full-site scraped ${req.body.url} -> ${savedFiles.length} files`, { url: req.body.url, files: savedFiles });
+        } else {
+          const title = d.title || '';
+          const description = d.description || '';
+          let body = d.markdown || d.readability?.markdown || d.readability?.clean_text || '';
+          if (!body && d.json) {
+            try { const j = JSON.parse(d.json); body = j.content || j.text || JSON.stringify(j, null, 2); } catch { body = d.json; }
+          }
+          if (!body && d.text) body = d.text;
+          if (!body && d.links) {
+            body = `Links:\n${(d.links as any[]).map((l: any) => `- [${l.text || l.url}](${l.url})`).join('\n')}`;
+          }
 
-        const wordCount = body.split(/\s+/).filter(Boolean).length;
-        const content = `---\nurl: ${d.url || req.body.url}\ntitle: ${title}\ndescription: ${description}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${body}`;
-        fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
-        result.saved_file = filename;
-        await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Scraped ${req.body.url} -> ${filename}`, { url: req.body.url, filename });
+          const filename = `scraped_${siteSlug}_${ts}.md`;
+          const wordCount = body.split(/\s+/).filter(Boolean).length;
+          const content = `---\nurl: ${d.url || req.body.url}\ntitle: ${title}\ndescription: ${description}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${body}`;
+          fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
+          result.saved_file = filename;
+          await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Scraped ${req.body.url} -> ${filename}`, { url: req.body.url, filename });
+        }
       }
 
       res.json(result);

@@ -926,10 +926,10 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     if (!scrapeJobId || !tenantId) return;
     const interval = setInterval(async () => {
       try {
-        const res = await apiFetch(`/scrape/recursive/${scrapeJobId}/status`);
+        const res = await apiFetch(`/scrape/recursive/${scrapeJobId}/status?tenantId=${tenantId}`);
         const status = await res.json();
         setScrapeJobStatus(status);
-        if (status?.data?.status === "completed" || status?.data?.status === "error") {
+        if (status?.data?.status === "done" || status?.data?.status === "completed" || status?.data?.status === "error") {
           clearInterval(interval);
         }
       } catch {}
@@ -1149,11 +1149,8 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
           {/* Mode selector */}
           <div className="mt-4 flex flex-wrap gap-2">
             {[
-              { id: "single", label: "Single" },
-              { id: "smart", label: "Smart" },
-              { id: "recursive", label: "Recursive" },
-              { id: "full", label: "Full Site" },
-              { id: "wordpress", label: "WordPress" },
+              { id: "smart", label: "Smart Crawl" },
+              { id: "full", label: "Full Site Crawl" },
             ].map((m) => (
               <button key={m.id} onClick={() => updateScrape('mode', m.id)}
                 className={`rounded px-3 py-1.5 text-xs font-medium border ${scrapeConfig.mode === m.id ? "bg-primary text-primary-foreground border-primary" : "bg-panel text-muted-foreground border-border hover:bg-elevated"}`}>
@@ -1163,11 +1160,8 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
           </div>
 
           {/* Mode info */}
-          {scrapeConfig.mode === "single" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Single: fetches content from one URL — extracts title, description, and text. Simple single-page scrape.</span></p>}
-          {scrapeConfig.mode === "smart" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Smart: same as Single but automatically falls back to DeepCrawl API on bot blocks (403/429). Good for Cloudflare / blocked sites.</span></p>}
-          {scrapeConfig.mode === "recursive" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Recursive: starts from the seed URL and follows all internal links up to max depth. Runs as a background job — returns a job_id, poll status to track progress.</span></p>}
-          {scrapeConfig.mode === "full" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Full Site: full crawl like Recursive, but also downloads images and PDFs. Background job — crawled files are served from /crawl-output/.</span></p>}
-          {scrapeConfig.mode === "wordpress" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>WordPress: WordPress-only. Tries the WP REST API first, falls back to HTML parsing. Fetches posts, pages, media, and metadata in one shot.</span></p>}
+          {scrapeConfig.mode === "smart" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Smart: Single-page crawl that automatically scores extraction quality and falls back on block (403/429).</span></p>}
+          {scrapeConfig.mode === "full" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Full Site: Crawls all internal links across the site up to max depth, downloading extracted page text, images, and PDFs.</span></p>}
 
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_auto]">
             <Field label="URL">
@@ -1212,40 +1206,6 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                     <option value="markdown">Markdown</option>
                   </select>
                 </Field>
-              </>
-            )}
-            {scrapeConfig.mode === "single" && (
-              <Field label="Format">
-                <select className="input text-xs" value={scrapeConfig.format} onChange={(e) => updateScrape('format', e.target.value)}>
-                  <option value="json">JSON</option>
-                  <option value="markdown">Markdown</option>
-                </select>
-              </Field>
-            )}
-            {scrapeConfig.mode === "recursive" && (
-              <>
-                <Field label="Workers">
-                  <input className="input" type="number" value={scrapeConfig.workers} onChange={(e) => updateScrape('workers', Number(e.target.value))} min={1} max={10} />
-                </Field>
-                <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeConfig.respectRobots} onChange={(e) => updateScrape('respectRobots', e.target.checked)} className="accent-primary" />
-                  <span className="text-xs text-muted-foreground">Respect robots.txt</span>
-                </label>
-              </>
-            )}
-            {scrapeConfig.mode === "wordpress" && (
-              <>
-                <Field label="Max pages">
-                  <input className="input" type="number" value={scrapeConfig.pages} onChange={(e) => updateScrape('pages', Number(e.target.value))} />
-                </Field>
-                <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeConfig.includePages} onChange={(e) => updateScrape('includePages', e.target.checked)} className="accent-primary" />
-                  <span className="text-xs text-muted-foreground">Include pages</span>
-                </label>
-                <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeConfig.includeMedia} onChange={(e) => updateScrape('includeMedia', e.target.checked)} className="accent-primary" />
-                  <span className="text-xs text-muted-foreground">Include media</span>
-                </label>
               </>
             )}
             {scrapeConfig.mode === "full" && (

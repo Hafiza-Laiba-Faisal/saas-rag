@@ -17,10 +17,11 @@ class ErrorDetail(BaseModel):
 
 
 class Metrics(BaseModel):
-    fetch_time_ms:   float = 0.0
-    parse_time_ms:   float = 0.0
-    extract_time_ms: float = 0.0
-    rendered:        bool  = False
+    fetch_time_ms:      float = 0.0
+    parse_time_ms:      float = 0.0
+    extract_time_ms:    float = 0.0
+    readability_time_ms: float = 0.0
+    rendered:           bool  = False
 
 
 class ApiResponse(BaseModel, Generic[T]):

@@ -34,14 +34,15 @@ interface ScraperApiResponse {
   metrics?: Record<string, any>;
 }
 
-export async function callScraper(endpoint: string, payload: any): Promise<ScraperApiResponse> {
+export async function callScraper(endpoint: string, payload?: any): Promise<ScraperApiResponse> {
   const url = `${SCRAPER_BASE_URL}${endpoint}`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SCRAPER_API_KEY) headers['X-API-Key'] = SCRAPER_API_KEY;
+  const isGet = payload === undefined;
   const response = await fetch(url, {
-    method: 'POST',
+    method: isGet ? 'GET' : 'POST',
     headers,
-    body: JSON.stringify(payload),
+    ...(isGet ? {} : { body: JSON.stringify(payload) }),
     signal: AbortSignal.timeout(120000),
   });
   if (!response.ok) {

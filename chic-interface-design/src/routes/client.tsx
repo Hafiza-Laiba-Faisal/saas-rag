@@ -600,7 +600,7 @@ function ClientDocumentsTab({
     setScraping(true);
     setScrapeResult(null);
     try {
-      const body: any = { url: scrapeUrl, scrape_type: crawlToggle ? "recursive" : "smart", max_depth: scrapeDepth, max_pages: scrapePages };
+      const body: any = { url: scrapeUrl, scrape_type: crawlToggle ? "full" : "smart", max_depth: scrapeDepth, max_pages: scrapePages };
       const res = await fetch("/api/v1/scrape/enhanced", {
         method: "POST",
         headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },

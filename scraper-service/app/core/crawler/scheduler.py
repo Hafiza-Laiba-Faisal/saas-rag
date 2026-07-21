@@ -78,7 +78,15 @@ class URLScheduler:
             # Normalize
             normalized = self.normalizer.normalize(
                 url,
-                remove_query_params=["utm_source", "utm_medium", "utm_campaign", "fbclid"]
+                remove_query_params=[
+                    "utm_source", "utm_medium", "utm_campaign", "fbclid",
+                    # Booking / date / session params — collapse room/availability pages
+                    "info[arrival_date]", "info[departure_date]",
+                    "info[rooms]", "info[total_adult]", "info[room_id]",
+                    "arrival_date", "departure_date",
+                    "checkin", "checkout", "nights",
+                    "adults", "children", "guests",
+                ]
             )
 
             # Domain filtering
