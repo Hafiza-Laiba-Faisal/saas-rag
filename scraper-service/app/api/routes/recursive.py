@@ -9,13 +9,10 @@ from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from core.crawler.recursive_crawler import RecursiveCrawler, CrawlResult, CrawlStats
-from jobs.job_store import JobStore
+from jobs.job_store import default_job_store
 from schemas.base import ApiResponse
 
 router = APIRouter(prefix="/crawl", tags=["recursive-crawler"])
-
-# Job store
-_crawl_jobs = JobStore(max_jobs=50)
 
 
 class RecursiveCrawlRequest(BaseModel):
@@ -33,7 +30,7 @@ class RecursiveCrawlRequest(BaseModel):
 
 async def _execute_recursive_crawl(job_id: str, request: RecursiveCrawlRequest):
     """Background task to execute recursive crawl."""
-    job = _crawl_jobs.get_job(job_id)
+    job = default_job_store.get_job(job_id)
     if not job:
         return
 
@@ -135,7 +132,7 @@ async def start_recursive_crawl(request: RecursiveCrawlRequest, background_tasks
         return ApiResponse.fail("validator", "invalid_url", "URL must start with http:// or https://")
 
     # Check if another crawl is running
-    active = [j for j in _crawl_jobs.list_jobs() if j["status"] == "running"]
+    active = [j for j in default_job_store.list_jobs() if j["status"] == "running"]
     if active:
         return ApiResponse.fail(
             "queue",
@@ -144,7 +141,7 @@ async def start_recursive_crawl(request: RecursiveCrawlRequest, background_tasks
         )
 
     # Create job
-    job = _crawl_jobs.create(job_type="recursive_crawl")
+    job = default_job_store.create(job_type="recursive_crawl")
     job.metadata = {
         "seed_url": request.url,
         "max_depth": request.max_depth,
@@ -165,7 +162,7 @@ async def start_recursive_crawl(request: RecursiveCrawlRequest, background_tasks
 @router.get("/recursive/status/{job_id}", summary="Get crawl status")
 async def get_crawl_status(job_id: str):
     """Get status and results of a recursive crawl job."""
-    job = _crawl_jobs.get_job(job_id)
+    job = default_job_store.get_job(job_id)
     if not job:
         return ApiResponse.fail("job", "not_found", f"Job {job_id} not found")
 
@@ -185,15 +182,15 @@ async def get_crawl_status(job_id: str):
 
 
 @router.get("/recursive/jobs", summary="List all crawl jobs")
-async def list_crawl_jobs():
+async def listdefault_job_store():
     """List all recursive crawl jobs."""
-    jobs = _crawl_jobs.list_jobs()
+    jobs = default_job_store.list_jobs()
     return ApiResponse.ok({"jobs": jobs, "count": len(jobs)})
 
 
 @router.delete("/recursive/{job_id}", summary="Delete crawl job")
 async def delete_crawl_job(job_id: str):
     """Delete a crawl job by ID."""
-    if _crawl_jobs.delete_job(job_id):
+    if default_job_store.delete_job(job_id):
         return ApiResponse.ok({"deleted": job_id})
     return ApiResponse.fail("job", "not_found", f"Job {job_id} not found")

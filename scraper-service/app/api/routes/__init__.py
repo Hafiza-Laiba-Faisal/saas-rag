@@ -1,6 +1,6 @@
 """
 API route modules.
 """
-from . import auth, scrape, storage, proxy, crawl, recursive
+from . import scrape, crawl, recursive, full_crawl, logs
 
-__all__ = ["auth", "scrape", "storage", "proxy", "crawl", "recursive"]
+__all__ = ["scrape", "crawl", "recursive", "full_crawl", "logs"]

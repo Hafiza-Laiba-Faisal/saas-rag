@@ -265,7 +265,7 @@ class RecursiveCrawler:
 
                 pdf_extractor = PDFExtractor(use_ocr=True)
                 try:
-                    pdf_data = pdf_extractor.extract_text(pdf_path)
+                    pdf_data = await asyncio.to_thread(pdf_extractor.extract_text, pdf_path)
                 except Exception as e:
                     pdf_data = {"text": "", "pages": 0, "method": "direct", "metadata": {}, "error": str(e)}
 

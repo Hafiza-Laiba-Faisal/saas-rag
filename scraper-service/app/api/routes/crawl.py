@@ -19,15 +19,11 @@ from core.detectors.login_detector import (
 )
 from core.formatter.markdown_formatter import MarkdownFormatter, JsonFormatter
 from core.crawler.recursive_crawler import RecursiveCrawler, CrawlResult, CrawlStats
-from jobs.job_store import JobStore
 from schemas.base import ApiResponse, Metrics
 
 router = APIRouter(prefix="/crawl", tags=["crawl"])
 
 logger = logging.getLogger(__name__)
-
-# Job store for recursive crawls
-_crawl_jobs = JobStore(max_jobs=20)
 
 # Singletons — created once, reused
 _fetcher     = EscalatingFetcher()

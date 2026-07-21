@@ -8,12 +8,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from jobs.job_store import JobStore
+from jobs.job_store import default_job_store
 from schemas.base import ApiResponse
 
 router = APIRouter(prefix="/crawl", tags=["full-crawl"])
 
-_crawl_jobs = JobStore(max_jobs=20)
+
 _output_base = Path("crawl_output")
 
 
@@ -29,7 +29,7 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
     import asyncio
     from scrapers.auto_crawler import AutoCrawler
 
-    job = _crawl_jobs.get_job(job_id)
+    job = default_job_store.get_job(job_id)
     if not job:
         return
 
@@ -90,7 +90,7 @@ async def start_full_crawl(req: FullCrawlRequest):
         return ApiResponse.fail("validator", "invalid_url", "URL must start with http:// or https://")
 
     try:
-        job = _crawl_jobs.create(job_type="full_crawl")
+        job = default_job_store.create(job_type="full_crawl")
     except RuntimeError as e:
         return ApiResponse.fail("jobs", "too_many_jobs", str(e))
 
@@ -111,7 +111,7 @@ async def start_full_crawl(req: FullCrawlRequest):
 
 @router.get("/full/status/{job_id}", summary="Poll full crawl job status")
 async def get_full_crawl_status(job_id: str):
-    job = _crawl_jobs.get_job(job_id)
+    job = default_job_store.get_job(job_id)
     if not job:
         return ApiResponse.fail("jobs", "not_found", f"No job found with id {job_id}")
 
@@ -123,21 +123,21 @@ async def get_full_crawl_status(job_id: str):
 
 
 @router.get("/full/jobs", summary="List all full crawl jobs")
-async def list_full_crawl_jobs():
-    jobs = _crawl_jobs.list_jobs()
+async def list_fulldefault_job_store():
+    jobs = default_job_store.list_jobs()
     return ApiResponse.ok({"jobs": jobs, "count": len(jobs)})
 
 
 @router.delete("/full/{job_id}", summary="Delete a full crawl job")
 async def delete_full_crawl_job(job_id: str):
-    if not _crawl_jobs.delete_job(job_id):
+    if not default_job_store.delete_job(job_id):
         return ApiResponse.fail("jobs", "not_found", f"No job found with id {job_id}")
     return ApiResponse.ok({"deleted": job_id})
 
 
 @router.get("/full/output/{job_id}/{file_path:path}", summary="Serve crawled file (image, PDF, page markdown)")
 async def serve_crawl_file(job_id: str, file_path: str):
-    job = _crawl_jobs.get_job(job_id)
+    job = default_job_store.get_job(job_id)
     if not job:
         return ApiResponse.fail("jobs", "not_found", "Job not found or expired")
 

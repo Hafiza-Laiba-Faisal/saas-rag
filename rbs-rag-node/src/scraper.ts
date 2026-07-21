@@ -55,23 +55,37 @@ function validateUrl(url: string): string | null {
   }
 }
 
-async function fetchUrl(url: string, signal?: AbortSignal): Promise<{ html: string; contentType: string }> {
-  const response = await fetch(url, {
-    signal,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Referer': 'https://www.google.com/',
-      'Cache-Control': 'no-cache',
-    },
-    redirect: 'follow',
-  });
+async function fetchUrl(url: string, signal?: AbortSignal, maxRedirects = 5): Promise<{ html: string; contentType: string }> {
+  let currentUrl = url;
+  for (let i = 0; i <= maxRedirects; i++) {
+    const response = await fetch(currentUrl, {
+      signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.google.com/',
+        'Cache-Control': 'no-cache',
+      },
+      redirect: 'manual',
+    });
 
-  const contentType = response.headers.get('content-type') || '';
+    const contentType = response.headers.get('content-type') || '';
 
-  const html = await response.text();
-  return { html, contentType };
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) throw new Error(`Redirect ${response.status} with no Location header`);
+      const redirectTarget = new URL(location, currentUrl).href;
+      const validationError = validateUrl(redirectTarget);
+      if (validationError) throw new Error(`Redirect target blocked: ${validationError}`);
+      currentUrl = redirectTarget;
+      continue;
+    }
+
+    const html = await response.text();
+    return { html, contentType };
+  }
+  throw new Error(`Too many redirects`);
 }
 
 function stripHtmlTags(text: string): string {

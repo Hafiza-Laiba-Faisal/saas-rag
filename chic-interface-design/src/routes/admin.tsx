@@ -759,25 +759,28 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [source, setSource] = useState<"files" | "web" | "cloud" | "crawl">("files");
   const [uploading, setUploading] = useState(false);
-  const [scrapeUrl, setScrapeUrl] = useState("");
-  const [scrapeDepth, setScrapeDepth] = useState(3);
-  const [scrapePages, setScrapePages] = useState(100);
+  const [scrapeConfig, setScrapeConfig] = useState({
+    url: "",
+    depth: 3,
+    pages: 100,
+    mode: "smart" as string,
+    format: "json" as string,
+    contentType: "all" as string,
+    timeout: 30,
+    workers: 1,
+    respectRobots: true,
+    includePages: true,
+    includeMedia: true,
+    deepCrawl: false,
+    downloadImages: false,
+    downloadPdfs: false,
+    playwright: false,
+  });
+  const updateScrape = <K extends keyof typeof scrapeConfig>(key: K, value: (typeof scrapeConfig)[K]) =>
+    setScrapeConfig(prev => ({ ...prev, [key]: value }));
   const [scraping, setScraping] = useState(false);
   const [scrapeResult, setScrapeResult] = useState<any>(null);
   const [applyOcrUpload, setApplyOcrUpload] = useState(false);
-  const [scrapeMode, setScrapeMode] = useState<string>("smart");
-  const [scrapeFormat, setScrapeFormat] = useState<string>("json");
-  const [scrapeContentType, setScrapeContentType] = useState<string>("all");
-  const [scrapeTimeout, setScrapeTimeout] = useState(30);
-  const [scrapeWorkers, setScrapeWorkers] = useState(1);
-  const [scrapeRespectRobots, setScrapeRespectRobots] = useState(true);
-  const [scrapeIncludePages, setScrapeIncludePages] = useState(true);
-  const [scrapeIncludeMedia, setScrapeIncludeMedia] = useState(true);
-
-  const [scrapeDeepCrawl, setScrapeDeepCrawl] = useState(false);
-  const [scrapeImages, setScrapeImages] = useState(false);
-  const [scrapePdfs, setScrapePdfs] = useState(false);
-  const [scrapePlaywright, setScrapePlaywright] = useState(false);
   const [scrapeJobId, setScrapeJobId] = useState<string | null>(null);
   const [scrapeJobStatus, setScrapeJobStatus] = useState<any>(null);
   const [ingesting, setIngesting] = useState(false);
@@ -876,29 +879,29 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   }
 
   async function handleScrape() {
-    if (!scrapeUrl || !tenantId) return;
+    if (!scrapeConfig.url || !tenantId) return;
     setScraping(true);
     setScrapeResult(null);
     setScrapeJobId(null);
     setScrapeJobStatus(null);
     try {
       const body: any = {
-        url: scrapeUrl,
-        scrape_type: scrapeMode,
-        format: scrapeFormat,
-        max_depth: scrapeDepth,
-        max_pages: scrapePages,
-        timeout: scrapeTimeout,
-        include_pages: scrapeIncludePages,
-        include_media: scrapeIncludeMedia,
-        workers: scrapeWorkers,
-        respect_robots: scrapeRespectRobots,
-        deepcrawl: scrapeDeepCrawl,
-        playwright: scrapePlaywright,
+        url: scrapeConfig.url,
+        scrape_type: scrapeConfig.mode,
+        format: scrapeConfig.format,
+        max_depth: scrapeConfig.depth,
+        max_pages: scrapeConfig.pages,
+        timeout: scrapeConfig.timeout,
+        include_pages: scrapeConfig.includePages,
+        include_media: scrapeConfig.includeMedia,
+        workers: scrapeConfig.workers,
+        respect_robots: scrapeConfig.respectRobots,
+        deepcrawl: scrapeConfig.deepCrawl,
+        playwright: scrapeConfig.playwright,
       };
-      if (scrapeContentType !== "all") body.content_type = scrapeContentType;
-      body.download_images = scrapeImages;
-      body.download_pdfs = scrapePdfs;
+      if (scrapeConfig.contentType !== "all") body.content_type = scrapeConfig.contentType;
+      body.download_images = scrapeConfig.downloadImages;
+      body.download_pdfs = scrapeConfig.downloadPdfs;
       const res = await apiFetch(`/tenants/${tenantId}/scrape/enhanced`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -906,7 +909,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       });
       const result = await res.json();
       setScrapeResult(result);
-      if ((scrapeMode === "recursive" || scrapeMode === "full") && result?.data?.job_id) {
+      if ((scrapeConfig.mode === "recursive" || scrapeConfig.mode === "full") && result?.data?.job_id) {
         setScrapeJobId(result.data.job_id);
       }
       refetchDocs();
@@ -1151,8 +1154,8 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
               { id: "full", label: "Full Site" },
               { id: "wordpress", label: "WordPress" },
             ].map((m) => (
-              <button key={m.id} onClick={() => setScrapeMode(m.id)}
-                className={`rounded px-3 py-1.5 text-xs font-medium border ${scrapeMode === m.id ? "bg-primary text-primary-foreground border-primary" : "bg-panel text-muted-foreground border-border hover:bg-elevated"}`}>
+              <button key={m.id} onClick={() => updateScrape('mode', m.id)}
+                className={`rounded px-3 py-1.5 text-xs font-medium border ${scrapeConfig.mode === m.id ? "bg-primary text-primary-foreground border-primary" : "bg-panel text-muted-foreground border-border hover:bg-elevated"}`}>
                 {m.label}
               </button>
             ))}
@@ -1160,20 +1163,20 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
 
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_auto]">
             <Field label="URL">
-              <input className="input font-mono text-xs" value={scrapeUrl} onChange={(e) => setScrapeUrl(e.target.value)} placeholder="https://example.com/page" />
+              <input className="input font-mono text-xs" value={scrapeConfig.url} onChange={(e) => updateScrape('url', e.target.value)} placeholder="https://example.com/page" />
             </Field>
-            {(scrapeMode === "recursive" || scrapeMode === "single" || scrapeMode === "smart" || scrapeMode === "full") && (
+            {(scrapeConfig.mode === "recursive" || scrapeConfig.mode === "single" || scrapeConfig.mode === "smart" || scrapeConfig.mode === "full") && (
               <>
                 <Field label="Max depth">
-                  <input className="input" type="number" value={scrapeDepth} onChange={(e) => setScrapeDepth(Number(e.target.value))} />
+                  <input className="input" type="number" value={scrapeConfig.depth} onChange={(e) => updateScrape('depth', Number(e.target.value))} />
                 </Field>
                 <Field label="Max pages">
-                  <input className="input" type="number" value={scrapePages} onChange={(e) => setScrapePages(Number(e.target.value))} />
+                  <input className="input" type="number" value={scrapeConfig.pages} onChange={(e) => updateScrape('pages', Number(e.target.value))} />
                 </Field>
               </>
             )}
             <div className="flex items-end">
-              <button disabled={scraping || !scrapeUrl} onClick={handleScrape} className="inline-flex h-[38px] items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
+              <button disabled={scraping || !scrapeConfig.url} onClick={handleScrape} className="inline-flex h-[38px] items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
                 {scraping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
                 {scraping ? "Scraping..." : "Start scrape"}
               </button>
@@ -1182,13 +1185,13 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
 
           {/* Contextual options based on mode */}
           <div className="mt-4 grid gap-4 md:grid-cols-3">
-            {scrapeMode === "smart" && (
+            {scrapeConfig.mode === "smart" && (
               <>
                 <Field label="Timeout (s)">
-                  <input className="input" type="number" value={scrapeTimeout} onChange={(e) => setScrapeTimeout(Number(e.target.value))} />
+                  <input className="input" type="number" value={scrapeConfig.timeout} onChange={(e) => updateScrape('timeout', Number(e.target.value))} />
                 </Field>
                 <Field label="Content type">
-                  <select className="input text-xs" value={scrapeContentType} onChange={(e) => setScrapeContentType(e.target.value)}>
+                  <select className="input text-xs" value={scrapeConfig.contentType} onChange={(e) => updateScrape('contentType', e.target.value)}>
                     <option value="all">All</option>
                     <option value="text">Text only</option>
                     <option value="images">Images</option>
@@ -1196,54 +1199,54 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                   </select>
                 </Field>
                 <Field label="Format">
-                  <select className="input text-xs" value={scrapeFormat} onChange={(e) => setScrapeFormat(e.target.value)}>
+                  <select className="input text-xs" value={scrapeConfig.format} onChange={(e) => updateScrape('format', e.target.value)}>
                     <option value="json">JSON</option>
                     <option value="markdown">Markdown</option>
                   </select>
                 </Field>
               </>
             )}
-            {scrapeMode === "single" && (
+            {scrapeConfig.mode === "single" && (
               <Field label="Format">
-                <select className="input text-xs" value={scrapeFormat} onChange={(e) => setScrapeFormat(e.target.value)}>
+                <select className="input text-xs" value={scrapeConfig.format} onChange={(e) => updateScrape('format', e.target.value)}>
                   <option value="json">JSON</option>
                   <option value="markdown">Markdown</option>
                 </select>
               </Field>
             )}
-            {scrapeMode === "recursive" && (
+            {scrapeConfig.mode === "recursive" && (
               <>
                 <Field label="Workers">
-                  <input className="input" type="number" value={scrapeWorkers} onChange={(e) => setScrapeWorkers(Number(e.target.value))} min={1} max={10} />
+                  <input className="input" type="number" value={scrapeConfig.workers} onChange={(e) => updateScrape('workers', Number(e.target.value))} min={1} max={10} />
                 </Field>
                 <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeRespectRobots} onChange={(e) => setScrapeRespectRobots(e.target.checked)} className="accent-primary" />
+                  <input type="checkbox" checked={scrapeConfig.respectRobots} onChange={(e) => updateScrape('respectRobots', e.target.checked)} className="accent-primary" />
                   <span className="text-xs text-muted-foreground">Respect robots.txt</span>
                 </label>
               </>
             )}
-            {scrapeMode === "wordpress" && (
+            {scrapeConfig.mode === "wordpress" && (
               <>
                 <Field label="Max pages">
-                  <input className="input" type="number" value={scrapePages} onChange={(e) => setScrapePages(Number(e.target.value))} />
+                  <input className="input" type="number" value={scrapeConfig.pages} onChange={(e) => updateScrape('pages', Number(e.target.value))} />
                 </Field>
                 <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeIncludePages} onChange={(e) => setScrapeIncludePages(e.target.checked)} className="accent-primary" />
+                  <input type="checkbox" checked={scrapeConfig.includePages} onChange={(e) => updateScrape('includePages', e.target.checked)} className="accent-primary" />
                   <span className="text-xs text-muted-foreground">Include pages</span>
                 </label>
                 <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeIncludeMedia} onChange={(e) => setScrapeIncludeMedia(e.target.checked)} className="accent-primary" />
+                  <input type="checkbox" checked={scrapeConfig.includeMedia} onChange={(e) => updateScrape('includeMedia', e.target.checked)} className="accent-primary" />
                   <span className="text-xs text-muted-foreground">Include media</span>
                 </label>
               </>
             )}
-            {scrapeMode === "full" && (
+            {scrapeConfig.mode === "full" && (
               <>
                 <Field label="Workers">
-                  <input className="input" type="number" value={scrapeWorkers} onChange={(e) => setScrapeWorkers(Number(e.target.value))} min={1} max={10} />
+                  <input className="input" type="number" value={scrapeConfig.workers} onChange={(e) => updateScrape('workers', Number(e.target.value))} min={1} max={10} />
                 </Field>
                 <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeRespectRobots} onChange={(e) => setScrapeRespectRobots(e.target.checked)} className="accent-primary" />
+                  <input type="checkbox" checked={scrapeConfig.respectRobots} onChange={(e) => updateScrape('respectRobots', e.target.checked)} className="accent-primary" />
                   <span className="text-xs text-muted-foreground">Respect robots.txt</span>
                 </label>
               </>
@@ -1255,19 +1258,19 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Additional Options</h4>
             <div className="flex flex-wrap gap-x-6 gap-y-2">
               <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={scrapeDeepCrawl} onChange={(e) => setScrapeDeepCrawl(e.target.checked)} className="accent-primary" />
+                <input type="checkbox" checked={scrapeConfig.deepCrawl} onChange={(e) => updateScrape('deepCrawl', e.target.checked)} className="accent-primary" />
                 <span className="text-xs text-muted-foreground">DeepCrawl (bypass bot protection)</span>
               </label>
               <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={scrapeImages} onChange={(e) => setScrapeImages(e.target.checked)} className="accent-primary" />
+                <input type="checkbox" checked={scrapeConfig.downloadImages} onChange={(e) => updateScrape('downloadImages', e.target.checked)} className="accent-primary" />
                 <span className="text-xs text-muted-foreground">Images</span>
               </label>
               <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={scrapePdfs} onChange={(e) => setScrapePdfs(e.target.checked)} className="accent-primary" />
+                <input type="checkbox" checked={scrapeConfig.downloadPdfs} onChange={(e) => updateScrape('downloadPdfs', e.target.checked)} className="accent-primary" />
                 <span className="text-xs text-muted-foreground">PDFs</span>
               </label>
               <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={scrapePlaywright} onChange={(e) => setScrapePlaywright(e.target.checked)} className="accent-primary" />
+                <input type="checkbox" checked={scrapeConfig.playwright} onChange={(e) => updateScrape('playwright', e.target.checked)} className="accent-primary" />
                 <span className="text-xs text-muted-foreground">Playwright (browser rendering)</span>
               </label>
             </div>
