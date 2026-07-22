@@ -1744,14 +1744,12 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       {source === "cloud" && (
         <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Connect a cloud source</h3>
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
             {[
               { name: "Google Drive", provider: "google_drive" },
-              { name: "Notion", provider: "direct_url" },
-              { name: "Confluence", provider: "direct_url" },
-              { name: "Dropbox", provider: "direct_url" },
+              { name: "Confluence", provider: "confluence" },
               { name: "OneDrive", provider: "onedrive" },
-              { name: "S3 Bucket", provider: "direct_url" },
+              { name: "S3", provider: "s3" }
             ].map(({ name, provider }) => (
               <button
                 key={name}
@@ -2851,7 +2849,7 @@ function EmptyState() {
   );
 }
 
-function CloudSyncInline({ tenantId, initialProvider = "direct_url", onClose }: { tenantId?: string; initialProvider?: string; onClose: () => void }) {
+function CloudSyncInline({ tenantId, initialProvider = "google_drive", onClose }: { tenantId?: string; initialProvider?: string; onClose: () => void }) {
   const [provider, setProvider] = useState(initialProvider);
   const [urlOrId, setUrlOrId] = useState("");
   const [token, setToken] = useState("");
@@ -2886,17 +2884,18 @@ function CloudSyncInline({ tenantId, initialProvider = "direct_url", onClose }: 
     <form onSubmit={handleSync} className="space-y-4">
       <Field label="Provider">
         <select className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
-          <option value="direct_url">Direct URL</option>
           <option value="google_drive">Google Drive</option>
+          <option value="confluence">Confluence</option>
           <option value="onedrive">OneDrive</option>
+          <option value="s3">S3</option>
         </select>
       </Field>
-      <Field label={provider === "direct_url" ? "File URL" : "File ID or URL"}>
-        <input className="input font-mono text-xs" value={urlOrId} onChange={(e) => setUrlOrId(e.target.value)} placeholder={provider === "direct_url" ? "https://example.com/file.pdf" : "Enter file ID or sharing URL"} />
+      <Field label={provider === "s3" ? "S3 Presigned URL" : provider === "confluence" ? "Confluence Page ID or URL" : "File ID or Sharing URL"}>
+        <input className="input font-mono text-xs" value={urlOrId} onChange={(e) => setUrlOrId(e.target.value)} placeholder={provider === "s3" ? "https://bucket.s3.amazonaws.com/file.pdf" : "Enter sharing URL or ID"} />
       </Field>
-      {provider === "google_drive" && (
+      {(provider === "google_drive" || provider === "confluence") && (
         <Field label="API Key / Token (optional)">
-          <input className="input font-mono text-xs" value={token} onChange={(e) => setToken(e.target.value)} placeholder="OAuth token or API key" />
+          <input className="input font-mono text-xs" value={token} onChange={(e) => setToken(e.target.value)} placeholder="OAuth token, API key or basic auth" />
         </Field>
       )}
       <Field label="Custom filename (optional)">
