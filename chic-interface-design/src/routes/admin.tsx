@@ -102,6 +102,7 @@ function AdminPage() {
   const [showAddTenant, setShowAddTenant] = useState(false);
   const [showCloudSync, setShowCloudSync] = useState(false);
   const [showSystemLogs, setShowSystemLogs] = useState(false);
+  const [showProviderSettings, setShowProviderSettings] = useState(false);
 
   // Select the first tenant if none is active
   useEffect(() => {
@@ -114,9 +115,9 @@ function AdminPage() {
   const filtered = tenants.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()));
 
   return (
-    <div className="grid min-h-screen grid-cols-[280px_1fr]">
+    <div className="grid h-screen grid-cols-[280px_1fr] overflow-hidden">
       {/* Sidebar */}
-      <aside className="flex flex-col border-r border-border bg-panel/60 backdrop-blur">
+      <aside className="flex flex-col border-r border-border bg-panel/60 backdrop-blur overflow-hidden">
         <div className="flex items-center justify-between px-5 py-5">
           <Link to="/" className="flex items-center gap-2">
             <div className="grid h-8 w-8 place-items-center rounded-md bg-[image:var(--gradient-primary)] text-sm font-bold text-primary-foreground">T</div>
@@ -125,12 +126,30 @@ function AdminPage() {
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Admin</div>
             </div>
           </Link>
-          <Link to="/" className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground">
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowProviderSettings(true)}
+              title="LLM Provider Settings"
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+            <Link to="/" className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground">
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+          </div>
         </div>
 
         <div className="px-4 pb-3">
+          {/* Add New Client */}
+          <button
+            onClick={() => setShowAddTenant(true)}
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-3 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90 mb-3"
+          >
+            <Plus className="h-4 w-4" /> Add New Client
+          </button>
+
+          {/* Search */}
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <input
@@ -166,16 +185,10 @@ function AdminPage() {
             </button>
           ))}
         </div>
-
-        <div className="border-t border-border p-4">
-          <button onClick={() => setShowAddTenant(true)} className="flex w-full items-center justify-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-3 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90">
-            <Plus className="h-4 w-4" /> Add New Client
-          </button>
-        </div>
       </aside>
 
       {/* Main */}
-      <main className="flex flex-col overflow-hidden">
+      <main className="flex flex-col h-screen overflow-hidden">
         {active ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-panel/40 px-8 py-5 backdrop-blur">
@@ -214,14 +227,14 @@ function AdminPage() {
               ))}
             </div>
 
-            <div className="flex-1 overflow-y-auto px-8 py-6">
-              {tab === "config" && <ConfigTab tenant={active} />}
-              {tab === "documents" && <DocumentsTab tenantId={active?.id} />}
-              {tab === "playground" && <PlaygroundTab tenantId={active?.id} />}
-              {tab === "health" && <HealthTab />}
-              {tab === "integration" && <IntegrationTab tenantId={active.id} />}
-              {tab === "settings" && <SettingsTab />}
-              {tab === "console" && <ConsoleTab tenant={active} />}
+            <div className="flex-1 overflow-hidden">
+              {tab === "config" && <div className="h-full overflow-y-auto px-8 py-6"><ConfigTab tenant={active} /></div>}
+              {tab === "documents" && <div className="h-full flex flex-col px-8 py-6 overflow-hidden"><DocumentsTab tenantId={active?.id} /></div>}
+              {tab === "playground" && <div className="h-full overflow-y-auto px-8 py-6"><PlaygroundTab tenantId={active?.id} /></div>}
+              {tab === "health" && <div className="h-full overflow-y-auto px-8 py-6"><HealthTab /></div>}
+              {tab === "integration" && <div className="h-full overflow-y-auto px-8 py-6"><IntegrationTab tenantId={active.id} /></div>}
+              {tab === "settings" && <div className="h-full overflow-y-auto px-8 py-6"><SettingsTab /></div>}
+              {tab === "console" && <div className="h-full overflow-y-auto px-8 py-6"><ConsoleTab tenant={active} /></div>}
             </div>
           </>
         ) : (
@@ -231,6 +244,24 @@ function AdminPage() {
       {showAddTenant && <AddTenantModal onClose={() => setShowAddTenant(false)} />}
       {showCloudSync && <CloudSyncModal tenantId={active?.id || ""} onClose={() => setShowCloudSync(false)} />}
       {showSystemLogs && <SystemLogsModal tenantId={active?.id} onClose={() => setShowSystemLogs(false)} />}
+      {showProviderSettings && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={() => setShowProviderSettings(false)}>
+          <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-border bg-[var(--modal-bg)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-border px-6 py-4 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <Settings className="h-4 w-4 text-primary" />
+                <h2 className="text-sm font-semibold">LLM Provider Settings</h2>
+              </div>
+              <button onClick={() => setShowProviderSettings(false)} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto px-6 py-5">
+              <SettingsTab />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -428,6 +459,88 @@ const providerDefaults: Record<string, string> = {
   openrouter: "openai/gpt-4o-mini",
   anthropic: "claude-3-5-haiku-latest",
   openai_compatible: "gpt-4o-mini",
+};
+
+// Embedding provider metadata — models, dimensions, docs URL
+const embeddingProviderMeta: Record<string, {
+  label: string;
+  defaultModel: string;
+  defaultDimensions: number;
+  defaultBaseUrl?: string;
+  paid: boolean;
+  models: { name: string; dims: number; note?: string }[];
+  docsUrl: string;
+  apiKeyLabel?: string;
+}> = {
+  hash: {
+    label: "Local Deterministic Hash",
+    defaultModel: "hash-384",
+    defaultDimensions: 384,
+    paid: false,
+    models: [{ name: "hash-384", dims: 384, note: "No external API — fast, deterministic" }],
+    docsUrl: "",
+  },
+  bge: {
+    label: "BGE Small (Local)",
+    defaultModel: "BAAI/bge-small-en-v1.5",
+    defaultDimensions: 384,
+    paid: false,
+    models: [
+      { name: "BAAI/bge-small-en-v1.5", dims: 384 },
+      { name: "BAAI/bge-base-en-v1.5",  dims: 768 },
+      { name: "BAAI/bge-large-en-v1.5", dims: 1024, note: "Best quality, slower" },
+    ],
+    docsUrl: "https://huggingface.co/BAAI/bge-small-en-v1.5",
+  },
+  bge_m3: {
+    label: "BGE-M3 (Local)",
+    defaultModel: "BAAI/bge-m3",
+    defaultDimensions: 1024,
+    paid: false,
+    models: [{ name: "BAAI/bge-m3", dims: 1024, note: "Multilingual, high quality" }],
+    docsUrl: "https://huggingface.co/BAAI/bge-m3",
+  },
+  openai: {
+    label: "OpenAI Embeddings",
+    defaultModel: "text-embedding-3-small",
+    defaultDimensions: 1536,
+    defaultBaseUrl: "https://api.openai.com/v1",
+    paid: true,
+    apiKeyLabel: "OpenAI API Key (sk-...)",
+    models: [
+      { name: "text-embedding-3-small", dims: 1536, note: "Cheapest — $0.02/1M tokens" },
+      { name: "text-embedding-3-large", dims: 3072, note: "Best quality — $0.13/1M tokens" },
+      { name: "text-embedding-ada-002",  dims: 1536, note: "Legacy model" },
+    ],
+    docsUrl: "https://platform.openai.com/docs/guides/embeddings",
+  },
+  gemini: {
+    label: "Google Gemini Embeddings",
+    defaultModel: "text-embedding-004",
+    defaultDimensions: 768,
+    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    paid: true,
+    apiKeyLabel: "Google AI API Key",
+    models: [
+      { name: "text-embedding-004",    dims: 768,  note: "Latest — best for retrieval" },
+      { name: "embedding-001",         dims: 768,  note: "Older generation" },
+      { name: "text-multilingual-embedding-002", dims: 768, note: "Multilingual support" },
+    ],
+    docsUrl: "https://ai.google.dev/gemini-api/docs/embeddings",
+  },
+  openai_compatible: {
+    label: "OpenAI-Compatible (Ollama / vLLM / etc.)",
+    defaultModel: "nomic-embed-text",
+    defaultDimensions: 768,
+    defaultBaseUrl: "http://localhost:11434/v1",
+    paid: false,
+    models: [
+      { name: "nomic-embed-text",  dims: 768,  note: "Ollama — good general purpose" },
+      { name: "mxbai-embed-large", dims: 1024, note: "Ollama — high quality" },
+      { name: "all-minilm",        dims: 384,  note: "Ollama — lightweight" },
+    ],
+    docsUrl: "https://ollama.com/search?c=embedding",
+  },
 };
 
 const accents = {
@@ -644,9 +757,9 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
             </select>
           </Field>
           <Field label="Semantic Chunking">
-            <select className="input" value={form.chunkingSemantic ? "true" : "false"} onChange={(e) => upd("chunkingSemantic", e.target.value === "true")}>
-              <option value="false">Disabled (heading-based)</option>
+            <select className="input" value={(form.chunkingSemantic ?? true) ? "true" : "false"} onChange={(e) => upd("chunkingSemantic", e.target.value === "true")}>
               <option value="true">Enabled (embedding similarity merge)</option>
+              <option value="false">Disabled (heading-based)</option>
             </select>
           </Field>
           <Field label="Semantic Threshold">
@@ -658,26 +771,124 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
       <div className="panel p-6">
         <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground" style={{ color: "var(--accent-teal)" }}>Core RAG Settings</h3>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {/* ── Embedding Provider ── */}
           <Field label="Embedding Provider">
-            <select className="input" value={form.embeddingProvider || "hash"} onChange={(e) => upd("embeddingProvider", e.target.value)}>
-              <option value="hash">Local Deterministic Hash (384d)</option>
-              <option value="bge">BGE Small (384d)</option>
-              <option value="bge_m3">BGE-M3 (1024d)</option>
-              <option value="openai">OpenAI (1536d)</option>
-              <option value="gemini">Gemini (768d)</option>
-              <option value="openai_compatible">OpenAI-Compatible Custom</option>
+            <select
+              className="input"
+              value={form.embeddingProvider || "hash"}
+              onChange={(e) => {
+                const p = e.target.value;
+                const meta = embeddingProviderMeta[p];
+                upd("embeddingProvider", p);
+                if (meta) {
+                  upd("embeddingModel",      meta.defaultModel);
+                  upd("embeddingDimensions", meta.defaultDimensions);
+                  upd("embeddingBaseUrl",    meta.defaultBaseUrl || "");
+                }
+              }}
+            >
+              <option value="hash">Local Deterministic Hash (384d) — Free</option>
+              <option value="bge">BGE Small (384d) — Free, Local</option>
+              <option value="bge_m3">BGE-M3 (1024d) — Free, Local</option>
+              <option value="openai">OpenAI Embeddings (1536d) — Paid</option>
+              <option value="gemini">Gemini Embeddings (768d) — Paid</option>
+              <option value="openai_compatible">OpenAI-Compatible / Ollama — Custom</option>
             </select>
           </Field>
+
+          {/* Paid provider info banner */}
+          {(() => {
+            const meta = embeddingProviderMeta[form.embeddingProvider || "hash"];
+            if (!meta || !meta.paid) return null;
+            return (
+              <div className="sm:col-span-2 lg:col-span-3 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+                <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-amber-400" />
+                <div className="space-y-1">
+                  <p className="font-semibold text-amber-300">{meta.label} — Paid API</p>
+                  <p className="text-amber-200/80">
+                    Requires an API key from the provider. Available models:
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {meta.models.map((m) => (
+                      <li key={m.name} className="flex items-center gap-2">
+                        <span className="font-mono text-amber-100">{m.name}</span>
+                        <span className="text-amber-300/60">({m.dims}d)</span>
+                        {m.note && <span className="text-amber-200/50">— {m.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <a
+                    href={meta.docsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1.5 inline-flex items-center gap-1 font-medium text-amber-300 underline underline-offset-2 hover:text-amber-100"
+                  >
+                    <Globe className="h-3 w-3" /> View official docs →
+                  </a>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Free provider model hint */}
+          {(() => {
+            const meta = embeddingProviderMeta[form.embeddingProvider || "hash"];
+            if (!meta || meta.paid || meta.models.length <= 1) return null;
+            return (
+              <div className="sm:col-span-2 lg:col-span-3 flex items-start gap-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-xs text-sky-200">
+                <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-sky-400" />
+                <div className="space-y-0.5">
+                  <p className="font-semibold text-sky-300">{meta.label} — Available Models</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {meta.models.map((m) => (
+                      <li key={m.name} className="flex items-center gap-2">
+                        <span className="font-mono text-sky-100">{m.name}</span>
+                        <span className="text-sky-300/60">({m.dims}d)</span>
+                        {m.note && <span className="text-sky-200/50">— {m.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  {meta.docsUrl && (
+                    <a
+                      href={meta.docsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1.5 inline-flex items-center gap-1 font-medium text-sky-300 underline underline-offset-2 hover:text-sky-100"
+                    >
+                      <Globe className="h-3 w-3" /> HuggingFace model page →
+                    </a>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           <Field label="Embedding Model">
-            <input className="input" value={form.embeddingModel || "BAAI/bge-small-en-v1.5"} onChange={(e) => upd("embeddingModel", e.target.value)} />
+            <input
+              className="input"
+              value={form.embeddingModel || "BAAI/bge-small-en-v1.5"}
+              onChange={(e) => upd("embeddingModel", e.target.value)}
+              list="embedding-models-list"
+              placeholder={embeddingProviderMeta[form.embeddingProvider || "hash"]?.defaultModel}
+            />
+            <datalist id="embedding-models-list">
+              {(embeddingProviderMeta[form.embeddingProvider || "hash"]?.models || []).map((m) => (
+                <option key={m.name} value={m.name} />
+              ))}
+            </datalist>
           </Field>
           <Field label="Embedding Dimensions">
             <input className="input" type="number" value={form.embeddingDimensions ?? 384} onChange={(e) => upd("embeddingDimensions", Number(e.target.value))} />
           </Field>
           <Field label="Embedding Base URL">
-            <input className="input font-mono text-xs" value={form.embeddingBaseUrl || ""} onChange={(e) => upd("embeddingBaseUrl", e.target.value)} placeholder="https://api.nvidia.com/v1" />
+            <input
+              className="input font-mono text-xs"
+              value={form.embeddingBaseUrl || ""}
+              onChange={(e) => upd("embeddingBaseUrl", e.target.value)}
+              placeholder={embeddingProviderMeta[form.embeddingProvider || "hash"]?.defaultBaseUrl || "https://api.example.com/v1"}
+            />
           </Field>
-          <Field label="Embedding API Key">
+          <Field label={embeddingProviderMeta[form.embeddingProvider || "hash"]?.apiKeyLabel || "Embedding API Key"}>
             <input className="input font-mono" type="password" value={form.embeddingApiKey || ""} onChange={(e) => upd("embeddingApiKey", e.target.value)} placeholder="*** to keep current" />
           </Field>
           <Field label="System Prompt">
@@ -787,6 +998,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const [ingesting, setIngesting] = useState(false);
   const [ingestProgress, setIngestProgress] = useState<{ status: string; progress: number; logs: string[]; summary?: any } | null>(null);
   const [viewDoc, setViewDoc] = useState<string | null>(null);
+  const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
   const [chunks, setChunks] = useState<any[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
   const [cloudProvider, setCloudProvider] = useState<string | null>(null);
@@ -974,6 +1186,22 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     }
   }
 
+  async function handleBulkDelete() {
+    if (!tenantId || selectedDocs.size === 0) return;
+    if (!confirm(`Delete ${selectedDocs.size} selected documents? This cannot be undone.`)) return;
+    const names = Array.from(selectedDocs);
+    let failed = 0;
+    for (const name of names) {
+      try {
+        await apiFetch(`/tenants/${tenantId}/documents/${encodeURIComponent(name)}`, { method: "DELETE" });
+      } catch { failed++; }
+    }
+    setSelectedDocs(new Set());
+    refetchDocs();
+    queryClient.invalidateQueries({ queryKey: ["tenants"] });
+    if (failed > 0) alert(`${failed} file(s) failed to delete.`);
+  }
+
   async function handleViewChunks(filename: string) {
     if (!tenantId) return;
     setViewDoc(filename);
@@ -1053,8 +1281,9 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-3 md:grid-cols-4">
+    <div className="flex flex-col h-full gap-3 overflow-hidden">
+      {/* Top: fixed source cards */}
+      <div className="grid gap-3 md:grid-cols-4 flex-shrink-0">
         <SourceCard active={source === "files"} onClick={() => setSource("files")} accent="amber" icon={Upload} title="File upload" desc="PDF, DOCX, MD, TXT, CSV, HTML" />
         <SourceCard active={source === "web"} onClick={() => setSource("web")} accent="sky" icon={Globe} title="Web scraping" desc="Crawl a URL. Auto-clean, chunk & index." />
         <SourceCard active={source === "cloud"} onClick={() => setSource("cloud")} accent="emerald" icon={Cloud} title="Cloud sync" desc="Google Drive, Notion, Confluence, S3" />
@@ -1062,7 +1291,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       </div>
 
       {source === "files" && (
-        <div className="panel p-6">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
           <div className="rounded-xl border-2 border-dashed border-border bg-elevated/40 p-8 text-center">
             <Upload className="mx-auto h-8 w-8 text-primary" />
             <p className="mt-3 text-sm font-medium">Drop files here or click to browse</p>
@@ -1135,7 +1364,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "web" && (
-        <div className="panel p-6">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
           {/* Scraper service health indicator */}
           <div className="flex items-center gap-2 mb-4">
             <span className={`w-2 h-2 rounded-full ${scraperHealth?.alive ? "bg-success" : "bg-destructive"}`} />
@@ -1390,7 +1619,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "crawl" && (
-        <div className="panel p-6">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Crawl Output</h3>
           <p className="mt-2 text-xs text-muted-foreground">Browse scraped sites from the scraper service and import content to tenant documents.</p>
 
@@ -1513,7 +1742,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "cloud" && (
-        <div className="panel p-6">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Connect a cloud source</h3>
           <div className="mt-4 grid gap-3 md:grid-cols-3">
             {[
@@ -1537,23 +1766,56 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
         </div>
       )}
 
-      <div className="panel overflow-hidden">
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <div className="text-sm font-semibold">Documents</div>
-          <div className="text-xs text-muted-foreground">{docs.length} files</div>
+      <div className="panel overflow-hidden flex flex-col flex-1 min-h-0">
+        <div className="flex items-center justify-between border-b border-border px-5 py-3 flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="text-sm font-semibold">Documents</div>
+            <div className="text-xs text-muted-foreground">{docs.length} files</div>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedDocs.size > 0 && (
+              <>
+                <span className="text-xs text-muted-foreground">{selectedDocs.size} selected</span>
+                <button
+                  onClick={handleBulkDelete}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20"
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> Delete Selected
+                </button>
+                <button
+                  onClick={() => setSelectedDocs(new Set())}
+                  className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-elevated"
+                >
+                  Clear
+                </button>
+              </>
+            )}
+          </div>
         </div>
         {docs.length === 0 ? (
           <div className="py-12 text-center text-xs text-muted-foreground">No documents uploaded yet</div>
         ) : (
+          <div className="overflow-y-auto flex-1">
             <table className="w-full text-sm">
-            <thead className="bg-elevated/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
+            <thead className="sticky top-0 bg-elevated/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
               <tr>
-                <th className="px-5 py-3">Name</th>
-                <th className="px-5 py-3">Source</th>
-                <th className="px-5 py-3">Size</th>
-                <th className="px-5 py-3">Chunks</th>
-                <th className="px-5 py-3">Ingested</th>
-                <th className="px-5 py-3" />
+                <th className="px-3 py-3">
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={selectedDocs.size === docs.length && docs.length > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedDocs(new Set(docs.map((d: any) => d.name)));
+                      else setSelectedDocs(new Set());
+                    }}
+                  />
+                </th>
+                <th className="px-3 py-3">Name</th>
+                <th className="px-3 py-3">Source</th>
+                <th className="px-3 py-3">Size</th>
+                <th className="px-3 py-3">Chunks</th>
+                <th className="px-3 py-3">Ingested</th>
+                <th className="px-3 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -1567,18 +1829,32 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                   onedrive: "bg-[#0078d4]/10 text-[#0078d4] border-[#0078d4]/20",
                   s3: "bg-[#ff9900]/10 text-[#ff9900] border-[#ff9900]/20",
                 };
+                const isSelected = selectedDocs.has(d.name);
                 return (
-                <tr key={d.name || i} className="hover:bg-elevated/40">
-                  <td className="px-5 py-3 font-medium">
-                    <div className="flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /> {d.name}</div>
+                <tr key={d.name || i} className={`hover:bg-elevated/40 ${isSelected ? "bg-primary/5" : ""}`}>
+                  <td className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      className="accent-primary"
+                      checked={isSelected}
+                      onChange={(e) => {
+                        const next = new Set(selectedDocs);
+                        if (e.target.checked) next.add(d.name);
+                        else next.delete(d.name);
+                        setSelectedDocs(next);
+                      }}
+                    />
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="px-3 py-3 font-medium">
+                    <div className="flex items-center gap-2"><FileText className="h-4 w-4 text-primary flex-shrink-0" /> <span className="truncate max-w-[260px]" title={d.name}>{d.name}</span></div>
+                  </td>
+                  <td className="px-3 py-3">
                     <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${srcColors[src] || srcColors.upload} border`}>{src}</span>
                   </td>
-                  <td className="px-5 py-3 text-muted-foreground text-xs">{formatSize(d.size_bytes)}</td>
-                  <td className="px-5 py-3 font-mono text-xs">{d.chunks ?? "—"}</td>
-                  <td className="px-5 py-3"><Pill status={d.ingested ? "indexed" : "queued"} /></td>
-                  <td className="px-5 py-3 text-right">
+                  <td className="px-3 py-3 text-muted-foreground text-xs">{formatSize(d.size_bytes)}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{d.chunks ?? "—"}</td>
+                  <td className="px-3 py-3"><Pill status={d.ingested ? "indexed" : "queued"} /></td>
+                  <td className="px-3 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
                       <button onClick={() => handleViewChunks(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated" title="View chunks">
                         <Database className="h-4 w-4" />
@@ -1593,6 +1869,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

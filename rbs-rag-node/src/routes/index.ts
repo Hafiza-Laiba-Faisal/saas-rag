@@ -373,6 +373,135 @@ export function routes(
     res.json(ingestionStatus[req.params.tenantId] || { status: 'idle', logs: ['No ingestion tasks run yet.'], progress: 0, summary: null });
   });
 
+  // ===================== RETRIEVE (no LLM) =====================
+  router.post('/tenants/:tenantId/retrieve', requireAdmin, async (req, res) => {
+    const tenant = await adminStore.getTenant(req.params.tenantId);
+    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+    if (tenant.status !== 'active') return res.status(403).json({ detail: 'Tenant account is suspended' });
+    const { query, top_k } = req.body;
+    if (!query) return res.status(400).json({ detail: 'query is required' });
+    const engine = await getOrCreateEngine(tenant);
+    try {
+      const { results, profile } = await engine.retriever.search(query, 'default', tenant.tenantId);
+      res.json({
+        chunks: results.map((r: any) => ({
+          chunk_id: r.chunk?.chunkId || r.chunk?.id || '',
+          document_name: r.chunk?.metadata?.document_name || r.chunk?.metadata?.source || r.chunk?.documentName || '',
+          score: r.score ?? 0,
+          dense_score: r.denseScore ?? 0,
+          sparse_score: r.sparseScore ?? 0,
+          rerank_score: r.rerankScore ?? null,
+          text: r.chunk?.text || '',
+          metadata: r.chunk?.metadata || {},
+        })),
+        profile,
+      });
+    } catch (err: any) {
+      res.status(500).json({ detail: `Retrieval error: ${err.message}` });
+    }
+  });
+
+  // ===================== DEBUG RETRIEVE (full inspection) =====================
+  router.post('/tenants/:tenantId/retrieve/debug', requireAdmin, async (req, res) => {
+    const tenant = await adminStore.getTenant(req.params.tenantId);
+    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+    if (tenant.status !== 'active') return res.status(403).json({ detail: 'Tenant account is suspended' });
+    const { query } = req.body;
+    if (!query) return res.status(400).json({ detail: 'query is required' });
+    const engine = await getOrCreateEngine(tenant);
+    try {
+      const { results, profile } = await engine.retriever.search(query, 'default', tenant.tenantId);
+
+      // Effective config snapshot
+      const effectiveConfig = {
+        reranker: tenant.rerankerType || 'none',
+        embedding_provider: tenant.embeddingProvider,
+        embedding_model: tenant.embeddingModel,
+        embedding_dimensions: tenant.embeddingDimensions,
+        semantic_chunking: tenant.chunkingSemantic,
+        semantic_threshold: tenant.chunkingSemanticThreshold,
+        top_k: tenant.retrievalTopK,
+        rerank_top_k: tenant.retrievalRerankTopK,
+        final_context_k: tenant.retrievalFinalContextK,
+        dense_weight: tenant.retrievalDenseWeight,
+        sparse_weight: tenant.retrievalSparseWeight,
+        chunk_max_tokens: tenant.chunkingMaxTokens,
+        chunk_overlap_tokens: tenant.chunkingOverlapTokens,
+        config_hash: (await import('crypto')).default.createHash('md5').update(
+          JSON.stringify([tenant.rerankerType, tenant.chunkingSemantic, tenant.chunkingSemanticThreshold,
+            tenant.retrievalTopK, tenant.retrievalRerankTopK, tenant.retrievalFinalContextK,
+            tenant.retrievalDenseWeight, tenant.retrievalSparseWeight])
+        ).digest('hex').slice(0, 8),
+        last_updated: tenant.updatedAt,
+      };
+
+      // All chunks with full detail
+      const chunks = results.map((r: any, idx: number) => ({
+        final_rank: idx + 1,
+        chunk_id: r.chunk?.chunkId || '',
+        document_name: r.chunk?.metadata?.document_name || r.chunk?.metadata?.source || '',
+        chunk_length: (r.chunk?.text || '').length,
+        chunk_tokens: Math.round((r.chunk?.text || '').split(/\s+/).length * 1.3),
+        text_preview: (r.chunk?.text || '').slice(0, 300),
+        fusion_score: r.score ?? 0,
+        dense_score: r.denseScore ?? 0,
+        sparse_score: r.sparseScore ?? 0,
+        rerank_score: r.rerankScore ?? null,
+        ordinal: r.chunk?.ordinal ?? null,
+        metadata: r.chunk?.metadata || {},
+      }));
+
+      res.json({
+        query,
+        effective_config: effectiveConfig,
+        retrieval_profile: {
+          total_ms: Math.round(profile.totalRetrievalMs),
+          embedding_ms: Math.round(profile.denseEmbMs),
+          vector_search_ms: Math.round(profile.vectorSimMs),
+          bm25_ms: Math.round(profile.bm25Ms),
+          rerank_ms: Math.round(profile.rerankMs),
+          chunks_scanned: profile.chunksScanned,
+          qdrant_hit: profile.qdrantHit,
+        },
+        results_count: chunks.length,
+        chunks,
+      });
+    } catch (err: any) {
+      res.status(500).json({ detail: `Debug retrieval error: ${err.message}` });
+    }
+  });
+
+  // ===================== CONFIG VERIFY =====================
+  router.get('/tenants/:tenantId/config/verify', requireAdmin, async (req, res) => {
+    const tenant = await adminStore.getTenant(req.params.tenantId);
+    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
+    // Clear engine cache to force reload
+    engineCache.delete(req.params.tenantId);
+    const crypto = await import('crypto');
+    const configStr = JSON.stringify([
+      tenant.rerankerType, tenant.chunkingSemantic, tenant.chunkingSemanticThreshold,
+      tenant.retrievalTopK, tenant.retrievalRerankTopK, tenant.retrievalFinalContextK,
+      tenant.retrievalDenseWeight, tenant.retrievalSparseWeight,
+      tenant.embeddingProvider, tenant.embeddingModel,
+    ]);
+    res.json({
+      tenant_id: tenant.tenantId,
+      effective_reranker: tenant.rerankerType || 'none',
+      effective_semantic_chunking: tenant.chunkingSemantic,
+      effective_threshold: tenant.chunkingSemanticThreshold,
+      effective_top_k: tenant.retrievalTopK,
+      effective_rerank_top_k: tenant.retrievalRerankTopK,
+      effective_final_context_k: tenant.retrievalFinalContextK,
+      effective_dense_weight: tenant.retrievalDenseWeight,
+      effective_sparse_weight: tenant.retrievalSparseWeight,
+      embedding_provider: tenant.embeddingProvider,
+      embedding_model: tenant.embeddingModel,
+      config_hash: crypto.default.createHash('md5').update(configStr).digest('hex').slice(0, 8),
+      last_updated: tenant.updatedAt,
+      engine_cache_cleared: true,
+    });
+  });
+
   // ===================== CHAT APIs =====================
   router.post('/tenants/:tenantId/chat', requireAdmin, async (req, res) => {
     const tenant = await adminStore.getTenant(req.params.tenantId);
@@ -1241,8 +1370,8 @@ export function routes(
         copyFiles(pagesDir);
       }
       
-      // Import PDFs (and images stored in pdfs/ dir)
-      const pdfExts = ['.pdf', '.jpg', '.jpeg', '.png', '.svg', '.webp', '.gif'];
+      // Import PDFs only (skip images)
+      const pdfExts = ['.pdf'];
       const pdfsDir = path.join(sitePath, 'pdfs');
       if (fs.existsSync(pdfsDir)) {
         const pdfs = fs.readdirSync(pdfsDir);
@@ -1256,25 +1385,7 @@ export function routes(
         });
       }
       
-      // Import images (language subdirectories)
-      const imagesDir = path.join(sitePath, 'images');
-      if (fs.existsSync(imagesDir)) {
-        const copyImages = (dir: string, subPath: string = '') => {
-          const items = fs.readdirSync(dir);
-          items.forEach(item => {
-            const itemPath = path.join(dir, item);
-            if (fs.statSync(itemPath).isDirectory()) {
-              copyImages(itemPath, `${subPath}${item}/`);
-            } else if (pdfExts.some(ext => item.toLowerCase().endsWith(ext))) {
-              const flatName = `crawl_${site}_img_${subPath.replace(/\//g, '_')}${item}`;
-              const destPath = path.join(tenantDocsDir, flatName);
-              fs.copyFileSync(itemPath, destPath);
-              importedCount++;
-            }
-          });
-        };
-        copyImages(imagesDir);
-      }
+      // Images skipped — they don't contribute to text retrieval
 
       res.json({ success: true, imported_count: importedCount });
     } catch (err: any) {
@@ -1325,7 +1436,7 @@ export function routes(
           copyFiles(pagesDir);
         }
 
-        const pdfExts = ['.pdf', '.jpg', '.jpeg', '.png', '.svg', '.webp', '.gif'];
+        const pdfExts = ['.pdf'];
         const pdfsDir = path.join(sitePath, 'pdfs');
         if (fs.existsSync(pdfsDir)) {
           fs.readdirSync(pdfsDir).forEach(pdf => {
@@ -1336,6 +1447,7 @@ export function routes(
             }
           });
         }
+        // Images skipped — not useful for text retrieval
 
         if (importedCount > 0) {
           results[site] = importedCount;
