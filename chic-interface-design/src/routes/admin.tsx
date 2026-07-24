@@ -18,6 +18,7 @@ import {
   Link2,
   Loader2,
   MessageSquare,
+  Moon,
   Package,
   Plus,
   RefreshCw,
@@ -27,6 +28,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Sun,
   Trash2,
   Upload,
   Webhook,
@@ -65,7 +67,6 @@ const tabs = [
   { id: "health", label: "Health", icon: Activity },
   { id: "integration", label: "Integration API", icon: Code2 },
   { id: "settings", label: "Settings", icon: Settings2 },
-  { id: "console", label: "Console Terminal", icon: Webhook },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
@@ -77,6 +78,28 @@ function AdminPage() {
       window.location.href = '/login';
     }
   }, []);
+
+  // ─── Theme toggle ───────────────────────────────────────────
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const saved = localStorage.getItem("rag_theme");
+    return (saved === "light" ? "light" : "dark");
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "light") {
+      root.classList.add("light");
+      root.classList.remove("dark");
+    } else {
+      root.classList.remove("light");
+      root.classList.add("dark");
+    }
+    localStorage.setItem("rag_theme", theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme(t => t === "dark" ? "light" : "dark");
+  }
 
   const { data: serverTenants, isLoading } = useQuery({
     queryKey: ["tenants"],
@@ -93,6 +116,7 @@ function AdminPage() {
         apiKey: t.apiKey,
       })) as Tenant[];
     },
+    refetchInterval: 2000,
   });
 
   const tenants = serverTenants || [];
@@ -103,8 +127,11 @@ function AdminPage() {
   const [showCloudSync, setShowCloudSync] = useState(false);
   const [showSystemLogs, setShowSystemLogs] = useState(false);
   const [showProviderSettings, setShowProviderSettings] = useState(false);
+  
+  // Mobile responsive sidebar state
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // Select the first tenant if none is active
+  // Select the first tenant if none is active on desktop
   useEffect(() => {
     if (!activeId && tenants.length > 0) {
       setActiveId(tenants[0].id);
@@ -115,10 +142,13 @@ function AdminPage() {
   const filtered = tenants.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()));
 
   return (
-    <div className="grid h-screen grid-cols-[280px_1fr] overflow-hidden">
-      {/* Sidebar */}
-      <aside className="flex flex-col border-r border-border bg-panel/60 backdrop-blur overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-5">
+    <div className="relative flex h-screen w-screen overflow-hidden bg-background text-foreground">
+      {/* Sidebar - Desktop (static) & Mobile (fixed drawer) */}
+      <aside className={`
+        fixed inset-y-0 left-0 z-40 flex w-[280px] flex-col border-r border-border bg-panel backdrop-blur transition-transform duration-300 ease-in-out lg:static lg:translate-x-0
+        ${mobileSidebarOpen ? "translate-x-0" : "-translate-x-full"}
+      `}>
+        <div className="flex items-center justify-between px-5 py-5 flex-shrink-0">
           <Link to="/" className="flex items-center gap-2">
             <div className="grid h-8 w-8 place-items-center rounded-md bg-[image:var(--gradient-primary)] text-sm font-bold text-primary-foreground">T</div>
             <div>
@@ -127,6 +157,13 @@ function AdminPage() {
             </div>
           </Link>
           <div className="flex items-center gap-1">
+            <button
+              onClick={toggleTheme}
+              title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground transition-colors"
+            >
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
             <button
               onClick={() => setShowProviderSettings(true)}
               title="LLM Provider Settings"
@@ -137,13 +174,20 @@ function AdminPage() {
             <Link to="/" className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground">
               <ArrowLeft className="h-4 w-4" />
             </Link>
+            {/* Close Mobile Sidebar button */}
+            <button onClick={() => setMobileSidebarOpen(false)} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground lg:hidden">
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
 
-        <div className="px-4 pb-3">
+        <div className="px-4 pb-3 flex-shrink-0">
           {/* Add New Client */}
           <button
-            onClick={() => setShowAddTenant(true)}
+            onClick={() => {
+              setShowAddTenant(true);
+              setMobileSidebarOpen(false);
+            }}
             className="flex w-full items-center justify-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-3 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90 mb-3"
           >
             <Plus className="h-4 w-4" /> Add New Client
@@ -161,15 +205,18 @@ function AdminPage() {
           </div>
         </div>
 
-        <div className="px-4 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="px-4 pb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-shrink-0">
           Subscribers · {filtered.length}
         </div>
 
-        <div className="flex-1 space-y-1 overflow-y-auto px-2">
+        <div className="flex-1 space-y-1 overflow-y-auto px-2 pb-4">
           {filtered.map((t) => (
             <button
               key={t.id}
-              onClick={() => setActiveId(t.id)}
+              onClick={() => {
+                setActiveId(t.id);
+                setMobileSidebarOpen(false);
+              }}
               className={`group flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition ${
                 activeId === t.id ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-elevated hover:text-foreground"
               }`}
@@ -187,20 +234,38 @@ function AdminPage() {
         </div>
       </aside>
 
+      {/* Backdrop overlay for mobile sidebar */}
+      {mobileSidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+
       {/* Main */}
-      <main className="flex flex-col h-screen overflow-hidden">
+      <main className="flex-1 flex flex-col h-screen overflow-hidden min-w-0">
         {active ? (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-panel/40 px-8 py-5 backdrop-blur">
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-primary">Workspace</div>
-                <h1 className="mt-0.5 text-2xl font-bold tracking-tight">{active.name}</h1>
-                <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5"><StatusDot status={active.status} /> {active.status}</span>
-                  <span>·</span>
-                  <span>Tier: <span className="text-foreground">{active.tier}</span></span>
-                  <span>·</span>
-                  <span>{active.docs.toLocaleString()} documents</span>
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-panel/40 px-4 sm:px-8 py-5 backdrop-blur flex-shrink-0">
+              <div className="flex items-center gap-3">
+                {/* Mobile Menu Toggle Button */}
+                <button
+                  onClick={() => setMobileSidebarOpen(true)}
+                  className="rounded-md p-2 text-muted-foreground hover:bg-elevated hover:text-foreground lg:hidden"
+                  title="Open Sidebar"
+                >
+                  <Activity className="h-5 w-5" />
+                </button>
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-primary">Workspace</div>
+                  <h1 className="mt-0.5 text-xl sm:text-2xl font-bold tracking-tight">{active.name}</h1>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
+                    <span className="inline-flex items-center gap-1.5"><StatusDot status={active.status} /> {active.status}</span>
+                    <span className="hidden sm:inline">·</span>
+                    <span>Tier: <span className="text-foreground">{active.tier}</span></span>
+                    <span className="hidden sm:inline">·</span>
+                    <span>{active.docs.toLocaleString()} documents</span>
+                  </div>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -211,12 +276,12 @@ function AdminPage() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1 border-b border-border bg-panel/20 px-8">
+            <div className="flex gap-1 border-b border-border bg-panel/20 px-4 sm:px-8 overflow-x-auto flex-shrink-0 scrollbar-none">
               {tabs.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setTab(t.id)}
-                  className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition ${
+                  className={`flex items-center gap-2 border-b-2 px-3 sm:px-4 py-3 text-xs sm:text-sm font-medium transition whitespace-nowrap ${
                     tab === t.id
                       ? "border-primary text-foreground"
                       : "border-transparent text-muted-foreground hover:text-foreground"
@@ -228,13 +293,12 @@ function AdminPage() {
             </div>
 
             <div className="flex-1 overflow-hidden">
-              {tab === "config" && <div className="h-full overflow-y-auto px-8 py-6"><ConfigTab tenant={active} /></div>}
-              {tab === "documents" && <div className="h-full flex flex-col px-8 py-6 overflow-hidden"><DocumentsTab tenantId={active?.id} /></div>}
-              {tab === "playground" && <div className="h-full overflow-y-auto px-8 py-6"><PlaygroundTab tenantId={active?.id} /></div>}
-              {tab === "health" && <div className="h-full overflow-y-auto px-8 py-6"><HealthTab /></div>}
-              {tab === "integration" && <div className="h-full overflow-y-auto px-8 py-6"><IntegrationTab tenantId={active.id} /></div>}
-              {tab === "settings" && <div className="h-full overflow-y-auto px-8 py-6"><SettingsTab /></div>}
-              {tab === "console" && <div className="h-full overflow-y-auto px-8 py-6"><ConsoleTab tenant={active} /></div>}
+              {tab === "config" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><ConfigTab tenant={active} /></div>}
+              {tab === "documents" && <div className="h-full flex flex-col px-4 sm:px-8 py-6 overflow-hidden"><DocumentsTab tenantId={active?.id} /></div>}
+              {tab === "playground" && <div className="h-full overflow-hidden flex flex-col"><PlaygroundTab tenantId={active?.id} /></div>}
+              {tab === "health" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><HealthTab /></div>}
+              {tab === "integration" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><IntegrationTab tenantId={active.id} /></div>}
+              {tab === "settings" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><SettingsTab /></div>}
             </div>
           </>
         ) : (
@@ -256,7 +320,7 @@ function AdminPage() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="overflow-y-auto px-6 py-5">
+            <div className="flex-1 overflow-y-auto px-6 py-5">
               <SettingsTab />
             </div>
           </div>
@@ -355,91 +419,93 @@ function AddTenantModal({ onClose }: { onClose: () => void }) {
   });
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-2xl rounded-xl border border-border bg-[var(--modal-bg)] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-5">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-xl border border-border bg-[var(--modal-bg)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 pt-6 pb-5 flex-shrink-0">
           <h2 className="text-lg font-bold">Add New Client</h2>
           <button onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
         </div>
-        {error && <div className="mb-4 rounded-lg bg-destructive/10 p-3 text-xs text-destructive">{error}</div>}
-        <div className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Client ID (slug)">
-              <input className="input" value={tid} onChange={(e) => setTid(e.target.value)} placeholder="my-company" required />
-            </Field>
-            <Field label="Client Name">
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My Company" />
-            </Field>
-            <Field label="Subscription Tier">
-              <select className="input" value={tier} onChange={(e) => setTier(e.target.value)}>
-                <option value="basic">Basic ($199/mo)</option>
-                <option value="premium">Premium ($299/mo)</option>
-                <option value="enterprise">Enterprise ($599/mo)</option>
-              </select>
-            </Field>
-            <Field label="Monthly Fee ($)">
-              <input className="input" type="number" value={fee} onChange={(e) => setFee(Number(e.target.value))} />
-            </Field>
-          </div>
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground pt-2">LLM Configuration</h3>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider">
-              <select className="input" value={llmProvider} onChange={(e) => {
-                const p = e.target.value;
-                setLlmProvider(p);
-                setLlmModel(providerDefaults[p] || llmModel);
-              }}>
-                <option value="gemini">Google Gemini Cloud</option>
-                <option value="mistral">Mistral Cloud</option>
-                <option value="openai">OpenAI</option>
-                <option value="nvidia">NVIDIA NIM Cloud</option>
-                <option value="openrouter">OpenRouter API</option>
-                <option value="anthropic">Anthropic Claude</option>
-                <option value="openai_compatible">OpenAI-Compatible (Ollama/vLLM)</option>
-              </select>
-            </Field>
-            <Field label="Model">
-              <input className="input" value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder={providerDefaults[llmProvider] || "model-name"} list={`modal-models-${llmProvider}`} />
-              <datalist id={`modal-models-${llmProvider}`}>
-                {(providerPresets as any[]).find((p: any) => p.id === llmProvider)?.models?.map((m: string) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            </Field>
-            <Field label="Base URL (optional)">
-              <input className="input font-mono text-xs" value={llmUrl} onChange={(e) => setLlmUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
-            </Field>
-            <Field label="API Key">
-              <input className="input font-mono" type="password" value={llmKey} onChange={(e) => setLlmKey(e.target.value)} placeholder="sk-..." />
-            </Field>
-          </div>
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground pt-2">Embedding Configuration</h3>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider">
-              <select className="input" value={embedProvider} onChange={(e) => setEmbedProvider(e.target.value)}>
-                <option value="hash">Local Deterministic Hash (384d)</option>
-                <option value="bge">BGE Small (384d)</option>
-                <option value="bge_m3">BGE-M3 (1024d)</option>
-                <option value="openai">OpenAI (1536d)</option>
-                <option value="gemini">Gemini (768d)</option>
-                <option value="openai_compatible">OpenAI-Compatible Custom</option>
-              </select>
-            </Field>
-            <Field label="Model">
-              <input className="input" value={embedModel} onChange={(e) => setEmbedModel(e.target.value)} placeholder="BAAI/bge-small-en-v1.5" />
-            </Field>
-            <Field label="Dimensions">
-              <input className="input" type="number" value={embedDims} onChange={(e) => setEmbedDims(Number(e.target.value))} />
-            </Field>
-            <Field label="Base URL (optional)">
-              <input className="input font-mono text-xs" value={embedUrl} onChange={(e) => setEmbedUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
-            </Field>
-            <Field label="API Key (optional)">
-              <input className="input font-mono" type="password" value={embedKey} onChange={(e) => setEmbedKey(e.target.value)} placeholder="sk-..." />
-            </Field>
+        {error && <div className="mb-4 mx-6 rounded-lg bg-destructive/10 p-3 text-xs text-destructive">{error}</div>}
+        <div className="flex-1 overflow-y-auto px-6 pb-2">
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Client ID (slug)">
+                <input className="input" value={tid} onChange={(e) => setTid(e.target.value)} placeholder="my-company" required />
+              </Field>
+              <Field label="Client Name">
+                <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="My Company" />
+              </Field>
+              <Field label="Subscription Tier">
+                <select className="input" value={tier} onChange={(e) => setTier(e.target.value)}>
+                  <option value="basic">Basic ($199/mo)</option>
+                  <option value="premium">Premium ($299/mo)</option>
+                  <option value="enterprise">Enterprise ($599/mo)</option>
+                </select>
+              </Field>
+              <Field label="Monthly Fee ($)">
+                <input className="input" type="number" value={fee} onChange={(e) => setFee(Number(e.target.value))} />
+              </Field>
+            </div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground pt-2">LLM Configuration</h3>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Provider">
+                <select className="input" value={llmProvider} onChange={(e) => {
+                  const p = e.target.value;
+                  setLlmProvider(p);
+                  setLlmModel(providerDefaults[p] || llmModel);
+                }}>
+                  <option value="gemini">Google Gemini Cloud</option>
+                  <option value="mistral">Mistral Cloud</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="nvidia">NVIDIA NIM Cloud</option>
+                  <option value="openrouter">OpenRouter API</option>
+                  <option value="anthropic">Anthropic Claude</option>
+                  <option value="openai_compatible">OpenAI-Compatible (Ollama/vLLM)</option>
+                </select>
+              </Field>
+              <Field label="Model">
+                <input className="input" value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder={providerDefaults[llmProvider] || "model-name"} list={`modal-models-${llmProvider}`} />
+                <datalist id={`modal-models-${llmProvider}`}>
+                  {(providerPresets as any[]).find((p: any) => p.id === llmProvider)?.models?.map((m: string) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              </Field>
+              <Field label="Base URL (optional)">
+                <input className="input font-mono text-xs" value={llmUrl} onChange={(e) => setLlmUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
+              </Field>
+              <Field label="API Key">
+                <input className="input font-mono" type="password" value={llmKey} onChange={(e) => setLlmKey(e.target.value)} placeholder="sk-..." />
+              </Field>
+            </div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground pt-2">Embedding Configuration</h3>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Provider">
+                <select className="input" value={embedProvider} onChange={(e) => setEmbedProvider(e.target.value)}>
+                  <option value="hash">Local Deterministic Hash (384d)</option>
+                  <option value="bge">BGE Small (384d)</option>
+                  <option value="bge_m3">BGE-M3 (1024d)</option>
+                  <option value="openai">OpenAI (1536d)</option>
+                  <option value="gemini">Gemini (768d)</option>
+                  <option value="openai_compatible">OpenAI-Compatible Custom</option>
+                </select>
+              </Field>
+              <Field label="Model">
+                <input className="input" value={embedModel} onChange={(e) => setEmbedModel(e.target.value)} placeholder="BAAI/bge-small-en-v1.5" />
+              </Field>
+              <Field label="Dimensions">
+                <input className="input" type="number" value={embedDims} onChange={(e) => setEmbedDims(Number(e.target.value))} />
+              </Field>
+              <Field label="Base URL (optional)">
+                <input className="input font-mono text-xs" value={embedUrl} onChange={(e) => setEmbedUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
+              </Field>
+              <Field label="API Key (optional)">
+                <input className="input font-mono" type="password" value={embedKey} onChange={(e) => setEmbedKey(e.target.value)} placeholder="sk-..." />
+              </Field>
+            </div>
           </div>
         </div>
-        <div className="mt-6 flex justify-end gap-3">
+        <div className="flex justify-end gap-3 px-6 py-4 border-t border-border flex-shrink-0">
           <button onClick={onClose} className="rounded-md border border-border bg-panel px-4 py-2 text-sm font-medium hover:bg-elevated">Cancel</button>
           <button onClick={() => create.mutate()} disabled={create.isPending || !tid} className="inline-flex items-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
             {create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -544,11 +610,11 @@ const embeddingProviderMeta: Record<string, {
 };
 
 const accents = {
-  amber: { bg: "var(--accent-amber)", fg: "#1a1408", ring: "rgba(245,179,1,0.35)" },
-  rose:  { bg: "var(--accent-rose)",  fg: "#fff",   ring: "rgba(229,72,77,0.35)" },
-  sky:   { bg: "var(--accent-sky)",   fg: "#04121e",ring: "rgba(14,165,233,0.35)" },
-  emerald:{bg: "var(--accent-emerald)",fg: "#fff",  ring: "rgba(22,163,74,0.35)" },
-  violet:{ bg: "var(--accent-violet)", fg: "#fff",  ring: "rgba(124,58,237,0.35)" },
+  amber:  { bg: "var(--accent-amber)",   fg: "#ffffff", ring: "rgba(255,193,7,0.35)" },
+  rose:   { bg: "var(--accent-rose)",    fg: "#ffffff", ring: "rgba(220,53,69,0.35)" },
+  sky:    { bg: "var(--accent-sky)",     fg: "#ffffff", ring: "rgba(13,110,253,0.35)" },
+  emerald:{ bg: "var(--accent-emerald)", fg: "#ffffff", ring: "rgba(25,135,84,0.35)" },
+  violet: { bg: "var(--accent-violet)",  fg: "#ffffff", ring: "rgba(66,58,142,0.35)" },
 } as const;
 type AccentKey = keyof typeof accents;
 
@@ -724,8 +790,13 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
             <select className="input" value={form.llmProvider || "gemini"} onChange={(e) => {
               const p = e.target.value;
               upd("llmProvider", p);
+              // Auto-fill model from defaults
               const def = providerDefaults[p];
               if (def) upd("llmModel", def);
+              // Auto-fill base URL from provider presets
+              const preset = (providerPresets as any[]).find((pr: any) => pr.id === p);
+              if (preset?.defaultBaseUrl) upd("llmBaseUrl", preset.defaultBaseUrl);
+              else upd("llmBaseUrl", "");
             }}>
               <option value="gemini">Google Gemini Cloud</option>
               <option value="mistral">Mistral Cloud</option>
@@ -734,21 +805,53 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
               <option value="openrouter">OpenRouter API</option>
               <option value="anthropic">Anthropic Claude</option>
               <option value="openai_compatible">OpenAI-Compatible (Ollama/vLLM)</option>
+              {/* Custom providers from presets */}
+              {(providerPresets as any[]).filter((pr: any) =>
+                !["gemini","mistral","openai","nvidia","openrouter","anthropic","openai_compatible"].includes(pr.id)
+              ).map((pr: any) => (
+                <option key={pr.id} value={pr.id}>{pr.name || pr.id}</option>
+              ))}
             </select>
           </Field>
-          <Field label="Model Name">
-            <input className="input" value={form.llmModel || ""} onChange={(e) => upd("llmModel", e.target.value)} placeholder={providerDefaults[form.llmProvider] || "model-name"} list={`models-${form.llmProvider}`} />
-            <datalist id={`models-${form.llmProvider}`}>
-              {providerPresets.find((p: any) => p.id === form.llmProvider)?.models?.map((m: string) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
+          <Field label="Model">
+            {(() => {
+              const preset = (providerPresets as any[]).find((pr: any) => pr.id === (form.llmProvider || "gemini"));
+              const presetModels: string[] = preset?.models || [];
+              if (presetModels.length > 0) {
+                return (
+                  <select className="input" value={form.llmModel || presetModels[0]} onChange={(e) => upd("llmModel", e.target.value)}>
+                    {presetModels.map((m: string) => <option key={m} value={m}>{m}</option>)}
+                    <option value="__custom">── Custom model name ──</option>
+                  </select>
+                );
+              }
+              return (
+                <input className="input font-mono text-xs" value={form.llmModel || ""} onChange={(e) => upd("llmModel", e.target.value)} placeholder={providerDefaults[form.llmProvider] || "model-name"} />
+              );
+            })()}
+            {/* Show custom input if __custom selected */}
+            {form.llmModel === "__custom" && (
+              <input className="input font-mono text-xs mt-1" placeholder="Enter custom model name" onChange={(e) => upd("llmModel", e.target.value)} />
+            )}
           </Field>
           <Field label="API Key">
             <input className="input font-mono" type="password" value={form.llmApiKey || ""} onChange={(e) => upd("llmApiKey", e.target.value)} placeholder="*** to keep current" />
           </Field>
-          <Field label="Base URL (optional)">
+          <Field label="Base URL">
             <input className="input font-mono text-xs" value={form.llmBaseUrl || ""} onChange={(e) => upd("llmBaseUrl", e.target.value)} placeholder="https://api.openai.com/v1" />
+            {(() => {
+              const preset = (providerPresets as any[]).find((pr: any) => pr.id === (form.llmProvider || "gemini"));
+              if (!preset?.defaultBaseUrl || form.llmBaseUrl === preset.defaultBaseUrl) return null;
+              return (
+                <button
+                  type="button"
+                  onClick={() => upd("llmBaseUrl", preset.defaultBaseUrl)}
+                  className="mt-1 text-[10px] text-primary hover:underline"
+                >
+                  Reset to default: {preset.defaultBaseUrl}
+                </button>
+              );
+            })()}
           </Field>
           <Field label="Reranker Type">
             <select className="input" value={form.rerankerType || "local"} onChange={(e) => upd("rerankerType", e.target.value)}>
@@ -957,9 +1060,9 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <label className="block">
+    <label className={`block ${className || ""}`}>
       <span className="mb-1.5 block text-xs font-medium text-muted-foreground">{label}</span>
       {children}
     </label>
@@ -1281,7 +1384,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   }
 
   return (
-    <div className="flex flex-col h-full gap-3 overflow-hidden">
+    <div className="flex flex-col h-full gap-3 overflow-hidden min-h-0">
       {/* Top: fixed source cards */}
       <div className="grid gap-3 md:grid-cols-4 flex-shrink-0">
         <SourceCard active={source === "files"} onClick={() => setSource("files")} accent="amber" icon={Upload} title="File upload" desc="PDF, DOCX, MD, TXT, CSV, HTML" />
@@ -1291,7 +1394,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       </div>
 
       {source === "files" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           <div className="rounded-xl border-2 border-dashed border-border bg-elevated/40 p-8 text-center">
             <Upload className="mx-auto h-8 w-8 text-primary" />
             <p className="mt-3 text-sm font-medium">Drop files here or click to browse</p>
@@ -1346,7 +1449,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                 </div>
               </div>
               {ingestProgress.logs && ingestProgress.logs.length > 0 && (
-                <div className="mt-2 max-h-32 overflow-y-auto rounded bg-[#0a1020] p-2 font-mono text-[10px] leading-relaxed text-foreground/70">
+                <div className="mt-2 max-h-32 overflow-y-auto rounded bg-[var(--code-bg)] text-[var(--code-fg)] p-2 font-mono text-[10px] leading-relaxed text-foreground/70">
                   {ingestProgress.logs.map((l: string, i: number) => (
                     <div key={i} className={`${l.includes("[Error]") || l.includes("[Critical") ? "text-destructive" : l.includes("finished") || l.includes("Successfully") ? "text-success" : l.includes("[System]") ? "text-[color:var(--accent-teal)]" : l.includes("skipping") || l.includes("already") ? "text-muted-foreground" : ""}`}>{l}</div>
                   ))}
@@ -1364,7 +1467,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "web" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           {/* Scraper service health indicator */}
           <div className="flex items-center gap-2 mb-4">
             <span className={`w-2 h-2 rounded-full ${scraperHealth?.alive ? "bg-success" : "bg-destructive"}`} />
@@ -1619,7 +1722,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "crawl" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Crawl Output</h3>
           <p className="mt-2 text-xs text-muted-foreground">Browse scraped sites from the scraper service and import content to tenant documents.</p>
 
@@ -1742,7 +1845,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "cloud" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto max-h-[220px]">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Connect a cloud source</h3>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {[
@@ -2207,7 +2310,8 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
   }
 
   return (
-    <div className="grid h-[calc(100vh-260px)] gap-4 lg:grid-cols-[220px_1fr_320px]" style={{ position: "relative" }}>
+    <div className="flex flex-col flex-1 min-h-0 px-8 py-6">
+    <div className="grid gap-4 lg:grid-cols-[220px_1fr_320px] flex-1 min-h-0" style={{ position: "relative" }}>
       <div className="panel flex flex-col p-4">
         <div className="mb-3 flex items-center justify-between">
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sessions</div>
@@ -2340,6 +2444,7 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
           )}
         </div>
       </div>
+    </div>
 
       {drawerContext && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" onClick={() => setDrawerContext(null)}>
@@ -2624,7 +2729,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
           <CopyBtn text={apiKey} />
         </div>
         <div className="px-5 py-4">
-          <div className="font-mono text-sm break-all bg-[#0a1020] rounded-lg p-3 border border-border">{apiKey}</div>
+          <div className="font-mono text-sm break-all bg-[var(--code-bg)] text-[var(--code-fg)] rounded-lg p-3 border border-border">{apiKey}</div>
           <p className="mt-2 text-xs text-muted-foreground">Use this key in the <code className="font-mono">X-API-Key</code> header to authenticate API requests from this tenant.</p>
         </div>
       </div>
@@ -2668,7 +2773,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
           {sdks.map((s, index) => (
             <div key={s.name ? `${s.name}-${s.cmd}` : `sdk-${index}`} className="rounded-lg border border-border bg-elevated/50 p-3">
               <div className="text-xs font-semibold">{s.name}</div>
-              <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-[#0a1020] px-2 py-1.5 font-mono text-[11px]">
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-[var(--code-bg)] text-[var(--code-fg)] px-2 py-1.5 font-mono text-[11px]">
                 <span className="truncate">{s.cmd}</span>
                 <CopyBtn text={s.cmd} />
               </div>
@@ -2683,7 +2788,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
           <CopyBtn text={snippet} />
         </div>
         <p className="mt-1 text-xs text-muted-foreground">Paste this before &lt;/body&gt; on the client's site.</p>
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[#0a1020] p-4 text-xs leading-relaxed text-foreground/90">
+        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs leading-relaxed text-foreground/90">
           <code className="font-mono">{snippet}</code>
         </pre>
       </div>
@@ -2693,7 +2798,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">REST example</h3>
           <CopyBtn text={apiCall} />
         </div>
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[#0a1020] p-4 text-xs leading-relaxed text-foreground/90">
+        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs leading-relaxed text-foreground/90">
           <code className="font-mono">{apiCall}</code>
         </pre>
       </div>
@@ -2744,6 +2849,8 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
 
 type ProviderPreset = { id: string; name: string; models: string[]; defaultBaseUrl: string };
 
+const BUILTIN_PROVIDER_IDS = ["gemini","mistral","openai","nvidia","openrouter","anthropic","openai_compatible"];
+
 function SettingsTab() {
   const { data: presets = [], refetch } = useQuery({
     queryKey: ["provider-presets"],
@@ -2758,6 +2865,10 @@ function SettingsTab() {
   const [msg, setMsg] = useState("");
   const qc = useQueryClient();
 
+  // Add new provider state
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [newProvider, setNewProvider] = useState({ id: "", name: "", defaultBaseUrl: "", models: [""] });
+
   useEffect(() => { if (presets.length) setLocal(JSON.parse(JSON.stringify(presets))); }, [presets]);
 
   function updModel(pid: string, idx: number, val: string) {
@@ -2770,6 +2881,42 @@ function SettingsTab() {
 
   function removeModel(pid: string, idx: number) {
     setLocal(prev => prev.map(p => p.id === pid ? { ...p, models: p.models.filter((_, i) => i !== idx) } : p));
+  }
+
+  function removeProvider(pid: string) {
+    if (!confirm(`Remove provider "${pid}"? This cannot be undone.`)) return;
+    setLocal(prev => prev.filter(p => p.id !== pid));
+  }
+
+  function addNewProviderModel() {
+    setNewProvider(prev => ({ ...prev, models: [...prev.models, ""] }));
+  }
+
+  function removeNewProviderModel(idx: number) {
+    setNewProvider(prev => ({ ...prev, models: prev.models.filter((_, i) => i !== idx) }));
+  }
+
+  function updateNewProviderModel(idx: number, val: string) {
+    setNewProvider(prev => ({ ...prev, models: prev.models.map((m, i) => i === idx ? val : m) }));
+  }
+
+  function handleAddProvider() {
+    const id = newProvider.id.trim().toLowerCase().replace(/\s+/g, "_");
+    if (!id) return;
+    if (local.find(p => p.id === id)) {
+      setMsg(`Provider "${id}" already exists`);
+      setTimeout(() => setMsg(""), 3000);
+      return;
+    }
+    const cleanModels = newProvider.models.filter(m => m.trim());
+    setLocal(prev => [...prev, {
+      id,
+      name: newProvider.name.trim() || id,
+      defaultBaseUrl: newProvider.defaultBaseUrl.trim(),
+      models: cleanModels,
+    }]);
+    setNewProvider({ id: "", name: "", defaultBaseUrl: "", models: [""] });
+    setShowAddProvider(false);
   }
 
   async function handleSave() {
@@ -2797,6 +2944,12 @@ function SettingsTab() {
         </div>
         <div className="flex items-center gap-3">
           {msg && <span className={`text-xs ${msg.includes("Error") ? "text-destructive" : "text-success"}`}>{msg}</span>}
+          <button
+            onClick={() => setShowAddProvider(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-4 py-2 text-sm font-medium hover:bg-elevated"
+          >
+            <Plus className="h-3.5 w-3.5" /> Add Provider
+          </button>
           <button onClick={handleSave} disabled={saving} className="inline-flex items-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save Settings
@@ -2804,11 +2957,89 @@ function SettingsTab() {
         </div>
       </div>
 
+      {/* Add New Provider Form */}
+      {showAddProvider && (
+        <div className="panel p-5 border-2 border-primary/30 bg-primary/5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-primary">Add New Provider</h3>
+            <button onClick={() => setShowAddProvider(false)} className="rounded p-1 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Provider ID (slug)">
+              <input
+                className="input font-mono text-xs"
+                value={newProvider.id}
+                onChange={(e) => setNewProvider(prev => ({ ...prev, id: e.target.value }))}
+                placeholder="my-provider"
+              />
+              <p className="mt-1 text-[10px] text-muted-foreground">Lowercase slug, no spaces (e.g. ollama, groq, together)</p>
+            </Field>
+            <Field label="Display Name">
+              <input
+                className="input"
+                value={newProvider.name}
+                onChange={(e) => setNewProvider(prev => ({ ...prev, name: e.target.value }))}
+                placeholder="My Custom Provider"
+              />
+            </Field>
+            <Field label="Default Base URL" className="sm:col-span-2">
+              <input
+                className="input font-mono text-xs"
+                value={newProvider.defaultBaseUrl}
+                onChange={(e) => setNewProvider(prev => ({ ...prev, defaultBaseUrl: e.target.value }))}
+                placeholder="https://api.groq.com/openai/v1"
+              />
+            </Field>
+          </div>
+          <div className="mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-muted-foreground">Models</span>
+              <button onClick={addNewProviderModel} className="text-[10px] text-primary hover:underline">+ Add model</button>
+            </div>
+            <div className="space-y-2">
+              {newProvider.models.map((m, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    className="input flex-1 font-mono text-xs"
+                    value={m}
+                    onChange={(e) => updateNewProviderModel(idx, e.target.value)}
+                    placeholder="model-name (e.g. llama-3.1-8b-instant)"
+                  />
+                  {newProvider.models.length > 1 && (
+                    <button onClick={() => removeNewProviderModel(idx)} className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><X className="h-3.5 w-3.5" /></button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-5 flex justify-end gap-3">
+            <button onClick={() => setShowAddProvider(false)} className="rounded-md border border-border bg-panel px-4 py-2 text-sm font-medium hover:bg-elevated">Cancel</button>
+            <button
+              onClick={handleAddProvider}
+              disabled={!newProvider.id.trim()}
+              className="inline-flex items-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              <Plus className="h-4 w-4" /> Add Provider
+            </button>
+          </div>
+        </div>
+      )}
+
       {local.map((p) => (
         <div key={p.id} className="panel p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold uppercase tracking-wider">{p.name || p.id}</h3>
-            <span className="text-[10px] font-mono text-muted-foreground">{p.id}</span>
+            <div className="flex items-center gap-3">
+              <h3 className="text-sm font-semibold uppercase tracking-wider">{p.name || p.id}</h3>
+              <span className="text-[10px] font-mono text-muted-foreground bg-elevated px-1.5 py-0.5 rounded">{p.id}</span>
+            </div>
+            {!BUILTIN_PROVIDER_IDS.includes(p.id) && (
+              <button
+                onClick={() => removeProvider(p.id)}
+                className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1 text-[11px] font-medium text-destructive hover:bg-destructive/20"
+              >
+                <Trash2 className="h-3 w-3" /> Remove
+              </button>
+            )}
           </div>
           <Field label="Default Base URL">
             <input className="input font-mono text-xs" value={p.defaultBaseUrl} onChange={(e) => setLocal(prev => prev.map(x => x.id === p.id ? { ...x, defaultBaseUrl: e.target.value } : x))} placeholder="https://api.openai.com/v1" />
@@ -3036,11 +3267,11 @@ function SystemLogsModal({ tenantId, onClose }: { tenantId?: string; onClose: ()
             <div className="space-y-4">
               <div>
                 <div className="text-xs font-semibold text-muted-foreground mb-1">Exception Traceback</div>
-                <pre className="rounded-lg bg-[#0a1020] p-4 text-xs font-mono leading-relaxed text-foreground/80 max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.traceback || "No exception traceback recorded."}</pre>
+                <pre className="rounded-lg bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs font-mono leading-relaxed text-foreground/80 max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.traceback || "No exception traceback recorded."}</pre>
               </div>
               <div>
                 <div className="text-xs font-semibold text-muted-foreground mb-1">Details Payload</div>
-                <pre className="rounded-lg bg-[#0a1020] p-4 text-xs font-mono leading-relaxed text-foreground/80 max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.details_json ? (() => { try { return JSON.stringify(JSON.parse(traceLog.details_json), null, 2); } catch { return traceLog.details_json; } })() : "No extra metadata payload."}</pre>
+                <pre className="rounded-lg bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs font-mono leading-relaxed text-foreground/80 max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.details_json ? (() => { try { return JSON.stringify(JSON.parse(traceLog.details_json), null, 2); } catch { return traceLog.details_json; } })() : "No extra metadata payload."}</pre>
               </div>
             </div>
           </div>
@@ -3051,132 +3282,3 @@ function SystemLogsModal({ tenantId, onClose }: { tenantId?: string; onClose: ()
 }
 
 
-
-import { Terminal } from "xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "xterm/css/xterm.css";
-
-function ConsoleTab({ tenant }: { tenant: Tenant }) {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<any>(null);
-  const cmdBuffer = useRef("");
-  const history = useRef<string[]>([]);
-  const historyIdx = useRef(-1);
-
-  useEffect(() => {
-    if (!terminalRef.current) return;
-
-    const term = new Terminal({
-      theme: { background: "#0c0a09" },
-      fontFamily: "JetBrains Mono, monospace",
-      fontSize: 13,
-      cursorBlink: true,
-    });
-    termRef.current = term;
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(terminalRef.current);
-    fitAddon.fit();
-
-    term.writeln(`\x1b[36mConnected to ${tenant.name} console.\x1b[0m`);
-    term.writeln("Type \x1b[33m/help\x1b[0m for available commands.");
-    term.write("\r\n$ ");
-
-    term.onKey((e) => {
-      const char = e.key;
-      if (char === "\r") {
-        const cmd = cmdBuffer.current.trim();
-        term.write("\r\n");
-        if (cmd) {
-          history.current.push(cmd);
-          historyIdx.current = history.current.length;
-          execCommand(term, cmd, tenant.id, cmdBuffer);
-        } else {
-          term.write("$ ");
-        }
-      } else if (char === "\x7f") {
-        if (cmdBuffer.current.length > 0) {
-          cmdBuffer.current = cmdBuffer.current.slice(0, -1);
-          term.write("\b \b");
-        }
-      } else if (char === "\x1b[A") {
-        if (historyIdx.current > 0) {
-          historyIdx.current--;
-          const prev = history.current[historyIdx.current];
-          while (cmdBuffer.current.length > 0) {
-            term.write("\b \b");
-            cmdBuffer.current = cmdBuffer.current.slice(0, -1);
-          }
-          cmdBuffer.current = prev;
-          term.write(prev);
-        }
-      } else if (char === "\x1b[B") {
-        if (historyIdx.current < history.current.length - 1) {
-          historyIdx.current++;
-          const next = history.current[historyIdx.current];
-          while (cmdBuffer.current.length > 0) {
-            term.write("\b \b");
-            cmdBuffer.current = cmdBuffer.current.slice(0, -1);
-          }
-          cmdBuffer.current = next;
-          term.write(next);
-        } else {
-          historyIdx.current = history.current.length;
-          while (cmdBuffer.current.length > 0) {
-            term.write("\b \b");
-            cmdBuffer.current = cmdBuffer.current.slice(0, -1);
-          }
-        }
-      } else if (char.length === 1 && char >= " ") {
-        cmdBuffer.current += char;
-        term.write(char);
-      }
-    });
-
-    const resizeObserver = new ResizeObserver(() => fitAddon.fit());
-    resizeObserver.observe(terminalRef.current);
-
-    return () => {
-      resizeObserver.disconnect();
-      term.dispose();
-      termRef.current = null;
-    };
-  }, [tenant.id]);
-
-  return (
-    <div className="h-full flex flex-col space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">Console Terminal</h2>
-        <span className="text-xs text-muted-foreground font-mono">Status: Connected</span>
-      </div>
-      <div className="flex-1 panel rounded-xl overflow-hidden p-2" ref={terminalRef}></div>
-    </div>
-  );
-}
-
-async function execCommand(term: any, cmd: string, tenantId: string, cmdBuffer: { current: string }) {
-  if (cmd === "clear" || cmd === "/clear") {
-    term.clear();
-    term.write("\r\n$ ");
-    return;
-  }
-  try {
-    const res = await fetch("/api/v1/terminal/exec", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command: cmd, tenant_id: tenantId }),
-    });
-    const data = await res.json();
-    if (data.type === "error") {
-      term.writeln(`\x1b[31m${data.output}\x1b[0m`);
-    } else if (data.output === "CLEAR") {
-      term.clear();
-    } else {
-      term.writeln(`\x1b[36m${data.output}\x1b[0m`);
-    }
-  } catch (err: any) {
-    term.writeln(`\x1b[31mConnection error: ${err.message}\x1b[0m`);
-  }
-  cmdBuffer.current = "";
-  term.write("$ ");
-}
