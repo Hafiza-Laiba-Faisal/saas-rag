@@ -42,60 +42,61 @@
 }
 
 /* ─────────────────────────────────────────────
-   DARK THEME  (default)
-   Deep slate-black + electric indigo
+   DARK THEME  — Deep Teal / Cyber Green
+   Background: near-black with teal tint
+   Primary: #00D4AA (teal-green) + #00B4D8 (cyan)
 ───────────────────────────────────────────── */
 :root {
   color-scheme: dark;
   --radius: 0.5rem;
 
-  --background:   #080d1a;
-  --foreground:   #e8ecf4;
+  --background:   #060e0e;
+  --foreground:   #d4f5ef;
 
-  --card:         #0e1526;
-  --card-foreground: #e8ecf4;
-  --popover:      #0e1526;
-  --popover-foreground: #e8ecf4;
+  --card:         #0a1a1a;
+  --card-foreground: #d4f5ef;
+  --popover:      #0a1a1a;
+  --popover-foreground: #d4f5ef;
 
-  --panel:        #0d1425;
-  --panel-border: rgba(99, 120, 180, 0.13);
-  --modal-bg:     #0d1425;
-  --elevated:     #141d35;
+  --panel:        rgba(10, 28, 26, 0.85);
+  --panel-border: rgba(0, 212, 170, 0.15);
+  --modal-bg:     #0a1a1a;
+  --elevated:     #0f2424;
 
-  --primary:      #6366f1;
-  --primary-foreground: #ffffff;
+  --primary:      #00D4AA;
+  --primary-foreground: #060e0e;
 
-  --secondary:    #1a2342;
-  --secondary-foreground: #e2e8f0;
+  --secondary:    #0f2424;
+  --secondary-foreground: #d4f5ef;
 
-  --muted:        #111929;
-  --muted-foreground: #8b9ab8;
+  --muted:        #0a1a1a;
+  --muted-foreground: #5a8a80;
 
-  --accent:       #1a2342;
-  --accent-foreground: #c7d2fe;
+  --accent:       rgba(0, 212, 170, 0.12);
+  --accent-foreground: #00D4AA;
 
-  --destructive:  #f43f5e;
+  --destructive:  #ff4d6d;
   --destructive-foreground: #ffffff;
-  --success:      #22c55e;
-  --warning:      #f59e0b;
-  --info:         #38bdf8;
+  --success:      #00D4AA;
+  --warning:      #f0b429;
+  --info:         #00B4D8;
 
   /* Accent palette */
-  --accent-amber:   #f59e0b;
-  --accent-rose:    #f43f5e;
-  --accent-emerald: #22c55e;
-  --accent-sky:     #38bdf8;
-  --accent-violet:  #a78bfa;
-  --accent-teal:    #2dd4bf;
+  --accent-amber:   #f0b429;
+  --accent-rose:    #ff4d6d;
+  --accent-emerald: #00D4AA;
+  --accent-sky:     #00B4D8;
+  --accent-violet:  #7c6ff7;
+  --accent-teal:    #00D4AA;
 
-  --border: rgba(99, 120, 220, 0.14);
-  --input:  rgba(99, 120, 220, 0.12);
-  --ring:   #6366f1;
+  --border: rgba(0, 212, 170, 0.12);
+  --input:  rgba(0, 212, 170, 0.08);
+  --ring:   #00D4AA;
 
-  --gradient-primary: linear-gradient(135deg, #6366f1 0%, #4f46e5 50%, #7c3aed 100%);
-  --gradient-subtle:  linear-gradient(180deg, rgba(99, 102, 241, 0.10), transparent 70%);
-  --shadow-glow:      0 0 48px -8px rgba(99, 102, 241, 0.50);
-  --shadow-elegant:   0 4px 24px -4px rgba(0, 0, 0, 0.55);
+  --gradient-primary: linear-gradient(135deg, #00D4AA 0%, #00B4D8 50%, #0096c7 100%);
+  --gradient-subtle:  linear-gradient(180deg, rgba(0, 212, 170, 0.08), transparent 70%);
+  --shadow-glow:      0 0 48px -8px rgba(0, 212, 170, 0.35);
+  --shadow-elegant:   0 4px 32px -4px rgba(0, 0, 0, 0.70);
 }
 
 /* ─────────────────────────────────────────────
@@ -169,9 +170,9 @@
   /* Dark mode background texture */
   :root body {
     background-image:
-      radial-gradient(ellipse 900px 600px at 0% 0%, rgba(99, 102, 241, 0.10), transparent 65%),
-      radial-gradient(ellipse 700px 500px at 100% 0%, rgba(56, 189, 248, 0.06), transparent 65%),
-      radial-gradient(ellipse 600px 400px at 50% 100%, rgba(124, 58, 237, 0.07), transparent 65%);
+      radial-gradient(ellipse 900px 600px at 0% 0%,   rgba(0, 212, 170, 0.07), transparent 65%),
+      radial-gradient(ellipse 700px 500px at 100% 0%,  rgba(0, 180, 216, 0.05), transparent 65%),
+      radial-gradient(ellipse 600px 400px at 50% 100%, rgba(0, 212, 170, 0.04), transparent 65%);
     background-attachment: fixed;
   }
 
@@ -206,6 +207,8 @@
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-elegant);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 @utility gradient-text {

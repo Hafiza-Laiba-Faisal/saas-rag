@@ -610,11 +610,11 @@ const embeddingProviderMeta: Record<string, {
 };
 
 const accents = {
-  amber:  { bg: "var(--accent-amber)",   fg: "#ffffff", ring: "rgba(255,193,7,0.35)" },
-  rose:   { bg: "var(--accent-rose)",    fg: "#ffffff", ring: "rgba(220,53,69,0.35)" },
-  sky:    { bg: "var(--accent-sky)",     fg: "#ffffff", ring: "rgba(13,110,253,0.35)" },
-  emerald:{ bg: "var(--accent-emerald)", fg: "#ffffff", ring: "rgba(25,135,84,0.35)" },
-  violet: { bg: "var(--accent-violet)",  fg: "#ffffff", ring: "rgba(66,58,142,0.35)" },
+  amber:  { bg: "var(--accent-amber)",   fg: "#060e0e", ring: "rgba(240,180,41,0.40)" },
+  rose:   { bg: "var(--accent-rose)",    fg: "#ffffff", ring: "rgba(255,77,109,0.40)" },
+  sky:    { bg: "var(--accent-sky)",     fg: "#060e0e", ring: "rgba(0,180,216,0.40)" },
+  emerald:{ bg: "var(--accent-emerald)", fg: "#060e0e", ring: "rgba(0,212,170,0.40)" },
+  violet: { bg: "var(--accent-violet)",  fg: "#ffffff", ring: "rgba(124,111,247,0.40)" },
 } as const;
 type AccentKey = keyof typeof accents;
 
