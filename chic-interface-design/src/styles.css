@@ -42,61 +42,61 @@
 }
 
 /* ─────────────────────────────────────────────
-   DARK THEME  — Deep Teal / Cyber Green
-   Background: near-black with teal tint
-   Primary: #00D4AA (teal-green) + #00B4D8 (cyan)
+   DARK THEME  — Deep Charcoal + Purple/Violet
+   Background: #141414 near-black
+   Primary: #7B6EF6 (soft violet) + #4ECDC4 (mint)
 ───────────────────────────────────────────── */
 :root {
   color-scheme: dark;
   --radius: 0.5rem;
 
-  --background:   #060e0e;
-  --foreground:   #d4f5ef;
+  --background:   #111118;
+  --foreground:   #e8e8f0;
 
-  --card:         #0a1a1a;
-  --card-foreground: #d4f5ef;
-  --popover:      #0a1a1a;
-  --popover-foreground: #d4f5ef;
+  --card:         #1a1a24;
+  --card-foreground: #e8e8f0;
+  --popover:      #1a1a24;
+  --popover-foreground: #e8e8f0;
 
-  --panel:        rgba(10, 28, 26, 0.85);
-  --panel-border: rgba(0, 212, 170, 0.15);
-  --modal-bg:     #0a1a1a;
-  --elevated:     #0f2424;
+  --panel:        rgba(22, 22, 34, 0.90);
+  --panel-border: rgba(123, 110, 246, 0.14);
+  --modal-bg:     #1a1a24;
+  --elevated:     #21212f;
 
-  --primary:      #00D4AA;
-  --primary-foreground: #060e0e;
+  --primary:      #7B6EF6;
+  --primary-foreground: #ffffff;
 
-  --secondary:    #0f2424;
-  --secondary-foreground: #d4f5ef;
+  --secondary:    #21212f;
+  --secondary-foreground: #e8e8f0;
 
-  --muted:        #0a1a1a;
-  --muted-foreground: #5a8a80;
+  --muted:        #1a1a24;
+  --muted-foreground: #6b6b85;
 
-  --accent:       rgba(0, 212, 170, 0.12);
-  --accent-foreground: #00D4AA;
+  --accent:       rgba(123, 110, 246, 0.12);
+  --accent-foreground: #7B6EF6;
 
   --destructive:  #ff4d6d;
   --destructive-foreground: #ffffff;
-  --success:      #00D4AA;
-  --warning:      #f0b429;
-  --info:         #00B4D8;
+  --success:      #4ECDC4;
+  --warning:      #FFD93D;
+  --info:         #6CB4EE;
 
   /* Accent palette */
-  --accent-amber:   #f0b429;
+  --accent-amber:   #FFD93D;
   --accent-rose:    #ff4d6d;
-  --accent-emerald: #00D4AA;
-  --accent-sky:     #00B4D8;
-  --accent-violet:  #7c6ff7;
-  --accent-teal:    #00D4AA;
+  --accent-emerald: #4ECDC4;
+  --accent-sky:     #6CB4EE;
+  --accent-violet:  #7B6EF6;
+  --accent-teal:    #4ECDC4;
 
-  --border: rgba(0, 212, 170, 0.12);
-  --input:  rgba(0, 212, 170, 0.08);
-  --ring:   #00D4AA;
+  --border: rgba(123, 110, 246, 0.12);
+  --input:  rgba(123, 110, 246, 0.08);
+  --ring:   #7B6EF6;
 
-  --gradient-primary: linear-gradient(135deg, #00D4AA 0%, #00B4D8 50%, #0096c7 100%);
-  --gradient-subtle:  linear-gradient(180deg, rgba(0, 212, 170, 0.08), transparent 70%);
-  --shadow-glow:      0 0 48px -8px rgba(0, 212, 170, 0.35);
-  --shadow-elegant:   0 4px 32px -4px rgba(0, 0, 0, 0.70);
+  --gradient-primary: linear-gradient(135deg, #7B6EF6 0%, #9B8FF8 50%, #4ECDC4 100%);
+  --gradient-subtle:  linear-gradient(180deg, rgba(123, 110, 246, 0.08), transparent 70%);
+  --shadow-glow:      0 0 48px -8px rgba(123, 110, 246, 0.40);
+  --shadow-elegant:   0 4px 32px -4px rgba(0, 0, 0, 0.65);
 }
 
 /* ─────────────────────────────────────────────
@@ -170,9 +170,9 @@
   /* Dark mode background texture */
   :root body {
     background-image:
-      radial-gradient(ellipse 900px 600px at 0% 0%,   rgba(0, 212, 170, 0.07), transparent 65%),
-      radial-gradient(ellipse 700px 500px at 100% 0%,  rgba(0, 180, 216, 0.05), transparent 65%),
-      radial-gradient(ellipse 600px 400px at 50% 100%, rgba(0, 212, 170, 0.04), transparent 65%);
+      radial-gradient(ellipse 900px 600px at 0% 0%,   rgba(123, 110, 246, 0.06), transparent 65%),
+      radial-gradient(ellipse 700px 500px at 100% 0%,  rgba(78, 205, 196, 0.04), transparent 65%),
+      radial-gradient(ellipse 600px 400px at 50% 100%, rgba(123, 110, 246, 0.04), transparent 65%);
     background-attachment: fixed;
   }
 
