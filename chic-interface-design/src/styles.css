@@ -318,8 +318,17 @@ textarea.input:focus {
 }
 
 
+/* Tab active indicator color */
+:root  { --tab-active-border: #ffffff; --tab-active-text: #ffffff; }
+.light { --tab-active-border: #1a1a2e; --tab-active-text: #1a1a2e; }
+
+.code-block {
+  background: var(--code-bg);
+  color: var(--code-fg);
+}
+
 /* Code / terminal background */
-:root { --code-bg: #0a1020; --code-fg: #e2e8f0; }
+:root  { --code-bg: #0a1020; --code-fg: #e2e8f0; }
 .light { --code-bg: #1a1a2e; --code-fg: #ffffff; }
 
 .code-block {

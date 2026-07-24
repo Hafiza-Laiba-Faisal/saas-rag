@@ -283,8 +283,8 @@ function AdminPage() {
                   onClick={() => setTab(t.id)}
                   className={`flex items-center gap-2 border-b-2 px-3 sm:px-4 py-3 text-xs sm:text-sm font-medium transition whitespace-nowrap ${
                     tab === t.id
-                      ? "border-primary text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
+                      ? "border-[var(--tab-active-border)] text-[var(--tab-active-text)] font-semibold"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-[var(--tab-active-border)]/30"
                   }`}
                 >
                   <t.icon className="h-4 w-4" /> {t.label}
