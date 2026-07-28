@@ -19,7 +19,6 @@ import {
   Loader2,
   MessageSquare,
   Moon,
-  Package,
   Plus,
   RefreshCw,
   Search,
@@ -276,20 +275,24 @@ function AdminPage() {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1 border-b border-border bg-panel/20 px-4 sm:px-8 overflow-x-auto flex-shrink-0 scrollbar-none">
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  className={`flex items-center gap-2 border-b-2 px-3 sm:px-4 py-3 text-xs sm:text-sm font-medium transition whitespace-nowrap ${
-                    tab === t.id
-                      ? "border-[var(--tab-active-border)] text-[var(--tab-active-text)] font-semibold"
-                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-[var(--tab-active-border)]/30"
-                  }`}
-                >
-                  <t.icon className="h-4 w-4" /> {t.label}
-                </button>
-              ))}
+            <div className="flex gap-1.5 border-b border-border bg-panel/30 px-4 sm:px-8 overflow-x-auto flex-shrink-0 scrollbar-none pt-2">
+              {tabs.map((t) => {
+                const isActive = tab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs sm:text-sm font-medium transition-all whitespace-nowrap rounded-t-lg ${
+                      isActive
+                        ? "border-primary text-primary font-semibold bg-primary/10 shadow-sm"
+                        : "border-transparent text-muted-foreground hover:text-foreground hover:bg-elevated/40"
+                    }`}
+                  >
+                    <t.icon className={`h-4 w-4 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+                    {t.label}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="flex-1 overflow-hidden">
@@ -376,12 +379,12 @@ function AddTenantModal({ onClose }: { onClose: () => void }) {
   const [fee, setFee] = useState(299);
   const [llmProvider, setLlmProvider] = useState("gemini");
   const [llmModel, setLlmModel] = useState(providerDefaults.gemini);
-  const [llmUrl, setLlmUrl] = useState("");
+  const [llmUrl, setLlmUrl] = useState(llmDefaultBaseUrls.gemini);
   const [llmKey, setLlmKey] = useState("");
   const [embedProvider, setEmbedProvider] = useState("hash");
-  const [embedModel, setEmbedModel] = useState("BAAI/bge-small-en-v1.5");
-  const [embedDims, setEmbedDims] = useState(384);
-  const [embedUrl, setEmbedUrl] = useState("");
+  const [embedModel, setEmbedModel] = useState(embeddingProviderMeta.hash.defaultModel);
+  const [embedDims, setEmbedDims] = useState(embeddingProviderMeta.hash.defaultDimensions);
+  const [embedUrl, setEmbedUrl] = useState(embeddingProviderMeta.hash.defaultBaseUrl || "");
   const [embedKey, setEmbedKey] = useState("");
   const [error, setError] = useState("");
 
@@ -453,6 +456,8 @@ function AddTenantModal({ onClose }: { onClose: () => void }) {
                   const p = e.target.value;
                   setLlmProvider(p);
                   setLlmModel(providerDefaults[p] || llmModel);
+                  const preset = (providerPresets as any[]).find((pr: any) => pr.id === p);
+                  setLlmUrl(preset?.defaultBaseUrl || llmDefaultBaseUrls[p] || "");
                 }}>
                   <option value="gemini">Google Gemini Cloud</option>
                   <option value="mistral">Mistral Cloud</option>
@@ -481,7 +486,17 @@ function AddTenantModal({ onClose }: { onClose: () => void }) {
             <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground pt-2">Embedding Configuration</h3>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Provider">
-                <select className="input" value={embedProvider} onChange={(e) => setEmbedProvider(e.target.value)}>
+                <select className="input" value={embedProvider} onChange={(e) => {
+                  const p = e.target.value;
+                  const meta = embeddingProviderMeta[p];
+                  setEmbedProvider(p);
+                  if (meta) {
+                    setEmbedModel(meta.defaultModel);
+                    setEmbedDims(meta.defaultDimensions);
+                    setEmbedUrl(meta.defaultBaseUrl || "");
+                    setEmbedKey("");
+                  }
+                }}>
                   <option value="hash">Local Deterministic Hash (384d)</option>
                   <option value="bge">BGE Small (384d)</option>
                   <option value="bge_m3">BGE-M3 (1024d)</option>
@@ -496,12 +511,16 @@ function AddTenantModal({ onClose }: { onClose: () => void }) {
               <Field label="Dimensions">
                 <input className="input" type="number" value={embedDims} onChange={(e) => setEmbedDims(Number(e.target.value))} />
               </Field>
+              {embeddingProviderMeta[embedProvider]?.defaultBaseUrl && (
               <Field label="Base URL (optional)">
                 <input className="input font-mono text-xs" value={embedUrl} onChange={(e) => setEmbedUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
               </Field>
+              )}
+              {embeddingProviderMeta[embedProvider]?.apiKeyLabel && (
               <Field label="API Key (optional)">
                 <input className="input font-mono" type="password" value={embedKey} onChange={(e) => setEmbedKey(e.target.value)} placeholder="sk-..." />
               </Field>
+              )}
             </div>
           </div>
         </div>
@@ -525,6 +544,16 @@ const providerDefaults: Record<string, string> = {
   openrouter: "openai/gpt-4o-mini",
   anthropic: "claude-3-5-haiku-latest",
   openai_compatible: "gpt-4o-mini",
+};
+
+const llmDefaultBaseUrls: Record<string, string> = {
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
+  mistral: "https://api.mistral.ai/v1",
+  openai: "https://api.openai.com/v1",
+  nvidia: "https://integrate.api.nvidia.com/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+  anthropic: "https://api.anthropic.com/v1",
+  openai_compatible: "http://localhost:11434/v1",
 };
 
 // Embedding provider metadata — models, dimensions, docs URL
@@ -610,11 +639,11 @@ const embeddingProviderMeta: Record<string, {
 };
 
 const accents = {
-  amber:  { bg: "var(--accent-amber)",   fg: "#111118", ring: "rgba(255,217,61,0.40)" },
-  rose:   { bg: "var(--accent-rose)",    fg: "#ffffff", ring: "rgba(255,77,109,0.40)" },
-  sky:    { bg: "var(--accent-sky)",     fg: "#111118", ring: "rgba(108,180,238,0.40)" },
-  emerald:{ bg: "var(--accent-emerald)", fg: "#111118", ring: "rgba(78,205,196,0.40)" },
-  violet: { bg: "var(--accent-violet)",  fg: "#ffffff", ring: "rgba(123,110,246,0.45)" },
+  amber:  { bg: "#59B8FF", fg: "#1B1D28", ring: "rgba(89,184,255,0.40)" },
+  rose:   { bg: "#5EEAD4", fg: "#1B1D28", ring: "rgba(94,234,212,0.40)" },
+  sky:    { bg: "#59B8FF", fg: "#1B1D28", ring: "rgba(89,184,255,0.40)" },
+  emerald:{ bg: "#B8F2E6", fg: "#1B1D28", ring: "rgba(184,242,230,0.40)" },
+  violet: { bg: "#D7C3FF", fg: "#1B1D28", ring: "rgba(215,195,255,0.40)" },
 } as const;
 type AccentKey = keyof typeof accents;
 
@@ -752,10 +781,10 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-4">
-        <Stat accent="amber"  label="Monthly Fee"  value={`$${form.monthlyFee || tenant.fee}.00`} sub={`Tier: ${form.subscriptionTier || tenant.tier}`} icon={ShieldCheck} />
-        <Stat accent="rose"   label="Embedding"    value={form.embeddingModel || "bge-small-en"} sub={`Provider: ${form.embeddingProvider || "Local"}`} icon={Database} />
-        <Stat accent="sky"    label="LLM Endpoint" value={form.llmModel || "gemini-2.5-flash-lite"} sub={`Provider: ${form.llmProvider || "OpenAI"}`} icon={Sparkles} />
-        <Stat accent="emerald"label="Vector Store" value="Qdrant" sub="Dense + sparse hybrid" icon={Gauge} />
+        <Stat accent="emerald" label="Monthly Fee"  value={`$${form.monthlyFee || tenant.fee}.00`} sub={`Tier: ${form.subscriptionTier || tenant.tier}`} icon={ShieldCheck} />
+        <Stat accent="violet"  label="Embedding"    value={form.embeddingModel || "bge-small-en"} sub={`Provider: ${form.embeddingProvider || "Local"}`} icon={Database} />
+        <Stat accent="sky"     label="LLM Endpoint" value={form.llmModel || "gemini-2.5-flash-lite"} sub={`Provider: ${form.llmProvider || "OpenAI"}`} icon={Sparkles} />
+        <Stat accent="emerald" label="Vector Store" value="Qdrant" sub="Dense + sparse hybrid" icon={Gauge} />
       </div>
 
       <div className="panel p-6">
@@ -904,19 +933,19 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
             const meta = embeddingProviderMeta[form.embeddingProvider || "hash"];
             if (!meta || !meta.paid) return null;
             return (
-              <div className="sm:col-span-2 lg:col-span-3 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
-                <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-amber-400" />
+              <div className="sm:col-span-2 lg:col-span-3 flex items-start gap-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-xs text-sky-200">
+                <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-sky-400" />
                 <div className="space-y-1">
-                  <p className="font-semibold text-amber-300">{meta.label} — Paid API</p>
-                  <p className="text-amber-200/80">
+                  <p className="font-semibold text-sky-300">{meta.label} — Paid API</p>
+                  <p className="text-sky-200/80">
                     Requires an API key from the provider. Available models:
                   </p>
                   <ul className="mt-1 space-y-0.5">
                     {meta.models.map((m) => (
                       <li key={m.name} className="flex items-center gap-2">
-                        <span className="font-mono text-amber-100">{m.name}</span>
-                        <span className="text-amber-300/60">({m.dims}d)</span>
-                        {m.note && <span className="text-amber-200/50">— {m.note}</span>}
+                        <span className="font-mono text-sky-100">{m.name}</span>
+                        <span className="text-sky-300/60">({m.dims}d)</span>
+                        {m.note && <span className="text-sky-200/50">— {m.note}</span>}
                       </li>
                     ))}
                   </ul>
@@ -924,7 +953,7 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
                     href={meta.docsUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-1.5 inline-flex items-center gap-1 font-medium text-amber-300 underline underline-offset-2 hover:text-amber-100"
+                    className="mt-1.5 inline-flex items-center gap-1 font-medium text-sky-300 underline underline-offset-2 hover:text-sky-100"
                   >
                     <Globe className="h-3 w-3" /> View official docs →
                   </a>
@@ -1394,7 +1423,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       </div>
 
       {source === "files" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 max-h-96 overflow-y-auto">
           <div className="rounded-xl border-2 border-dashed border-border bg-elevated/40 p-8 text-center">
             <Upload className="mx-auto h-8 w-8 text-primary" />
             <p className="mt-3 text-sm font-medium">Drop files here or click to browse</p>
@@ -1449,7 +1478,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                 </div>
               </div>
               {ingestProgress.logs && ingestProgress.logs.length > 0 && (
-                <div className="mt-2 max-h-32 overflow-y-auto rounded bg-[var(--code-bg)] text-[var(--code-fg)] p-2 font-mono text-[10px] leading-relaxed text-foreground/70">
+                <div className="mt-2 max-h-32 overflow-y-auto rounded bg-[var(--code-bg)] text-[var(--code-fg)] p-2 font-mono text-[10px] leading-relaxed">
                   {ingestProgress.logs.map((l: string, i: number) => (
                     <div key={i} className={`${l.includes("[Error]") || l.includes("[Critical") ? "text-destructive" : l.includes("finished") || l.includes("Successfully") ? "text-success" : l.includes("[System]") ? "text-[color:var(--accent-teal)]" : l.includes("skipping") || l.includes("already") ? "text-muted-foreground" : ""}`}>{l}</div>
                   ))}
@@ -1467,7 +1496,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "web" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 max-h-[420px] overflow-y-auto">
           {/* Scraper service health indicator */}
           <div className="flex items-center gap-2 mb-4">
             <span className={`w-2 h-2 rounded-full ${scraperHealth?.alive ? "bg-success" : "bg-destructive"}`} />
@@ -1629,7 +1658,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
               ) : scrapeResult?.data?.job_id ? (
                 <div>
                   <div className="flex items-center gap-2 font-semibold mb-1">
-                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
                     <span className="capitalize">{scrapeResult.data.status || "pending"}</span>
                   </div>
                   <div className="text-muted-foreground">{scrapeResult.data.message || "Crawl started"}</div>
@@ -1645,7 +1674,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
           {scrapeJobStatus && (
             <div className="mt-3 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
               <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${scrapeJobStatus.data?.status === "completed" ? "bg-success" : scrapeJobStatus.data?.status === "error" ? "bg-destructive" : "bg-amber-400 animate-pulse"}`} />
+                <span className={`w-2 h-2 rounded-full ${scrapeJobStatus.data?.status === "completed" ? "bg-success" : scrapeJobStatus.data?.status === "error" ? "bg-destructive" : "bg-sky-400 animate-pulse"}`} />
                 <span className="font-semibold capitalize">{scrapeJobStatus.data?.status || "running"}</span>
               </div>
               {scrapeJobStatus.data?.message && <div className="mt-1 text-muted-foreground">{scrapeJobStatus.data.message}</div>}
@@ -1684,7 +1713,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                       scraperLogs.map((log: any, i: number) => {
                         const levelColor =
                           log.level === "ERROR"   ? "text-red-400" :
-                          log.level === "WARNING" ? "text-yellow-400" :
+                          log.level === "WARNING" ? "text-orange-400" :
                           log.level === "INFO"    ? "text-green-400" :
                           "text-gray-400";
                         return (
@@ -1722,7 +1751,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "crawl" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 max-h-96 overflow-y-auto">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Crawl Output</h3>
           <p className="mt-2 text-xs text-muted-foreground">Browse scraped sites from the scraper service and import content to tenant documents.</p>
 
@@ -1845,7 +1874,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "cloud" && (
-        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 max-h-64 overflow-y-auto">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Connect a cloud source</h3>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {[
@@ -1896,7 +1925,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
         {docs.length === 0 ? (
           <div className="py-12 text-center text-xs text-muted-foreground">No documents uploaded yet</div>
         ) : (
-          <div className="overflow-y-auto flex-1">
+          <div className="overflow-y-auto flex-1 min-h-0">
             <table className="w-full text-sm">
             <thead className="sticky top-0 bg-elevated/60 text-left text-xs uppercase tracking-wider text-muted-foreground">
               <tr>
@@ -2099,8 +2128,17 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [showPromptSection, setShowPromptSection] = useState(false);
   const [drawerContext, setDrawerContext] = useState<any>(null);
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const turnsLoaded = useRef(false);
   const prevSessionRef = useRef<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showToast(msg: string, type: "success" | "error" = "success") {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ msg, type });
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }
 
   const { data: sessionTurns } = useQuery({
     queryKey: ["session-turns", tenantId, selectedSession],
@@ -2310,14 +2348,40 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 px-8 py-6">
-    <div className="grid gap-4 lg:grid-cols-[220px_1fr_320px] flex-1 min-h-0" style={{ position: "relative" }}>
-      <div className="panel flex flex-col p-4">
+    <div className="flex flex-col flex-1 min-h-0 px-4 sm:px-8 py-6">
+
+      {/* ── Toast Notification ── */}
+      <div
+        className="fixed top-5 right-5 z-[200] pointer-events-none"
+        style={{ minWidth: 220 }}
+      >
+        <div
+          className={`flex items-center gap-2.5 rounded-xl border px-4 py-3 text-sm font-medium shadow-2xl backdrop-blur-sm transition-all duration-300 ${
+            toast
+              ? "opacity-100 translate-y-0"
+              : "opacity-0 -translate-y-3 pointer-events-none"
+          } ${
+            toast?.type === "error"
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : "border-success/30 bg-success/10 text-success"
+          }`}
+        >
+          {toast?.type === "error" ? (
+            <span className="text-base">✕</span>
+          ) : (
+            <span className="text-base">✓</span>
+          )}
+          {toast?.msg}
+        </div>
+      </div>
+
+    <div className="grid gap-4 lg:grid-cols-[220px_1fr_320px] flex-1 min-h-0">
+      <div className="panel flex flex-col p-4 min-h-0 overflow-hidden">
         <div className="mb-3 flex items-center justify-between">
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sessions</div>
           <button className="text-[10px] text-primary hover:underline" onClick={handleNewSession}>+ New</button>
         </div>
-        <div className="space-y-1 overflow-y-auto flex-1">
+        <div className="space-y-1 overflow-y-auto flex-1 min-h-0">
           {sessions.length === 0 ? (
             <div className="text-center py-8 text-xs text-muted-foreground">No sessions yet</div>
           ) : (
@@ -2339,7 +2403,7 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
         </div>
       </div>
 
-      <div className="panel flex flex-col">
+      <div className="panel flex flex-col min-h-0">
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <div className="text-sm font-semibold">{selectedSession || "New Chat"}</div>
           {error && <div className="text-xs text-destructive">{error}</div>}
@@ -2362,53 +2426,63 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
                 placeholder="Custom system prompt for test queries..."
               />
               <button
+                disabled={promptSaving}
                 onClick={async () => {
                   if (!tenantId) return;
+                  setPromptSaving(true);
                   try {
                     await apiFetch(`/tenants/${tenantId}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ system_prompt: systemPrompt || null }),
                     });
-                  } catch (e: any) { setError("Save failed: " + e.message); }
+                    showToast(systemPrompt ? "System prompt saved!" : "System prompt cleared!");
+                  } catch (e: any) {
+                    showToast("Save failed: " + e.message, "error");
+                  } finally {
+                    setPromptSaving(false);
+                  }
                 }}
-                className="self-start rounded-md bg-[image:var(--gradient-primary)] px-3 py-1.5 text-[11px] font-semibold text-primary-foreground hover:opacity-90"
+                className="self-start inline-flex items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-3 py-1.5 text-[11px] font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-60"
               >
-                Save
+                {promptSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                {promptSaving ? "Saving..." : "Save"}
               </button>
             </div>
           )}
         </div>
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5" id="chat-container">
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5" id="chat-container">
           {chatTurns.length === 0 ? (
             <Bubble role="bot">👋 Ask a question about this tenant's indexed corpus.</Bubble>
           ) : (
             chatTurns.map((turn, i) => {
-              // During streaming the last assistant turn starts empty — skip it,
-              // the spinner bubble below handles that state
               const isStreamingPlaceholder =
                 streaming && turn.role === "assistant" && i === chatTurns.length - 1 && !turn.content;
               if (isStreamingPlaceholder) return null;
               return (
-                <Bubble key={i} role={turn.role === "user" ? "user" : "bot"}>
-                  {turn.role === "assistant" ? (
-                    <>
-                      {renderMarkdown(turn.content)}
-                      {streaming && i === chatTurns.length - 1 && turn.content && (
-                        <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse align-middle" />
-                      )}
-                    </>
-                  ) : (
-                    turn.content
-                  )}
-                </Bubble>
+                <div key={i} className="mb-4">
+                  <Bubble role={turn.role === "user" ? "user" : "bot"}>
+                    {turn.role === "assistant" ? (
+                      <>
+                        {renderMarkdown(turn.content)}
+                        {streaming && i === chatTurns.length - 1 && turn.content && (
+                          <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse align-middle" />
+                        )}
+                      </>
+                    ) : (
+                      turn.content
+                    )}
+                  </Bubble>
+                </div>
               );
             })
           )}
           {(loading || streaming) && (
-            <Bubble role="bot">
-              <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {streaming ? "Streaming..." : "Thinking..."}</span>
-            </Bubble>
+            <div className="mb-4">
+              <Bubble role="bot">
+                <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {streaming ? "Streaming..." : "Thinking..."}</span>
+              </Bubble>
+            </div>
           )}
         </div>
         <form className="flex items-center gap-2 border-t border-border px-4 py-3" onSubmit={handleChat}>
@@ -2420,11 +2494,11 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
         </form>
       </div>
 
-      <div className="panel flex flex-col p-4">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+      <div className="panel flex flex-col p-4 min-h-0 overflow-hidden">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex-shrink-0">
           Retrieved Chunks
         </div>
-        <div className="space-y-3 overflow-y-auto flex-1 text-sm">
+        <div className="min-h-0 overflow-y-auto flex-1 text-sm space-y-3">
           {contexts.length === 0 ? (
             <div className="text-center py-8 text-xs text-muted-foreground">Send a query to see retrieved chunks</div>
           ) : (
@@ -2691,13 +2765,6 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
   -H "Content-Type: application/json" \\
   -d '{"query":"What is our refund policy?"}'`;
 
-  const sdks = [
-    { name: "Node.js", cmd: "npm i @tenbit/rag" },
-    { name: "Python",  cmd: "pip install tenbit-rag" },
-    { name: "Go",      cmd: "go get github.com/tenbit/rag-go" },
-    { name: "REST",    cmd: "https://api.tenbit.rag/v1" },
-  ];
-
   return (
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-4">
@@ -2725,7 +2792,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
 
       <div className="panel overflow-hidden">
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <div className="text-sm font-semibold flex items-center gap-2"><KeyRound className="h-4 w-4 text-[color:var(--accent-amber)]" /> API Key</div>
+          <div className="text-sm font-semibold flex items-center gap-2"><KeyRound className="h-4 w-4 text-[color:var(--accent-sky)]" /> API Key</div>
           <CopyBtn text={apiKey} />
         </div>
         <div className="px-5 py-4">
@@ -2766,29 +2833,12 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
       </div>
 
       <div className="panel p-6">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-          <Package className="h-4 w-4 text-[color:var(--accent-violet)]" /> SDKs & clients
-        </h3>
-        <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-          {sdks.map((s, index) => (
-            <div key={s.name ? `${s.name}-${s.cmd}` : `sdk-${index}`} className="rounded-lg border border-border bg-elevated/50 p-3">
-              <div className="text-xs font-semibold">{s.name}</div>
-              <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-[var(--code-bg)] text-[var(--code-fg)] px-2 py-1.5 font-mono text-[11px]">
-                <span className="truncate">{s.cmd}</span>
-                <CopyBtn text={s.cmd} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="panel p-6">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Embed the widget</h3>
           <CopyBtn text={snippet} />
         </div>
         <p className="mt-1 text-xs text-muted-foreground">Paste this before &lt;/body&gt; on the client's site.</p>
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs leading-relaxed text-foreground/90">
+        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs leading-relaxed">
           <code className="font-mono">{snippet}</code>
         </pre>
       </div>
@@ -2798,7 +2848,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">REST example</h3>
           <CopyBtn text={apiCall} />
         </div>
-        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs leading-relaxed text-foreground/90">
+        <pre className="mt-4 overflow-x-auto rounded-lg border border-border bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs leading-relaxed">
           <code className="font-mono">{apiCall}</code>
         </pre>
       </div>
@@ -3267,11 +3317,11 @@ function SystemLogsModal({ tenantId, onClose }: { tenantId?: string; onClose: ()
             <div className="space-y-4">
               <div>
                 <div className="text-xs font-semibold text-muted-foreground mb-1">Exception Traceback</div>
-                <pre className="rounded-lg bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs font-mono leading-relaxed text-foreground/80 max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.traceback || "No exception traceback recorded."}</pre>
+                <pre className="rounded-lg bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs font-mono leading-relaxed max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.traceback || "No exception traceback recorded."}</pre>
               </div>
               <div>
                 <div className="text-xs font-semibold text-muted-foreground mb-1">Details Payload</div>
-                <pre className="rounded-lg bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs font-mono leading-relaxed text-foreground/80 max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.details_json ? (() => { try { return JSON.stringify(JSON.parse(traceLog.details_json), null, 2); } catch { return traceLog.details_json; } })() : "No extra metadata payload."}</pre>
+                <pre className="rounded-lg bg-[var(--code-bg)] text-[var(--code-fg)] p-4 text-xs font-mono leading-relaxed max-h-40 overflow-y-auto whitespace-pre-wrap">{traceLog.details_json ? (() => { try { return JSON.stringify(JSON.parse(traceLog.details_json), null, 2); } catch { return traceLog.details_json; } })() : "No extra metadata payload."}</pre>
               </div>
             </div>
           </div>

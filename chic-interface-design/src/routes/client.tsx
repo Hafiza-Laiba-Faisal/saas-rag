@@ -44,24 +44,29 @@ interface ChatMessage {
 
 function ClientPage() {
   const navigate = useNavigate();
-  // Initialize from URL param first, then localStorage, then default to empty
-  const [apiKey, setApiKey] = useState(() => {
-    // Check URL first: ?api_key=xxx
+
+  // Helper to read initial key from URL parameter or localStorage
+  const getInitialKey = () => {
     const urlParams = new URLSearchParams(window.location.search);
     const urlKey = urlParams.get("api_key");
     if (urlKey) return urlKey;
-    // Fallback to localStorage for convenience
     return localStorage.getItem("client-api-key") ?? "";
-  });
-  const [isLoading, setIsLoading] = useState(false);
+  };
+
+  const [inputKey, setInputKey] = useState(getInitialKey);
+  const [activeApiKey, setActiveApiKey] = useState("");
+  const [isVerifying, setIsVerifying] = useState(!!getInitialKey());
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState("");
   const [tab, setTab] = useState<"documents" | "playground">("documents");
   const [docs, setDocs] = useState<Document[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: "bot", text: "Hi! I'm connected to your indexed documents. Ask me anything to test retrieval." },
   ]);
-    const [input, setInput] = useState("");
-    const [systemPrompt, setSystemPrompt] = useState("");
+  const [input, setInput] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const latestSources = messages
@@ -74,14 +79,86 @@ function ClientPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Initial verification on mount if a key exists in URL or localStorage
   useEffect(() => {
-    if (apiKey) {
-      localStorage.setItem("client-api-key", apiKey);
-      loadDocuments(apiKey);
+    const candidate = getInitialKey();
+    if (candidate) {
+      verifyAndConnectKey(candidate, true);
+    } else {
+      setIsVerifying(false);
     }
-  }, [apiKey]);
+  }, []);
 
-  const loadDocuments = async (key: string) => {
+  const verifyAndConnectKey = async (keyToTest: string, isInitial = false) => {
+    const key = keyToTest.trim();
+    if (!key) {
+      setConnectError("Please enter an API key.");
+      setIsVerifying(false);
+      return false;
+    }
+
+    if (isInitial) {
+      setIsVerifying(true);
+    } else {
+      setConnecting(true);
+    }
+    setConnectError("");
+
+    try {
+      const res = await fetch("/api/v1/client/documents", {
+        headers: { "X-API-Key": key },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setDocs(data || []);
+        localStorage.setItem("client-api-key", key);
+        setActiveApiKey(key);
+        setInputKey(key);
+        setIsVerifying(false);
+        setConnecting(false);
+        return true;
+      } else if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem("client-api-key");
+        setActiveApiKey("");
+        setConnectError("Invalid or expired API Key. Access denied.");
+        setIsVerifying(false);
+        setConnecting(false);
+        return false;
+      } else {
+        localStorage.removeItem("client-api-key");
+        setActiveApiKey("");
+        setConnectError(`Connection failed (HTTP ${res.status}). Access denied.`);
+        setIsVerifying(false);
+        setConnecting(false);
+        return false;
+      }
+    } catch (e) {
+      if (isInitial) {
+        setActiveApiKey("");
+      }
+      setConnectError("Could not reach the server. Please check your network connection.");
+      setIsVerifying(false);
+      setConnecting(false);
+      return false;
+    }
+  };
+
+  const handleApiKeySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await verifyAndConnectKey(inputKey, false);
+  };
+
+  const handleDisconnect = () => {
+    localStorage.removeItem("client-api-key");
+    setActiveApiKey("");
+    setInputKey("");
+    setDocs([]);
+    setConnectError("");
+  };
+
+  const loadDocuments = async (key = activeApiKey) => {
+    if (!key) return;
     try {
       const res = await fetch("/api/v1/client/documents", {
         headers: { "X-API-Key": key },
@@ -89,19 +166,13 @@ function ClientPage() {
       if (res.ok) {
         const data = await res.json();
         setDocs(data || []);
+      } else if (res.status === 401 || res.status === 403) {
+        handleDisconnect();
+        setConnectError("Session expired or API key revoked.");
       }
     } catch (e) {
       console.error("Failed to load documents:", e);
     }
-  };
-
-  const handleApiKeySubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const key = apiKey.trim();
-    if (!key) return;
-    localStorage.setItem("client-api-key", key);
-    setApiKey(key);
-    loadDocuments(key);
   };
 
   const formatFileSize = (bytes?: number) => {
@@ -119,7 +190,7 @@ function ClientPage() {
    const send = async (e: React.FormEvent, systemPrompt?: string) => {
     e.preventDefault();
     const q = input.trim();
-    if (!q || !apiKey) return;
+    if (!q || !activeApiKey) return;
     setInput("");
     setSelectedSource(null);
     // Append user message + empty bot placeholder in one update to avoid index drift
@@ -134,7 +205,7 @@ function ClientPage() {
       await streamChat(
         "/api/v1/chat/stream",
         { query: q },
-        { "X-API-Key": apiKey },
+        { "X-API-Key": activeApiKey },
         {
           onChunk: (chunk: StreamChunk) => {
             setMessages((m) => {
@@ -201,7 +272,7 @@ function ClientPage() {
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || !apiKey) return;
+    if (!files || !activeApiKey) return;
     const formData = new FormData();
     for (let i = 0; i < files.length; i++) {
       formData.append("files", files[i]);
@@ -210,11 +281,14 @@ function ClientPage() {
     try {
       const res = await fetch("/api/v1/client/documents", {
         method: "POST",
-        headers: { "X-API-Key": apiKey },
+        headers: { "X-API-Key": activeApiKey },
         body: formData,
       });
       if (res.ok) {
-        loadDocuments(apiKey);
+        loadDocuments(activeApiKey);
+      } else if (res.status === 401 || res.status === 403) {
+        handleDisconnect();
+        setConnectError("Session expired or API key revoked.");
       }
     } catch (e) {
       console.error("Upload failed:", e);
@@ -224,19 +298,35 @@ function ClientPage() {
   };
 
   const handleDelete = async (docName: string) => {
-    if (!apiKey) return;
+    if (!activeApiKey) return;
     try {
-      await fetch(`/api/v1/client/documents/${docName}`, {
+      const res = await fetch(`/api/v1/client/documents/${docName}`, {
         method: "DELETE",
-        headers: { "X-API-Key": apiKey },
+        headers: { "X-API-Key": activeApiKey },
       });
-      loadDocuments(apiKey);
+      if (res.ok) {
+        loadDocuments(activeApiKey);
+      } else if (res.status === 401 || res.status === 403) {
+        handleDisconnect();
+        setConnectError("Session expired or API key revoked.");
+      }
     } catch (e) {
       console.error("Delete failed:", e);
     }
   };
 
-  if (!apiKey) {
+  if (isVerifying) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-panel/20">
+        <div className="panel p-8 text-center space-y-3">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
+          <p className="text-sm font-medium text-muted-foreground">Verifying API Key...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!activeApiKey) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-panel/20">
         <div className="panel w-full max-w-md p-8">
@@ -248,24 +338,40 @@ function ClientPage() {
             <p className="mt-2 text-sm text-muted-foreground">Enter your API key to access your workspace</p>
           </div>
           <form onSubmit={handleApiKeySubmit} className="space-y-4">
+            {connectError && (
+              <div className="rounded-lg bg-destructive/10 border border-destructive/30 p-3 text-xs text-destructive font-medium">
+                {connectError}
+              </div>
+            )}
             <div>
               <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 API Key
               </label>
               <input
                 type="text"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                value={inputKey}
+                onChange={(e) => {
+                  setInputKey(e.target.value);
+                  setConnectError("");
+                }}
                 placeholder="Enter your API key"
-                className="input w-full"
+                className="input w-full font-mono text-xs"
                 required
+                disabled={connecting}
               />
             </div>
             <button
               type="submit"
-              className="w-full rounded-md bg-[image:var(--gradient-primary)] px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
+              disabled={connecting || !inputKey.trim()}
+              className="w-full rounded-md bg-[image:var(--gradient-primary)] px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 inline-flex items-center justify-center gap-2"
             >
-              Connect
+              {connecting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Verifying...
+                </>
+              ) : (
+                "Connect"
+              )}
             </button>
           </form>
         </div>
@@ -274,7 +380,7 @@ function ClientPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col">
       {/* Header */}
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-panel/40 px-6 py-4 backdrop-blur">
         <div className="flex items-center gap-3">
@@ -283,14 +389,8 @@ function ClientPage() {
           </Link>
           <div className="grid h-9 w-9 place-items-center rounded-md bg-[image:var(--gradient-primary)] font-bold text-primary-foreground">
             TB
-                </div>
-                <div>
-                  <button onClick={() => {
-                    setMessages([]);
-                    setInput("");
-                    setSystemPrompt("");
-                  }} className="rounded-md border border-border bg-panel px-3 py-1.5 text-xs text-muted-foreground hover:bg-elevated hover:text-foreground">
-                  </button>
+          </div>
+          <div>
             <div className="text-[11px] font-semibold uppercase tracking-wider text-primary">Client Workspace</div>
             <h1 className="text-lg font-bold">TenBit RAG</h1>
           </div>
@@ -298,13 +398,10 @@ function ClientPage() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <KeyRound className="h-3.5 w-3.5" />
-            <span className="font-mono">pk_live_••••{apiKey.slice(-4)}</span>
+            <span className="font-mono">pk_live_••••{activeApiKey.slice(-4)}</span>
           </div>
           <button
-            onClick={() => {
-              localStorage.removeItem("client-api-key");
-              setApiKey("");
-            }}
+            onClick={handleDisconnect}
             className="rounded-md border border-border bg-panel px-3 py-1.5 text-xs text-muted-foreground hover:bg-elevated hover:text-foreground"
           >
             Disconnect
@@ -313,31 +410,37 @@ function ClientPage() {
       </header>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-border bg-panel/20 px-6">
+      <div className="flex gap-1.5 border-b border-border bg-panel/30 px-6 overflow-x-auto scrollbar-none pt-2">
         {[
           { id: "documents" as const, label: "Documents", icon: FileText },
           { id: "playground" as const, label: "Playground", icon: MessageSquare },
-        ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition ${
-              tab === t.id ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <t.icon className="h-4 w-4" /> {t.label}
-          </button>
-        ))}
+        ].map((t) => {
+          const isActive = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap rounded-t-lg ${
+                isActive
+                  ? "border-primary text-primary font-semibold bg-primary/10 shadow-sm"
+                  : "border-transparent text-muted-foreground hover:text-foreground hover:bg-elevated/40"
+              }`}
+            >
+              <t.icon className={`h-4 w-4 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+              {t.label}
+            </button>
+          );
+        })}
       </div>
 
-      <main className="flex-1 px-6 py-6">
+      <main className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
         {tab === "documents" ? (
-          <ClientDocumentsTab apiKey={apiKey} docs={docs} onDocsChange={() => loadDocuments(apiKey)} />
+          <ClientDocumentsTab apiKey={activeApiKey} docs={docs} onDocsChange={() => loadDocuments(activeApiKey)} />
         ) : (
-          <div className="grid h-[calc(100vh-220px)] gap-4 xl:grid-cols-[1.4fr_320px]">
-            <div className="panel flex flex-col">
+          <div className="grid h-full min-h-0 gap-4 xl:grid-cols-[1.4fr_320px]">
+            <div className="panel flex min-h-0 flex-col">
               <div className="border-b border-border px-5 py-3 text-sm font-semibold">Playground</div>
-              <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+              <div className="flex-1 min-h-0 space-y-4 overflow-y-auto px-5 py-5">
                 {messages.map((m, i) =>
                   m.role === "user" ? (
                     <div key={i} className="flex justify-end">
@@ -410,7 +513,7 @@ function ClientPage() {
               </form>
             </div>
 
-            <div className="panel flex flex-col p-4">
+            <div className="panel flex min-h-0 flex-col p-4">
                <div className="mb-3 flex items-center justify-between gap-3">
                  <div>
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Retrieved Context</div>
@@ -425,7 +528,7 @@ function ClientPage() {
                     Clear
                   </button>
                </div>
-               <div className="flex-1 overflow-y-auto space-y-2 pt-2">
+               <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pt-2">
                 {latestSources.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
                     No sources retrieved yet.
@@ -545,7 +648,7 @@ function ClientDocumentsTab({
   const [chunks, setChunks] = useState<any[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
   const [cloudSyncOpen, setCloudSyncOpen] = useState(false);
-
+  const [selectedProvider, setSelectedProvider] = useState("google_drive");
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || !files.length) return;
@@ -673,7 +776,7 @@ function ClientDocumentsTab({
       {/* Source cards */}
       <div className="grid gap-3 md:grid-cols-3">
         {[
-          { id: "files" as const, label: "File upload", desc: "PDF, DOCX, MD, TXT, CSV, HTML", icon: Upload, color: "#f59e0b" },
+          { id: "files" as const, label: "File upload", desc: "PDF, DOCX, MD, TXT, CSV, HTML", icon: Upload, color: "#0ea5e9" },
           { id: "web" as const, label: "Web scraping", desc: "Crawl a URL and index it.", icon: Globe, color: "#0ea5e9" },
           { id: "cloud" as const, label: "Cloud sync", desc: "Google Drive, Notion, S3…", icon: Cloud, color: "#22c55e" },
         ].map(({ id, label, desc, icon: Icon, color }) => (
@@ -793,9 +896,14 @@ function ClientDocumentsTab({
       {source === "cloud" && (
         <div className="panel p-6">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Connect a cloud source</h3>
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            {["Google Drive", "Notion", "Confluence", "Dropbox", "OneDrive", "S3 Bucket"].map((name) => (
-              <button key={name} onClick={() => setCloudSyncOpen(true)}
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {[
+              { name: "Google Drive", provider: "google_drive" },
+              { name: "Confluence", provider: "confluence" },
+              { name: "OneDrive", provider: "onedrive" },
+              { name: "S3", provider: "s3" }
+            ].map(({ name, provider }) => (
+              <button key={name} onClick={() => { setSelectedProvider(provider); setCloudSyncOpen(true); }}
                 className="flex items-center justify-between rounded-lg border border-border bg-elevated/50 px-4 py-3 text-sm hover:border-primary/50 hover:bg-elevated">
                 <span className="font-medium">{name}</span>
                 <span className="text-xs text-[color:var(--accent-emerald)]">Connect</span>
@@ -804,7 +912,7 @@ function ClientDocumentsTab({
           </div>
           {cloudSyncOpen && (
             <div className="mt-4 rounded-xl border border-border bg-elevated/30 p-5">
-              <ClientCloudSyncForm apiKey={apiKey} onClose={() => setCloudSyncOpen(false)} onDone={onDocsChange} />
+              <ClientCloudSyncForm apiKey={apiKey} initialProvider={selectedProvider} onClose={() => setCloudSyncOpen(false)} onDone={onDocsChange} />
             </div>
           )}
         </div>
@@ -899,8 +1007,8 @@ function ClientDocumentsTab({
   );
 }
 
-function ClientCloudSyncForm({ apiKey, onClose, onDone }: { apiKey: string; onClose: () => void; onDone: () => void }) {
-  const [provider, setProvider] = useState("direct_url");
+function ClientCloudSyncForm({ apiKey, initialProvider = "google_drive", onClose, onDone }: { apiKey: string; initialProvider?: string; onClose: () => void; onDone: () => void }) {
+  const [provider, setProvider] = useState(initialProvider);
   const [urlOrId, setUrlOrId] = useState("");
   const [token, setToken] = useState("");
   const [syncing, setSyncing] = useState(false);
@@ -927,15 +1035,16 @@ function ClientCloudSyncForm({ apiKey, onClose, onDone }: { apiKey: string; onCl
     <form onSubmit={handleSync} className="space-y-4">
       <ClientField label="Provider">
         <select className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
-          <option value="direct_url">Direct URL</option>
           <option value="google_drive">Google Drive</option>
+          <option value="confluence">Confluence</option>
           <option value="onedrive">OneDrive</option>
+          <option value="s3">S3</option>
         </select>
       </ClientField>
-      <ClientField label={provider === "direct_url" ? "File URL" : "File ID or URL"}>
-        <input className="input font-mono text-xs" value={urlOrId} onChange={(e) => setUrlOrId(e.target.value)} placeholder="https://example.com/file.pdf" />
+      <ClientField label={provider === "s3" ? "S3 Presigned URL" : provider === "confluence" ? "Confluence Page ID or URL" : "File ID or Sharing URL"}>
+        <input className="input font-mono text-xs" value={urlOrId} onChange={(e) => setUrlOrId(e.target.value)} placeholder={provider === "s3" ? "https://bucket.s3.amazonaws.com/file.pdf" : "Enter sharing URL or ID"} />
       </ClientField>
-      {provider !== "direct_url" && (
+      {(provider === "google_drive" || provider === "confluence") && (
         <ClientField label="Token (optional)">
           <input className="input font-mono text-xs" value={token} onChange={(e) => setToken(e.target.value)} placeholder="API key or OAuth token" />
         </ClientField>
