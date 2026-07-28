@@ -190,7 +190,28 @@ export class DbStore {
     });
     return result.count;
   }
+
+  /**
+   * Purge all session turns that contain references to a deleted document.
+   * This prevents the LLM from recalling deleted document content via session memory.
+   */
+  async purgeSessionTurnsContaining(tenantId: string, documentName: string): Promise<number> {
+    // Find turns whose content mentions the document filename
+    const turns = await this.prisma.sessionTurn.findMany({
+      where: { tenantId },
+      select: { id: true, content: true },
+    });
+    const toDelete = turns
+      .filter(t => t.content.includes(documentName))
+      .map(t => t.id);
+    if (!toDelete.length) return 0;
+    const result = await this.prisma.sessionTurn.deleteMany({
+      where: { id: { in: toDelete } },
+    });
+    return result.count;
+  }
 }
+
 
 function rowToChunk(row: any): Chunk {
   return {

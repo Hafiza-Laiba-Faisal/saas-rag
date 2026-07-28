@@ -32,25 +32,31 @@ export function buildRagMessages(
     contextLines.push(`${label}\n${result.chunk.text}`);
   }
 
-  const memoryBlock = sessionMemory ? `\nSession memory:\n${sessionMemory}\n` : '';
-  const contextBlock = contextLines.length ? contextLines.join('\n\n') : 'No retrieved context.';
+  const hasContext = contextLines.length > 0;
+  const memoryBlock = sessionMemory ? `\nConversation history (for continuity only — do NOT use as a knowledge source):\n${sessionMemory}\n` : '';
+  const contextBlock = hasContext
+    ? contextLines.join('\n\n')
+    : 'NO DOCUMENTS FOUND IN KNOWLEDGE BASE. The knowledge base is empty or no relevant documents were retrieved.';
 
   const defaultPrompt =
     'You are a multilingual enterprise knowledge assistant. ' +
     'Always respond in the same language as the user\'s question. ' +
-    'Answer only from the supplied context. ' +
-    'If the context is insufficient, state what information is missing rather than guessing. ' +
-    'Cite evidence with bracketed numbers like [1]. ' +
-    'Be concise, professional, and helpful. ' +
-    'Never fabricate URLs, statistics, or facts.\n\n' +
+    'CRITICAL RULES:\n' +
+    '1. Answer ONLY from the "Retrieved context" section below. NEVER use conversation history as a knowledge source.\n' +
+    '2. If the retrieved context says "NO DOCUMENTS FOUND" or is insufficient, respond: "I don\'t have enough information in the knowledge base to answer this question."\n' +
+    '3. Do NOT recall, infer, or fabricate information from previous conversation turns.\n' +
+    '4. Cite evidence with bracketed numbers like [1].\n' +
+    '5. Be concise, professional, and helpful.\n' +
+    '6. Never fabricate URLs, statistics, or facts.\n\n' +
     'OUTPUT FORMAT:\n' +
-    '- Use **bold** for key terms or hotel names.\n' +
+    '- Use **bold** for key terms or names.\n' +
     '- Use bullet lists for amenities, services, or features.\n' +
-    '- Never output HTML tags, HTML fragments, or broken tags.\n' +
-    '- Before responding, remove all HTML, broken tags, and normalize whitespace.\n' +
+    '- Never output HTML tags or broken tags.\n' +
     '- Ensure proper spacing between words.';
 
-  const system = systemPrompt || defaultPrompt;
+  const system = systemPrompt
+    ? `${systemPrompt}\n\nCRITICAL: Answer ONLY from the retrieved context below. Never use conversation history as a knowledge source. If no context is available, say so clearly.`
+    : defaultPrompt;
 
   return [
     { role: 'system', content: system },
@@ -60,6 +66,7 @@ export function buildRagMessages(
     },
   ];
 }
+
 
 export class LLMClient {
   private config: {

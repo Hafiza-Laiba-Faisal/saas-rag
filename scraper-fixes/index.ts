@@ -14,30 +14,7 @@ import {
 } from '../scraperClient.js';
 import { loadProviderPresets, saveProviderPresets } from '../providerPresets.js';
 
-const SCRAPER_BASE_URL = process.env.SCRAPER_SERVICE_URL || 'http://localhost:8002';
 const ingestionStatus: Record<string, any> = {};
-
-async function saveFullCrawlFiles(jobId: string, result: any, config: AppConfig, tenantId: string): Promise<number> {
-  const docsDir = path.join(config.rootDir, 'tenants', tenantId, 'documents');
-  fs.mkdirSync(docsDir, { recursive: true });
-  const files = result.content_files || [];
-  let saved = 0;
-  for (const cf of files) {
-    try {
-      const resp = await fetch(`${SCRAPER_BASE_URL}/crawl/full/output/${jobId}/${cf.file}`, { signal: AbortSignal.timeout(30000) });
-      if (!resp.ok) continue;
-      const pageBody = await resp.text();
-      if (!pageBody?.trim()) continue;
-      const wordCount = pageBody.split(/\s+/).filter(Boolean).length;
-      const slug = `scraped_${result.url?.replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_') || 'site'}`;
-      const filename = `${slug}_${cf.lang || 'default'}_${(cf.title || 'page').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}_${Date.now()}.md`;
-      const content = `---\nurl: ${cf.url}\ntitle: ${cf.title || ''}\nlanguage: ${cf.lang || ''}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${pageBody}`;
-      fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
-      saved++;
-    } catch { /* skip single file error */ }
-  }
-  return saved;
-}
 
 export function routes(
   config: AppConfig,
@@ -131,11 +108,7 @@ export function routes(
       sessionMemoryLimit: t.sessionMemoryLimit,
       chatRetentionDays: t.chatRetentionDays,
       systemPrompt: t.systemPrompt,
-      docCount: (() => {
-        const dDir = path.join(config.rootDir, 'tenants', t.tenantId, 'documents');
-        if (!fs.existsSync(dDir)) return 0;
-        return fs.readdirSync(dDir).filter(f => fs.statSync(path.join(dDir, f)).isFile()).length;
-      })(),
+      docCount: await dbStore.countDocuments(t.tenantId, 'default'),
       chunkCount: await dbStore.countChunks(t.tenantId, 'default'),
     })));
     res.json(result);
@@ -286,19 +259,16 @@ export function routes(
     if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
     const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
     if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
-    const ingestedMapByPath: Record<string, any> = {};
+    const ingestedMap: Record<string, any> = {};
     const docs = await dbStore.listDocuments(req.params.tenantId, 'default');
-    for (const d of docs) {
-      if (d.filePath) ingestedMapByPath[path.resolve(d.filePath)] = d;
-    }
+    for (const d of docs) ingestedMap[d.documentId] = d;
     const files = fs.readdirSync(docsDir).filter(f => fs.statSync(path.join(docsDir, f)).isFile());
     const result = await Promise.all(files.map(async name => {
       const filePath = path.join(docsDir, name);
-      const absPath = path.resolve(filePath);
       const stat = fs.statSync(filePath);
-      const docId = crypto.createHash('sha1').update(absPath).digest('hex');
-      const ingested = ingestedMapByPath[absPath];
-      const chunks = ingested ? await dbStore.countChunksForDocument(req.params.tenantId, 'default', ingested.documentId) : 0;
+      const docId = crypto.createHash('sha1').update(filePath).digest('hex');
+      const ingested = ingestedMap[docId];
+      const chunks = ingested ? await dbStore.countChunksForDocument(req.params.tenantId, 'default', docId) : 0;
       return {
         name, size_bytes: stat.size, ingested: !!ingested,
         chunks, extension: path.extname(name).replace('.', ''),
@@ -342,37 +312,18 @@ export function routes(
   });
 
   router.delete('/tenants/:tenantId/documents/:filename', requireAdmin, async (req, res) => {
-    try {
-      const { tenantId, filename } = req.params;
-      const filePath = path.join(config.rootDir, 'tenants', tenantId, 'documents', filename);
-
-      // 1. Delete the physical file
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-      // 2. Compute the document ID (must match how it was ingested — path.resolve for consistency)
-      const docId = crypto.createHash('sha1').update(path.resolve(filePath)).digest('hex');
-
-      // 3. Delete from vector DB (Qdrant) and SQLite (chunks + document record)
-      const tenant = await adminStore.getTenant(tenantId);
-      if (tenant) {
-        const engine = await getOrCreateEngine(tenant);
-        await engine.deleteDocument(docId);
-      } else {
-        await dbStore.deleteDocument(docId);
-      }
-
-      // 4. Purge session turns that mention the deleted document filename
-      //    This prevents the LLM from recalling deleted content via session memory
-      await dbStore.purgeSessionTurnsContaining(tenantId, filename);
-
-      console.log(`[DELETE] Tenant=${tenantId} doc=${filename} docId=${docId} — removed from disk, SQLite, Qdrant, and session memory`);
-      res.json({ status: 'success', purged_docId: docId });
-    } catch (err: any) {
-      console.error('[DELETE] Document delete failed:', err.message);
-      res.status(500).json({ error: err.message });
+    const filePath = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents', req.params.filename);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    const docId = crypto.createHash('sha1').update(filePath).digest('hex');
+    const tenant = await adminStore.getTenant(req.params.tenantId);
+    if (tenant) {
+      const engine = await getOrCreateEngine(tenant);
+      await engine.deleteDocument(docId);
+    } else {
+      await dbStore.deleteDocument(docId);
     }
+    res.json({ status: 'success' });
   });
-
 
   // ===================== INGESTION APIs =====================
   router.post('/tenants/:tenantId/ingest', requireAdmin, async (req, res) => {
@@ -397,135 +348,6 @@ export function routes(
 
   router.get('/tenants/:tenantId/ingest/status', requireAdmin, async (req, res) => {
     res.json(ingestionStatus[req.params.tenantId] || { status: 'idle', logs: ['No ingestion tasks run yet.'], progress: 0, summary: null });
-  });
-
-  // ===================== RETRIEVE (no LLM) =====================
-  router.post('/tenants/:tenantId/retrieve', requireAdmin, async (req, res) => {
-    const tenant = await adminStore.getTenant(req.params.tenantId);
-    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
-    if (tenant.status !== 'active') return res.status(403).json({ detail: 'Tenant account is suspended' });
-    const { query, top_k } = req.body;
-    if (!query) return res.status(400).json({ detail: 'query is required' });
-    const engine = await getOrCreateEngine(tenant);
-    try {
-      const { results, profile } = await engine.retriever.search(query, 'default', tenant.tenantId);
-      res.json({
-        chunks: results.map((r: any) => ({
-          chunk_id: r.chunk?.chunkId || r.chunk?.id || '',
-          document_name: r.chunk?.metadata?.document_name || r.chunk?.metadata?.source || r.chunk?.documentName || '',
-          score: r.score ?? 0,
-          dense_score: r.denseScore ?? 0,
-          sparse_score: r.sparseScore ?? 0,
-          rerank_score: r.rerankScore ?? null,
-          text: r.chunk?.text || '',
-          metadata: r.chunk?.metadata || {},
-        })),
-        profile,
-      });
-    } catch (err: any) {
-      res.status(500).json({ detail: `Retrieval error: ${err.message}` });
-    }
-  });
-
-  // ===================== DEBUG RETRIEVE (full inspection) =====================
-  router.post('/tenants/:tenantId/retrieve/debug', requireAdmin, async (req, res) => {
-    const tenant = await adminStore.getTenant(req.params.tenantId);
-    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
-    if (tenant.status !== 'active') return res.status(403).json({ detail: 'Tenant account is suspended' });
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ detail: 'query is required' });
-    const engine = await getOrCreateEngine(tenant);
-    try {
-      const { results, profile } = await engine.retriever.search(query, 'default', tenant.tenantId);
-
-      // Effective config snapshot
-      const effectiveConfig = {
-        reranker: tenant.rerankerType || 'none',
-        embedding_provider: tenant.embeddingProvider,
-        embedding_model: tenant.embeddingModel,
-        embedding_dimensions: tenant.embeddingDimensions,
-        semantic_chunking: tenant.chunkingSemantic,
-        semantic_threshold: tenant.chunkingSemanticThreshold,
-        top_k: tenant.retrievalTopK,
-        rerank_top_k: tenant.retrievalRerankTopK,
-        final_context_k: tenant.retrievalFinalContextK,
-        dense_weight: tenant.retrievalDenseWeight,
-        sparse_weight: tenant.retrievalSparseWeight,
-        chunk_max_tokens: tenant.chunkingMaxTokens,
-        chunk_overlap_tokens: tenant.chunkingOverlapTokens,
-        config_hash: (await import('crypto')).default.createHash('md5').update(
-          JSON.stringify([tenant.rerankerType, tenant.chunkingSemantic, tenant.chunkingSemanticThreshold,
-            tenant.retrievalTopK, tenant.retrievalRerankTopK, tenant.retrievalFinalContextK,
-            tenant.retrievalDenseWeight, tenant.retrievalSparseWeight])
-        ).digest('hex').slice(0, 8),
-        last_updated: tenant.updatedAt,
-      };
-
-      // All chunks with full detail
-      const chunks = results.map((r: any, idx: number) => ({
-        final_rank: idx + 1,
-        chunk_id: r.chunk?.chunkId || '',
-        document_name: r.chunk?.metadata?.document_name || r.chunk?.metadata?.source || '',
-        chunk_length: (r.chunk?.text || '').length,
-        chunk_tokens: Math.round((r.chunk?.text || '').split(/\s+/).length * 1.3),
-        text_preview: (r.chunk?.text || '').slice(0, 300),
-        fusion_score: r.score ?? 0,
-        dense_score: r.denseScore ?? 0,
-        sparse_score: r.sparseScore ?? 0,
-        rerank_score: r.rerankScore ?? null,
-        ordinal: r.chunk?.ordinal ?? null,
-        metadata: r.chunk?.metadata || {},
-      }));
-
-      res.json({
-        query,
-        effective_config: effectiveConfig,
-        retrieval_profile: {
-          total_ms: Math.round(profile.totalRetrievalMs),
-          embedding_ms: Math.round(profile.denseEmbMs),
-          vector_search_ms: Math.round(profile.vectorSimMs),
-          bm25_ms: Math.round(profile.bm25Ms),
-          rerank_ms: Math.round(profile.rerankMs),
-          chunks_scanned: profile.chunksScanned,
-          qdrant_hit: profile.qdrantHit,
-        },
-        results_count: chunks.length,
-        chunks,
-      });
-    } catch (err: any) {
-      res.status(500).json({ detail: `Debug retrieval error: ${err.message}` });
-    }
-  });
-
-  // ===================== CONFIG VERIFY =====================
-  router.get('/tenants/:tenantId/config/verify', requireAdmin, async (req, res) => {
-    const tenant = await adminStore.getTenant(req.params.tenantId);
-    if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
-    // Clear engine cache to force reload
-    engineCache.delete(req.params.tenantId);
-    const crypto = await import('crypto');
-    const configStr = JSON.stringify([
-      tenant.rerankerType, tenant.chunkingSemantic, tenant.chunkingSemanticThreshold,
-      tenant.retrievalTopK, tenant.retrievalRerankTopK, tenant.retrievalFinalContextK,
-      tenant.retrievalDenseWeight, tenant.retrievalSparseWeight,
-      tenant.embeddingProvider, tenant.embeddingModel,
-    ]);
-    res.json({
-      tenant_id: tenant.tenantId,
-      effective_reranker: tenant.rerankerType || 'none',
-      effective_semantic_chunking: tenant.chunkingSemantic,
-      effective_threshold: tenant.chunkingSemanticThreshold,
-      effective_top_k: tenant.retrievalTopK,
-      effective_rerank_top_k: tenant.retrievalRerankTopK,
-      effective_final_context_k: tenant.retrievalFinalContextK,
-      effective_dense_weight: tenant.retrievalDenseWeight,
-      effective_sparse_weight: tenant.retrievalSparseWeight,
-      embedding_provider: tenant.embeddingProvider,
-      embedding_model: tenant.embeddingModel,
-      config_hash: crypto.default.createHash('md5').update(configStr).digest('hex').slice(0, 8),
-      last_updated: tenant.updatedAt,
-      engine_cache_cleared: true,
-    });
   });
 
   // ===================== CHAT APIs =====================
@@ -814,27 +636,6 @@ export function routes(
     }
   });
 
-  router.post('/client/cloud-sync', resolveClientTenant, async (req, res) => {
-    try {
-      const tenant = (req as TenantRequest).tenant;
-      const { provider, cloud_url_or_id, api_key_or_token, custom_filename, auto_ingest } = req.body;
-      const { downloaded, errors } = await performCloudSync(
-        tenant.tenantId,
-        provider,
-        cloud_url_or_id,
-        api_key_or_token,
-        custom_filename,
-        !!auto_ingest,
-        config.rootDir,
-        adminStore
-      );
-      const status = errors.length === 0 ? 'success' : (downloaded.length > 0 ? 'partial' : 'failed');
-      res.json({ status, count: downloaded.length, downloaded, errors, auto_ingest: !!auto_ingest });
-    } catch (err: any) {
-      res.json({ status: 'failed', count: 0, downloaded: [], errors: [err.message], auto_ingest: !!req.body.auto_ingest });
-    }
-  });
-
   // ===================== ENHANCED SCRAPER (external microservice) =====================
   const SCRAPE_TYPES = ['single', 'smart', 'recursive', 'wordpress'] as const;
 
@@ -893,10 +694,17 @@ export function routes(
           result = await scrapeWordPress(url, max_pages || 10, include_pages !== false, include_media !== false, extraOpts);
           break;
         case 'full': {
-          result = await callScraper('/crawl/full', {
+          const startResp: any = await callScraper('/crawl/full', {
             url, max_depth: max_depth || 3, max_pages: max_pages || 50,
             download_images: download_images ?? true, download_pdfs: download_pdfs ?? true,
           });
+          const jobId = startResp?.data?.job_id ?? startResp?.job_id;
+          if (!jobId) {
+            result = startResp;
+            break;
+          }
+          const finishedJob = await pollFullCrawlJob(jobId);
+          result = { success: finishedJob.status === 'done', data: finishedJob };
           break;
         }
         default:
@@ -961,22 +769,11 @@ export function routes(
       const result = await tryScraperOrFallback(req, tenant);
 
       if (result?.success) {
-        const rawData = result.data || {};
-        const jobId = rawData.job_id || rawData.jobId;
-
-        // Background job (recursive / full crawl) — return job_id immediately, frontend will poll status
-        if (jobId) {
-          result.saved_file = null;
-          const { scrape_type, url } = req.body;
-          await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Started ${scrape_type || 'crawl'} of ${url} (job ${jobId})`, { url, job_id: jobId });
-          return res.json(result);
-        }
-
         const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
         fs.mkdirSync(docsDir, { recursive: true });
         const siteSlug = (result.data?.url || req.body.url || '').replace(/https?:\/\//, '').split('/')[0].replace(/[^a-zA-Z0-9_-]/g, '_');
         const ts = Date.now();
-        const d = rawData.result || rawData;
+        const d = result.data || {};
 
         // Full-site crawls (scrape_type: 'full') finish as a job with a
         // `content_files` array — one entry per crawled page — rather than a
@@ -984,11 +781,11 @@ export function routes(
         // fetching its extracted content from the scraper service's output
         // route. Falling through to the single-body logic below for these
         // is what previously produced empty (word_count: 0) files.
-        if (Array.isArray(d.content_files) && jobId) {
+        if (Array.isArray(d.content_files) && d.job_id) {
           const savedFiles: string[] = [];
           for (const cf of d.content_files) {
             try {
-              const fileResp: any = await callScraper(`/crawl/full/output/${jobId}/${cf.file}`);
+              const fileResp: any = await callScraper(`/crawl/full/output/${d.job_id}/${cf.file}`);
               const pageBody = typeof fileResp === 'string' ? fileResp : (fileResp?.data ?? '');
               if (!pageBody) continue;
               const pageWordCount = String(pageBody).split(/\s+/).filter(Boolean).length;
@@ -1005,6 +802,7 @@ export function routes(
           result.saved_file = savedFiles[0];
           await adminStore.logActivity(req.params.tenantId, 'admin', 'scrape_enhanced', `Full-site scraped ${req.body.url} -> ${savedFiles.length} files`, { url: req.body.url, files: savedFiles });
         } else {
+          const filename = `scraped_${siteSlug}_${ts}.md`;
           const title = d.title || '';
           const description = d.description || '';
           let body = d.markdown || d.readability?.markdown || d.readability?.clean_text || '';
@@ -1016,7 +814,6 @@ export function routes(
             body = `Links:\n${(d.links as any[]).map((l: any) => `- [${l.text || l.url}](${l.url})`).join('\n')}`;
           }
 
-          const filename = `scraped_${siteSlug}_${ts}.md`;
           const wordCount = body.split(/\s+/).filter(Boolean).length;
           const content = `---\nurl: ${d.url || req.body.url}\ntitle: ${title}\ndescription: ${description}\nscraped_at: ${new Date().toISOString()}\nword_count: ${wordCount}\n---\n\n${body}`;
           fs.writeFileSync(path.join(docsDir, filename), content, 'utf-8');
@@ -1179,98 +976,59 @@ export function routes(
     });
   });
 
-  // ===================== CLOUD SYNC HELPERS & API =====================
-  async function performCloudSync(
-    tenantId: string,
-    provider: string,
-    cloudUrlOrId: string,
-    apiKeyOrToken: string | null,
-    customFilename: string | null,
-    autoIngest: boolean,
-    rootDir: string,
-    adminStore: any
-  ) {
-    const docsDir = path.join(rootDir, 'tenants', tenantId, 'documents');
-    const downloaded: string[] = [];
-    const errors: string[] = [];
-
-    if (provider === 'google_drive') {
-      const fileId = cloudUrlOrId;
-      const url = fileId.startsWith('http') ? fileId : `https://drive.google.com/uc?export=download&id=${fileId}`;
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-      const filename = customFilename || `gdrive_${Date.now()}.pdf`;
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      const filePath = path.join(docsDir, filename);
-      fs.mkdirSync(docsDir, { recursive: true });
-      fs.writeFileSync(filePath, buffer);
-      downloaded.push(filename);
-    } else if (provider === 'onedrive') {
-      const resp = await fetch(cloudUrlOrId);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-      const filename = customFilename || `onedrive_${Date.now()}.pdf`;
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      const filePath = path.join(docsDir, filename);
-      fs.mkdirSync(docsDir, { recursive: true });
-      fs.writeFileSync(filePath, buffer);
-      downloaded.push(filename);
-    } else if (provider === 's3' || provider === 'direct_url') {
-      const resp = await fetch(cloudUrlOrId);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-      const contentType = resp.headers.get('content-type') || '';
-      const ext = contentType.includes('pdf') ? '.pdf' : contentType.includes('html') ? '.html' : '.txt';
-      const filename = customFilename || `${provider}_${Date.now()}${ext}`;
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      const filePath = path.join(docsDir, filename);
-      fs.mkdirSync(docsDir, { recursive: true });
-      fs.writeFileSync(filePath, buffer);
-      downloaded.push(filename);
-    } else if (provider === 'confluence') {
-      let url = cloudUrlOrId;
-      if (!cloudUrlOrId.startsWith('http')) {
-        url = `https://atlassian.net/wiki/rest/api/content/${cloudUrlOrId}?expand=body.storage`;
-      }
-      const headers: Record<string, string> = {};
-      if (apiKeyOrToken) {
-        headers['Authorization'] = apiKeyOrToken.startsWith('Basic ') ? apiKeyOrToken : `Bearer ${apiKeyOrToken}`;
-      }
-      const resp = await fetch(url, { headers });
-      if (!resp.ok) throw new Error(`Confluence HTTP ${resp.status}: ${resp.statusText}`);
-      const data = await resp.json() as any;
-      const bodyText = data.body?.storage?.value || data.title || '';
-      const filename = customFilename || `confluence_${Date.now()}.txt`;
-      const filePath = path.join(docsDir, filename);
-      fs.mkdirSync(docsDir, { recursive: true });
-      fs.writeFileSync(filePath, bodyText);
-      downloaded.push(filename);
-    } else {
-      throw new Error(`Unsupported provider: ${provider}`);
-    }
-
-    await adminStore.logActivity(tenantId, 'INFO', 'cloud_sync', `Synced ${downloaded.length} file(s) from ${provider}`, { provider, files: downloaded });
-    return { downloaded, errors };
-  }
-
+  // ===================== CLOUD SYNC =====================
   router.post('/tenants/:tenantId/cloud-sync', requireAdmin, async (req, res) => {
     const tenant = await adminStore.getTenant(req.params.tenantId);
     if (!tenant) return res.status(404).json({ detail: 'Tenant not found' });
     const { provider, cloud_url_or_id, api_key_or_token, custom_filename, auto_ingest } = req.body;
+    const docsDir = path.join(config.rootDir, 'tenants', req.params.tenantId, 'documents');
+    const downloaded: string[] = [];
+    const errors: string[] = [];
 
     try {
-      const { downloaded, errors } = await performCloudSync(
-        req.params.tenantId,
-        provider,
-        cloud_url_or_id,
-        api_key_or_token,
-        custom_filename,
-        !!auto_ingest,
-        config.rootDir,
-        adminStore
-      );
+      if (provider === 'direct_url') {
+        const url = cloud_url_or_id;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const contentType = resp.headers.get('content-type') || '';
+        const ext = contentType.includes('pdf') ? '.pdf' : contentType.includes('html') ? '.html' : '.txt';
+        const filename = custom_filename || `cloud_${Date.now()}${ext}`;
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const filePath = path.join(docsDir, filename);
+        fs.mkdirSync(docsDir, { recursive: true });
+        fs.writeFileSync(filePath, buffer);
+        downloaded.push(filename);
+      } else if (provider === 'google_drive') {
+        const fileId = cloud_url_or_id;
+        const url = fileId.startsWith('http') ? fileId : `https://drive.google.com/uc?export=download&id=${fileId}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const filename = custom_filename || `gdrive_${Date.now()}.pdf`;
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const filePath = path.join(docsDir, filename);
+        fs.mkdirSync(docsDir, { recursive: true });
+        fs.writeFileSync(filePath, buffer);
+        downloaded.push(filename);
+      } else if (provider === 'onedrive') {
+        const resp = await fetch(cloud_url_or_id);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const filename = custom_filename || `onedrive_${Date.now()}.pdf`;
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const filePath = path.join(docsDir, filename);
+        fs.mkdirSync(docsDir, { recursive: true });
+        fs.writeFileSync(filePath, buffer);
+        downloaded.push(filename);
+      } else {
+        throw new Error(`Unsupported provider: ${provider}`);
+      }
+
+      await adminStore.logActivity(req.params.tenantId, 'INFO', 'cloud_sync', `Synced ${downloaded.length} file(s) from ${provider}`, { provider, files: downloaded });
+
       const status = errors.length === 0 ? 'success' : (downloaded.length > 0 ? 'partial' : 'failed');
       res.json({ status, count: downloaded.length, downloaded, errors, auto_ingest: !!auto_ingest });
     } catch (err: any) {
-      res.json({ status: 'failed', count: 0, downloaded: [], errors: [err.message], auto_ingest: !!auto_ingest });
+      errors.push(err.message);
+      res.json({ status: 'failed', count: 0, downloaded, errors: [err.message], auto_ingest: !!auto_ingest });
     }
   });
 
@@ -1456,8 +1214,8 @@ export function routes(
         copyFiles(pagesDir);
       }
       
-      // Import PDFs only (skip images)
-      const pdfExts = ['.pdf'];
+      // Import PDFs (and images stored in pdfs/ dir)
+      const pdfExts = ['.pdf', '.jpg', '.jpeg', '.png', '.svg', '.webp', '.gif'];
       const pdfsDir = path.join(sitePath, 'pdfs');
       if (fs.existsSync(pdfsDir)) {
         const pdfs = fs.readdirSync(pdfsDir);
@@ -1471,7 +1229,25 @@ export function routes(
         });
       }
       
-      // Images skipped — they don't contribute to text retrieval
+      // Import images (language subdirectories)
+      const imagesDir = path.join(sitePath, 'images');
+      if (fs.existsSync(imagesDir)) {
+        const copyImages = (dir: string, subPath: string = '') => {
+          const items = fs.readdirSync(dir);
+          items.forEach(item => {
+            const itemPath = path.join(dir, item);
+            if (fs.statSync(itemPath).isDirectory()) {
+              copyImages(itemPath, `${subPath}${item}/`);
+            } else if (pdfExts.some(ext => item.toLowerCase().endsWith(ext))) {
+              const flatName = `crawl_${site}_img_${subPath.replace(/\//g, '_')}${item}`;
+              const destPath = path.join(tenantDocsDir, flatName);
+              fs.copyFileSync(itemPath, destPath);
+              importedCount++;
+            }
+          });
+        };
+        copyImages(imagesDir);
+      }
 
       res.json({ success: true, imported_count: importedCount });
     } catch (err: any) {
@@ -1522,7 +1298,7 @@ export function routes(
           copyFiles(pagesDir);
         }
 
-        const pdfExts = ['.pdf'];
+        const pdfExts = ['.pdf', '.jpg', '.jpeg', '.png', '.svg', '.webp', '.gif'];
         const pdfsDir = path.join(sitePath, 'pdfs');
         if (fs.existsSync(pdfsDir)) {
           fs.readdirSync(pdfsDir).forEach(pdf => {
@@ -1533,7 +1309,6 @@ export function routes(
             }
           });
         }
-        // Images skipped — not useful for text retrieval
 
         if (importedCount > 0) {
           results[site] = importedCount;

@@ -42,61 +42,59 @@
 }
 
 /* ─────────────────────────────────────────────
-   DARK THEME  — Deep Charcoal + Purple/Violet
-   Background: #141414 near-black
-   Primary: #7B6EF6 (soft violet) + #4ECDC4 (mint)
+   DARK THEME  — Task Management Dashboard Palette
 ───────────────────────────────────────────── */
 :root {
   color-scheme: dark;
   --radius: 0.5rem;
 
-  --background:   #111118;
-  --foreground:   #e8e8f0;
+  --background:   #1B1D28;
+  --foreground:   #F5F5F7;
 
-  --card:         #1a1a24;
-  --card-foreground: #e8e8f0;
-  --popover:      #1a1a24;
-  --popover-foreground: #e8e8f0;
+  --card:         #2A2D3C;
+  --card-foreground: #F5F5F7;
+  --popover:      #2A2D3C;
+  --popover-foreground: #F5F5F7;
 
-  --panel:        rgba(22, 22, 34, 0.90);
-  --panel-border: rgba(123, 110, 246, 0.14);
-  --modal-bg:     #1a1a24;
-  --elevated:     #21212f;
+  --panel:        #232533;
+  --panel-border: #3C4154;
+  --modal-bg:     #2A2D3C;
+  --elevated:     #303344;
 
-  --primary:      #7B6EF6;
-  --primary-foreground: #ffffff;
+  --primary:      #B8F2E6;
+  --primary-foreground: #1B1D28;
 
-  --secondary:    #21212f;
-  --secondary-foreground: #e8e8f0;
+  --secondary:    #303344;
+  --secondary-foreground: #F5F5F7;
 
-  --muted:        #1a1a24;
-  --muted-foreground: #6b6b85;
+  --muted:        #232533;
+  --muted-foreground: #7D8498;
 
-  --accent:       rgba(123, 110, 246, 0.12);
-  --accent-foreground: #7B6EF6;
+  --accent:       rgba(184, 242, 230, 0.10);
+  --accent-foreground: #B8F2E6;
 
-  --destructive:  #ff4d6d;
-  --destructive-foreground: #ffffff;
-  --success:      #4ECDC4;
-  --warning:      #FFD93D;
-  --info:         #6CB4EE;
+  --destructive:  #F58A7A;
+  --destructive-foreground: #1B1D28;
+  --success:      #B8F2E6;
+  --warning:      #F7C65F;
+  --info:         #59B8FF;
 
   /* Accent palette */
-  --accent-amber:   #FFD93D;
-  --accent-rose:    #ff4d6d;
-  --accent-emerald: #4ECDC4;
-  --accent-sky:     #6CB4EE;
-  --accent-violet:  #7B6EF6;
-  --accent-teal:    #4ECDC4;
+  --accent-amber:   #F6C44F;
+  --accent-rose:    #F58A7A;
+  --accent-emerald: #B8F2E6;
+  --accent-sky:     #59B8FF;
+  --accent-violet:  #D7C3FF;
+  --accent-teal:    #8EEFE8;
 
-  --border: rgba(123, 110, 246, 0.12);
-  --input:  rgba(123, 110, 246, 0.08);
-  --ring:   #7B6EF6;
+  --border: #3C4154;
+  --input:  rgba(60, 65, 84, 0.60);
+  --ring:   #B8F2E6;
 
-  --gradient-primary: linear-gradient(135deg, #7B6EF6 0%, #9B8FF8 50%, #4ECDC4 100%);
-  --gradient-subtle:  linear-gradient(180deg, rgba(123, 110, 246, 0.08), transparent 70%);
-  --shadow-glow:      0 0 48px -8px rgba(123, 110, 246, 0.40);
-  --shadow-elegant:   0 4px 32px -4px rgba(0, 0, 0, 0.65);
+  --gradient-primary: linear-gradient(135deg, #B8F2E6 0%, #8EEFE8 50%, #59B8FF 100%);
+  --gradient-subtle:  linear-gradient(180deg, rgba(184, 242, 230, 0.06), transparent 70%);
+  --shadow-glow:      0 0 40px -8px rgba(184, 242, 230, 0.20);
+  --shadow-elegant:   0 4px 24px -4px rgba(0, 0, 0, 0.50);
 }
 
 /* ─────────────────────────────────────────────
@@ -170,9 +168,9 @@
   /* Dark mode background texture */
   :root body {
     background-image:
-      radial-gradient(ellipse 900px 600px at 0% 0%,   rgba(123, 110, 246, 0.06), transparent 65%),
-      radial-gradient(ellipse 700px 500px at 100% 0%,  rgba(78, 205, 196, 0.04), transparent 65%),
-      radial-gradient(ellipse 600px 400px at 50% 100%, rgba(123, 110, 246, 0.04), transparent 65%);
+      radial-gradient(ellipse 900px 600px at 0% 0%,   rgba(142, 239, 232, 0.04), transparent 65%),
+      radial-gradient(ellipse 700px 500px at 100% 0%,  rgba(89, 184, 255, 0.03), transparent 65%),
+      radial-gradient(ellipse 600px 400px at 50% 100%, rgba(215, 195, 255, 0.03), transparent 65%);
     background-attachment: fixed;
   }
 
@@ -318,18 +316,18 @@ textarea.input:focus {
 }
 
 
-/* Tab active indicator color */
-:root  { --tab-active-border: #ffffff; --tab-active-text: #ffffff; }
-.light { --tab-active-border: #1a1a2e; --tab-active-text: #1a1a2e; }
+/* Tab active indicator color — synchronized with theme primary palette */
+:root  { --tab-active-border: var(--primary); --tab-active-text: var(--primary); }
+.light { --tab-active-border: var(--primary); --tab-active-text: var(--primary); }
 
 .code-block {
   background: var(--code-bg);
   color: var(--code-fg);
 }
 
-/* Code / terminal background */
-:root  { --code-bg: #0a1020; --code-fg: #e2e8f0; }
-.light { --code-bg: #1a1a2e; --code-fg: #ffffff; }
+/* Code / terminal background & high-contrast text */
+:root  { --code-bg: #0b1329; --code-fg: #f8fafc; }
+.light { --code-bg: #0f172a; --code-fg: #f8fafc; }
 
 .code-block {
   background: var(--code-bg);

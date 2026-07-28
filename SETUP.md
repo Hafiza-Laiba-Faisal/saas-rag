@@ -1,284 +1,166 @@
-# TenBit RAG — Complete Setup Guide
+# TenBit RAG Platform — Setup Guide
 
-This guide covers the full stack:
-- **Node.js RAG API** (`rbs-rag-node`) — main backend
-- **OCR Service** (`ocr-service-main`) — Python, runs as Docker container
-- **Qdrant** — vector database, runs as Docker container
-- **Redis** — caching, runs as Docker container
-- **Frontend** (`chic-interface-design`) — React/Vite SPA
+## Project Structure
+
+```
+RAG/
+├── chic-interface-design/   # Frontend (React/Vite SPA)
+├── rbs-rag-node/            # Backend (Node.js/TypeScript API)
+├── scraper-service/         # Scraper microservice (Docker)
+├── ocr-service-main/        # OCR microservice (Docker)
+├── docker-compose.yml       # All Docker services
+└── dev-start.sh / dev-start.ps1  # One-command dev launcher
+```
 
 ---
 
 ## Prerequisites
 
-| Tool | Min Version | Install |
-|------|-------------|---------|
-| Node.js | 22.x | https://nodejs.org |
-| npm | 10.x | bundled with Node |
-| Docker | 24.x | https://docs.docker.com/get-docker/ |
-| Docker Compose | v2 (plugin) | bundled with Docker Desktop |
-| Git | any | https://git-scm.com |
-
-Check versions:
-```bash
-node -v
-npm -v
-docker -v
-docker compose version
-```
+| Tool | Version | Install |
+|------|---------|---------|
+| Node.js | 18+ | https://nodejs.org |
+| Docker Desktop | Latest | https://docker.com |
+| Git | Any | https://git-scm.com |
 
 ---
 
-## 1. Clone the Repository
+## First-Time Setup
+
+### 1. Clone & configure environment
 
 ```bash
-git clone https://github.com/Hafiza-Laiba-Faisal/saas-rag.git
-cd saas-rag
-git checkout nodejs-port
+git clone <repo-url>
+cd RAG
+cp .env.example .env
+# Edit .env and set your API keys if needed
 ```
 
----
-
-## 2. Environment Files
-
-### 2a. Node API — `rbs-rag-node/.env`
+### 2. Install dependencies
 
 ```bash
-cp rbs-rag-node/.env.example rbs-rag-node/.env
-```
-
-Open `rbs-rag-node/.env` and fill in:
-
-```env
-# Database (SQLite, no setup needed)
-DATABASE_URL=file:./dev.db
-
-# LLM — pick one provider and add its key
-LLM_PROVIDER=gemini                        # gemini | openai | anthropic
-LLM_API_KEY=your-api-key-here
-LLM_MODEL=gemini-2.5-flash-lite
-
-# Embeddings (hash = no external API needed, good for dev)
-EMBEDDING_PROVIDER=hash
-EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
-EMBEDDING_DIMENSIONS=384
-
-# Qdrant — matches the Docker container below
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
-QDRANT_API_KEY=
-
-# Redis — matches the Docker container below
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Admin dashboard
-ADMIN_PASSWORD=admin
-ADMIN_JWT_SECRET=change-me-use-a-long-random-string
-
-# Server
-PORT=3001
-LOG_LEVEL=info
-
-# OCR Service — points to the Python Docker container
-OCR_SERVICE_URL=http://localhost:8000
-OCR_API_KEY=                               # leave empty if not set in OCR service
-```
-
-### 2b. OCR Service — `ocr-service-main/.env`
-
-```bash
-cp ocr-service-main/.env.example ocr-service-main/.env
-```
-
-Fill in (all optional — only needed for vision-based OCR engines):
-
-```env
-MISTRAL_API_KEY=          # for Mistral Vision OCR engine
-NEMOTRON_API_KEY=         # for Nemotron Vision OCR engine
-OCR_LANGUAGES=en          # comma-separated: en,ar,ur etc.
-```
-
-> PaddleOCR engine works offline — no API key needed.
-
----
-
-## 3. Start Docker Containers (Qdrant + Redis + OCR)
-
-These are the Python/infrastructure services that Node depends on.
-
-```bash
-cd rbs-rag-node
-docker compose -f docker-compose.node.yml up -d
-```
-
-Then start the OCR service separately (it's not in `docker-compose.node.yml` yet):
-
-```bash
-cd ../ocr-service-main
-docker build -t tenbit-ocr .
-docker run -d \
-  --name tenbit-ocr \
-  -p 8000:8000 \
-  --env-file .env \
-  tenbit-ocr
-```
-
-Verify all containers are up:
-
-```bash
-docker ps
-```
-
-Expected output:
-```
-CONTAINER ID   IMAGE                  PORTS                    NAMES
-xxxxxxxxxxxx   tenbit-ocr             0.0.0.0:8000->8000/tcp   tenbit-ocr
-xxxxxxxxxxxx   rbs-rag-node-qdrant    0.0.0.0:6333->6333/tcp   rbs-rag-node-qdrant-1
-xxxxxxxxxxxx   redis:7-alpine         0.0.0.0:6379->6379/tcp   rbs-rag-node-redis-1
-```
-
-Health checks:
-
-```bash
-# Qdrant
-curl http://localhost:6333/healthz
-
-# OCR Service
-curl http://localhost:8000/health
-
-# Redis
-docker exec rbs-rag-node-redis-1 redis-cli ping
-# Expected: PONG
-```
-
----
-
-## 4. Node.js API Setup
-
-```bash
+# Backend
 cd rbs-rag-node
 npm install
-```
+npm run prisma:generate
+npm run prisma:migrate
+cd ..
 
-Initialize the database (creates SQLite file + runs Prisma migrations):
-
-```bash
-npx prisma generate
-npx prisma migrate dev --name init
-```
-
-Start in dev mode (hot reload):
-
-```bash
-npm run dev
-```
-
-Or build and start in production mode:
-
-```bash
-npm run build
-npm start
-```
-
-API will be running at: **http://localhost:3001**
-
-Verify:
-```bash
-curl http://localhost:3001/health
-```
-
----
-
-## 5. Frontend Setup
-
-```bash
+# Frontend
 cd chic-interface-design
 npm install
+cd ..
 ```
 
-Start dev server:
+### 3. Start Docker services (3 containers required)
 
 ```bash
+docker compose up -d qdrant redis scraper_service ocr_service
+```
+
+> **What each container does:**
+> - **`qdrant`** — Vector database (port 6333)
+> - **`redis`** — Cache layer (port 6379)
+> - **`scraper_service`** — Web scraper microservice (port 8002)
+> - **`ocr_service`** — OCR microservice for image/scanned PDFs (port 8000)
+
+### 4. Start development servers
+
+**Terminal 1 — Frontend:**
+```bash
+cd chic-interface-design
 npm run dev
 ```
+→ Opens at http://localhost:3000
 
-Frontend will be at: **http://localhost:5173**
-
-> The frontend talks to the Node API at `http://localhost:3001` by default.
-> If you change the API port, update `src/lib/api.ts`.
-
-Build for production (outputs to `dist-spa/`):
-
+**Terminal 2 — Backend:**
 ```bash
-npm run build
+cd rbs-rag-node
+SCRAPER_SERVICE_URL=http://localhost:8002 npm run dev
 ```
+→ API at http://localhost:3001
 
 ---
 
-## 6. Full Stack — All at Once
+## One-Command Dev Start
 
-Open 3 terminals:
+Instead of running everything manually, use the dev-start script:
 
-**Terminal 1 — Docker services:**
+**Linux / macOS:**
 ```bash
-cd rbs-rag-node && docker compose -f docker-compose.node.yml up
+chmod +x dev-start.sh
+./dev-start.sh
 ```
 
-**Terminal 2 — Node API:**
-```bash
-cd rbs-rag-node && npm run dev
+**Windows (PowerShell — run as Administrator):**
+```powershell
+.\dev-start.ps1
 ```
 
-**Terminal 3 — Frontend:**
-```bash
-cd chic-interface-design && npm run dev
-```
+The script will:
+1. Start all 3 Docker containers
+2. Wait for them to be healthy
+3. Start the backend dev server
+4. Start the frontend dev server
+5. Open the browser automatically
 
 ---
 
-## 7. Service URLs Summary
+## Environment Variables (`.env`)
 
-| Service | URL | Notes |
-|---------|-----|-------|
-| Frontend | http://localhost:5173 | React SPA |
-| Node API | http://localhost:3001 | REST API |
-| OCR Service | http://localhost:8000 | Python/FastAPI |
-| Qdrant Dashboard | http://localhost:6333/dashboard | Vector DB UI |
-| Redis | localhost:6379 | No UI by default |
+Key variables for local dev (in `rbs-rag-node/.env` or root `.env`):
 
----
+| Variable | Default | Description |
+|---|---|---|
+| `SCRAPER_SERVICE_URL` | `http://localhost:8002` | Scraper microservice URL |
+| `RAG_ADMIN_PASSWORD` | `admin` | Admin dashboard password |
+| `RAG_QDRANT_HOST` | `localhost` | Qdrant host (use `localhost` for local dev) |
+| `RAG_QDRANT_PORT` | `6333` | Qdrant port |
+| `RAG_REDIS_HOST` | `localhost` | Redis host (use `localhost` for local dev) |
+| `RAG_LLM_PROVIDER` | `gemini` | LLM provider (`gemini`, `openai`, `anthropic`) |
+| `RAG_LLM_API_KEY` | *(empty)* | Global LLM API key (optional) |
 
-## 8. Common Issues
-
-**`ECONNREFUSED` on Qdrant**
-Qdrant container is not running. Run `docker compose -f docker-compose.node.yml up -d` from `rbs-rag-node/`.
-
-**Prisma migration error on first run**
-Run `npx prisma migrate dev --name init` from `rbs-rag-node/`. This creates `prisma/dev.db`.
-
-**OCR service returns 500**
-Check container logs: `docker logs tenbit-ocr`. Usually a missing API key or the model is still downloading on first boot (PaddleOCR downloads ~200MB on first run).
-
-**Frontend 404 on API calls**
-Make sure the Node API is running on port `3001`. Check `src/lib/api.ts` for the base URL.
-
-**`npm install` fails on `chic-interface-design`**
-This project uses Vite 8 which requires Node 22. Run `node -v` to confirm.
+> **Note:** When running locally (not in Docker), set `RAG_QDRANT_HOST=localhost` and `RAG_REDIS_HOST=localhost`. The `.env.example` uses `qdrant`/`redis` as hostnames which only work inside Docker networking.
 
 ---
 
-## 9. Stopping Everything
+## Ports Reference
 
+| Service | Port | URL |
+|---|---|---|
+| Frontend | **5173** | http://localhost:5173 |
+| Backend API | 3001 | http://localhost:3001 |
+| Qdrant | 6333 | http://localhost:6333 |
+| Redis | 6379 | (internal) |
+| Scraper | 8002 | http://localhost:8002 |
+| OCR | 8000 | http://localhost:8000 |
+
+---
+
+## Cloud Sync — Supported Providers
+
+The Cloud Sync feature supports publicly shared files:
+
+| Provider | What works |
+|---|---|
+| **Google Drive** | Files shared as "Anyone with the link" |
+| **OneDrive** | Files shared as "Anyone with the link" |
+| **S3** | Public bucket URLs or presigned URLs |
+| **Confluence** | Public pages, or private pages with API token |
+
+---
+
+## Stopping Everything
+
+**Linux:**
 ```bash
 # Stop Docker containers
-cd rbs-rag-node && docker compose -f docker-compose.node.yml down
+docker compose stop qdrant redis scraper_service
 
-# Stop OCR container
-docker stop tenbit-ocr && docker rm tenbit-ocr
+# Stop dev servers: Ctrl+C in each terminal
 ```
 
-To remove all data volumes (full reset):
-```bash
-cd rbs-rag-node && docker compose -f docker-compose.node.yml down -v
+**Windows:**
+```powershell
+docker compose stop qdrant redis scraper_service
+# Stop dev servers: Ctrl+C in each terminal (or close the windows)
 ```

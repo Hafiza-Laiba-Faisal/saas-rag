@@ -1,4 +1,12 @@
-const TOKEN_RE = /[A-Za-z0-9][A-Za-z0-9_'-]*/g;
+const TOKEN_RE = /[A-Za-z0-9][A-Za-z0-9_']*/g;
+
+export function normalizeQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .replace(/[-_.,;:!?]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export function tokenize(text: string): string[] {
   const matches: string[] = [];
