@@ -75,12 +75,7 @@
     --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, monospace;
     --color-red-400: oklch(70.4% .191 22.216);
-    --color-amber-100: oklch(96.2% .059 95.617);
-    --color-amber-200: oklch(92.4% .12 95.746);
-    --color-amber-300: oklch(87.9% .169 91.605);
-    --color-amber-400: oklch(82.8% .189 84.429);
-    --color-amber-500: oklch(76.9% .188 70.08);
-    --color-yellow-400: oklch(85.2% .199 91.936);
+    --color-orange-400: oklch(75% .183 55.934);
     --color-green-400: oklch(79.2% .209 151.711);
     --color-sky-100: oklch(95.1% .026 236.824);
     --color-sky-200: oklch(90.1% .058 230.902);
@@ -1789,16 +1784,6 @@
     }
   }
 
-  .border-amber-500\/30 {
-    border-color: #f99c004d;
-  }
-
-  @supports (color: color-mix(in lab, red, red)) {
-    .border-amber-500\/30 {
-      border-color: color-mix(in oklab, var(--color-amber-500) 30%, transparent);
-    }
-  }
-
   .border-border, .border-border\/50 {
     border-color: var(--border);
   }
@@ -2013,20 +1998,6 @@
 
   .bg-accent {
     background-color: var(--accent);
-  }
-
-  .bg-amber-400 {
-    background-color: var(--color-amber-400);
-  }
-
-  .bg-amber-500\/10 {
-    background-color: #f99c001a;
-  }
-
-  @supports (color: color-mix(in lab, red, red)) {
-    .bg-amber-500\/10 {
-      background-color: color-mix(in oklab, var(--color-amber-500) 10%, transparent);
-    }
   }
 
   .bg-background {
@@ -2285,6 +2256,10 @@
 
   .bg-secondary {
     background-color: var(--secondary);
+  }
+
+  .bg-sky-400 {
+    background-color: var(--color-sky-400);
   }
 
   .bg-sky-500\/10 {
@@ -2761,10 +2736,6 @@
     color: #f90;
   }
 
-  .text-\[color\:var\(--accent-amber\)\] {
-    color: var(--accent-amber);
-  }
-
   .text-\[color\:var\(--accent-emerald\)\] {
     color: var(--accent-emerald);
   }
@@ -2791,52 +2762,6 @@
 
   .text-accent-foreground {
     color: var(--accent-foreground);
-  }
-
-  .text-amber-100 {
-    color: var(--color-amber-100);
-  }
-
-  .text-amber-200 {
-    color: var(--color-amber-200);
-  }
-
-  .text-amber-200\/50 {
-    color: #fee68580;
-  }
-
-  @supports (color: color-mix(in lab, red, red)) {
-    .text-amber-200\/50 {
-      color: color-mix(in oklab, var(--color-amber-200) 50%, transparent);
-    }
-  }
-
-  .text-amber-200\/80 {
-    color: #fee685cc;
-  }
-
-  @supports (color: color-mix(in lab, red, red)) {
-    .text-amber-200\/80 {
-      color: color-mix(in oklab, var(--color-amber-200) 80%, transparent);
-    }
-  }
-
-  .text-amber-300 {
-    color: var(--color-amber-300);
-  }
-
-  .text-amber-300\/60 {
-    color: #ffd23699;
-  }
-
-  @supports (color: color-mix(in lab, red, red)) {
-    .text-amber-300\/60 {
-      color: color-mix(in oklab, var(--color-amber-300) 60%, transparent);
-    }
-  }
-
-  .text-amber-400 {
-    color: var(--color-amber-400);
   }
 
   .text-card-foreground {
@@ -2895,6 +2820,10 @@
     color: var(--muted-foreground);
   }
 
+  .text-orange-400 {
+    color: var(--color-orange-400);
+  }
+
   .text-popover-foreground {
     color: var(--popover-foreground);
   }
@@ -2943,6 +2872,16 @@
     }
   }
 
+  .text-sky-200\/80 {
+    color: #b8e6fecc;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .text-sky-200\/80 {
+      color: color-mix(in oklab, var(--color-sky-200) 80%, transparent);
+    }
+  }
+
   .text-sky-300 {
     color: var(--color-sky-300);
   }
@@ -2967,10 +2906,6 @@
 
   .text-warning {
     color: var(--warning);
-  }
-
-  .text-yellow-400 {
-    color: var(--color-yellow-400);
   }
 
   .capitalize {
@@ -3653,10 +3588,6 @@
 
     .hover\:text-accent-foreground:hover {
       color: var(--accent-foreground);
-    }
-
-    .hover\:text-amber-100:hover {
-      color: var(--color-amber-100);
     }
 
     .hover\:text-background:hover {

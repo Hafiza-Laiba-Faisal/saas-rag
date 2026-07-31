@@ -1,4 +1,7 @@
 .rbs_rag/
+
+# Pre-migration DB backup tarballs
+backup/
 .env
 .env.local
 .env.*.local
@@ -14,9 +17,6 @@ chic-interface-design/.git_backup/
 
 # Node.js
 node_modules/
-rbs-rag-node/node_modules/
-rbs-rag-node/dist/
-rbs-rag-node/.logs/
 scraper-service/.logs/
 
 # Database files
@@ -43,8 +43,3 @@ Thumbs.db
 
 # Scraped test pages (large binaries, not project code)
 data/test-pages/
-
-# Stale build artifacts
-rbs-rag-node/static/assets/index-*.js
-rbs-rag-node/static/assets/index-*.css
-rbs-rag-node/static/assets/styles-*.css

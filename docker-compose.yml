@@ -35,6 +35,8 @@ services:
     image: redis:7-alpine
     container_name: tenbit-redis
     restart: unless-stopped
+    ports:
+      - "6379:6379"
     networks:
       - rag_network
     volumes:
@@ -72,11 +74,15 @@ services:
       - RAG_ROOT_DIR=/data/.rbs_rag
       - QDRANT_HOST=${RAG_QDRANT_HOST:-qdrant}
       - QDRANT_PORT=${RAG_QDRANT_PORT:-6333}
+      - RAG_REDIS_HOST=${RAG_REDIS_HOST:-redis}
+      - RAG_REDIS_PORT=${RAG_REDIS_PORT:-6379}
+      - RAG_REDIS_PASSWORD=${RAG_REDIS_PASSWORD:-}
       - RAG_ENCRYPTION_KEY=${RAG_ENCRYPTION_KEY:-}
       - RAG_ADMIN_JWT_SECRET=${RAG_ADMIN_JWT_SECRET:-}
       - RAG_ADMIN_PASSWORD=${RAG_ADMIN_PASSWORD:-admin}
       - RAG_TERMINAL_ENABLED=${RAG_TERMINAL_ENABLED:-true}
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+      - RAG_SPA_DIR=/app/chic-interface-design/dist-spa
     depends_on:
       qdrant:
         condition: service_healthy
@@ -122,6 +128,10 @@ services:
       - .env
     environment:
       - DEEPCRAWL_API_KEY=${DEEPCRAWL_API_KEY:-}
+      - REDIS_ENABLED=true
+      - REDIS_HOST=${RAG_REDIS_HOST:-redis}
+      - REDIS_PORT=${RAG_REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${RAG_REDIS_PASSWORD:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s

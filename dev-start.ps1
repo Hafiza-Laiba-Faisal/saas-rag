@@ -7,7 +7,7 @@
 $ErrorActionPreference = "Stop"
 
 $ROOT     = Split-Path -Parent $MyInvocation.MyCommand.Path
-$BACKEND  = Join-Path $ROOT "rbs-rag-node"
+$BACKEND  = Join-Path $ROOT ".venv"
 $FRONTEND = Join-Path $ROOT "chic-interface-design"
 
 function Write-Log   { param($msg) Write-Host "[RAG] $msg" -ForegroundColor Cyan }
@@ -58,8 +58,8 @@ for ($i = 1; $i -le 20; $i++) {
 if (-not $ready) { Write-Warn "Scraper service did not respond — continuing anyway." }
 
 # ── 5. Start Backend in new window ───────────────────────────
-Write-Log "Starting backend (Node.js dev server)..."
-$backendCmd = "Set-Location '$BACKEND'; `$env:SCRAPER_SERVICE_URL='http://localhost:8002'; npm run dev"
+Write-Log "Starting backend (Python uvicorn on 3001)..."
+$backendCmd = "Set-Location '$ROOT'; Get-Content .env | ForEach-Object { if ($_ -match '^([^#=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') } }; `$env:RAG_ROOT_DIR='$ROOT\.rbs_rag'; `$env:PYTHONPATH='$ROOT\src'; .venv\Scripts\python -m uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
 $backendProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd -PassThru
 Write-Ok "Backend started (PID $($backendProcess.Id))"
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
@@ -11,94 +13,155 @@ from .models import Chunk, LoadedDocument
 
 log = logging.getLogger(__name__)
 
+# ── In-process LRU connection pool (per-tenant SQLite files) ──────────────────
+# Keeping a bounded number of connections open avoids file-descriptor pressure
+# once many tenants exist while still reusing warm connections for hot tenants.
+
+_POOL_MAX = 30
+_pool: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
+_pool_lock = threading.Lock()
+
+
+def _acquire_connection(path: Path) -> sqlite3.Connection:
+    key = str(path)
+    with _pool_lock:
+        conn = _pool.pop(key, None)
+    if conn is None:
+        conn = sqlite3.connect(key, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _release_connection(path: Path, conn: sqlite3.Connection) -> None:
+    key = str(path)
+    with _pool_lock:
+        _pool[key] = conn
+        while len(_pool) > _POOL_MAX:
+            _pool.popitem(last=False)
+
+
+def close_pool() -> None:
+    with _pool_lock:
+        while _pool:
+            _, conn = _pool.popitem(last=False)
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(ddl)
+
+
+def _load_tenant_schema() -> str:
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "../../db/tenant_schema.sql",
+        here / "db/tenant_schema.sql",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    return _INLINE_TENANT_SCHEMA
+
+
+_INLINE_TENANT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS documents (
+    document_id       TEXT PRIMARY KEY,
+    tenant_id         TEXT NOT NULL,
+    knowledge_base_id TEXT NOT NULL DEFAULT 'default',
+    path              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    document_type     TEXT NOT NULL,
+    text              TEXT NOT NULL,
+    metadata_json     TEXT NOT NULL DEFAULT '{}',
+    ocr_applied       INTEGER NOT NULL DEFAULT 0,
+    ocr_engine        TEXT,
+    page_count        INTEGER,
+    source            TEXT NOT NULL DEFAULT 'upload',
+    source_url        TEXT,
+    ingested_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    chunk_id          TEXT PRIMARY KEY,
+    document_id       TEXT NOT NULL,
+    tenant_id         TEXT NOT NULL,
+    knowledge_base_id TEXT NOT NULL DEFAULT 'default',
+    ordinal           INTEGER NOT NULL,
+    text              TEXT NOT NULL,
+    metadata_json     TEXT NOT NULL DEFAULT '{}',
+    embedding_json    TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS session_turns (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id  TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_memory (
+    tenant_id  TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tenant_id, user_id, key)
+);
+"""
+
 
 class SQLiteRagStore:
     def __init__(self, path: Path):
-        self.path = path
+        self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
+        conn = _acquire_connection(self.path)
         try:
-            yield connection
-            connection.commit()
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
-            connection.close()
+            _release_connection(self.path, conn)
 
     def _initialize(self) -> None:
+        schema_sql = _load_tenant_schema()
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS documents (
-                    document_id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    knowledge_base_id TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    document_type TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL,
-                    ocr_applied INTEGER DEFAULT 0,
-                    ocr_engine TEXT,
-                    page_count INTEGER,
-                    source TEXT DEFAULT 'upload',
-                    source_url TEXT,
-                    ingested_at TEXT DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS chunks (
-                    chunk_id TEXT PRIMARY KEY,
-                    document_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
-                    knowledge_base_id TEXT NOT NULL,
-                    ordinal INTEGER NOT NULL,
-                    text TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL,
-                    embedding_json TEXT NOT NULL,
-                    FOREIGN KEY(document_id) REFERENCES documents(document_id)
-                );
-                CREATE TABLE IF NOT EXISTS session_turns (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tenant_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS user_memory (
-                    tenant_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    PRIMARY KEY (tenant_id, user_id, key)
-                );
-                CREATE TABLE IF NOT EXISTS health (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                """
-            )
+            connection.executescript(schema_sql)
             self._migrate_schema(connection)
 
     def _migrate_schema(self, connection: sqlite3.Connection) -> None:
-        migrations = [
-            "ALTER TABLE documents ADD COLUMN ocr_applied INTEGER DEFAULT 0",
-            "ALTER TABLE documents ADD COLUMN ocr_engine TEXT",
-            "ALTER TABLE documents ADD COLUMN page_count INTEGER",
-            "ALTER TABLE documents ADD COLUMN source TEXT DEFAULT 'upload'",
-            "ALTER TABLE documents ADD COLUMN source_url TEXT",
-            "ALTER TABLE documents ADD COLUMN ingested_at TEXT DEFAULT CURRENT_TIMESTAMP",
-            "ALTER TABLE documents ADD COLUMN tenant_id TEXT",
-            "ALTER TABLE documents ADD COLUMN knowledge_base_id TEXT",
+        guards = [
+            ("documents", "ocr_applied", "ALTER TABLE documents ADD COLUMN ocr_applied INTEGER DEFAULT 0"),
+            ("documents", "ocr_engine", "ALTER TABLE documents ADD COLUMN ocr_engine TEXT"),
+            ("documents", "page_count", "ALTER TABLE documents ADD COLUMN page_count INTEGER"),
+            ("documents", "source", "ALTER TABLE documents ADD COLUMN source TEXT DEFAULT 'upload'"),
+            ("documents", "source_url", "ALTER TABLE documents ADD COLUMN source_url TEXT"),
+            ("documents", "ingested_at", "ALTER TABLE documents ADD COLUMN ingested_at TEXT DEFAULT CURRENT_TIMESTAMP"),
+            ("documents", "tenant_id", "ALTER TABLE documents ADD COLUMN tenant_id TEXT"),
+            ("documents", "knowledge_base_id", "ALTER TABLE documents ADD COLUMN knowledge_base_id TEXT"),
+            ("user_memory", "updated_at", "ALTER TABLE user_memory ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP"),
         ]
-        for stmt in migrations:
-            try:
-                connection.execute(stmt)
-            except sqlite3.OperationalError:
-                pass
+        for table, column, ddl in guards:
+            _ensure_column(connection, table, column, ddl)
+
+    # ── Documents ──────────────────────────────────────────────────────────────
 
     def upsert_document(self, document: LoadedDocument, tenant_id: str, knowledge_base_id: str, source: str = "upload", source_url: str | None = None) -> None:
         metadata = dict(document.metadata)
@@ -144,6 +207,35 @@ class SQLiteRagStore:
             return None
         return dict(row) | {"metadata": json.loads(row["metadata_json"])}
 
+    def list_documents(self, tenant_id: str, knowledge_base_id: str) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT document_id, path, name, document_type, metadata_json, ocr_applied, ocr_engine, page_count, source, source_url, ingested_at
+                FROM documents
+                WHERE tenant_id = ? AND knowledge_base_id = ?
+                ORDER BY name
+                """,
+                (tenant_id, knowledge_base_id),
+            ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["metadata"] = json.loads(row["metadata_json"])
+            d["ocr_applied"] = bool(row["ocr_applied"])
+            result.append(d)
+        return result
+
+    def count_documents(self, tenant_id: str, knowledge_base_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS cnt FROM documents WHERE tenant_id = ? AND knowledge_base_id = ?",
+                (tenant_id, knowledge_base_id),
+            ).fetchone()
+        return row["cnt"] if row else 0
+
+    # ── Chunks ─────────────────────────────────────────────────────────────────
+
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> None:
         rows = []
         for chunk in chunks:
@@ -187,33 +279,6 @@ class SQLiteRagStore:
             chunks = [chunk for chunk in chunks if _metadata_matches(chunk.metadata, filters)]
         return chunks
 
-    def list_documents(self, tenant_id: str, knowledge_base_id: str) -> list[dict]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT document_id, path, name, document_type, metadata_json, ocr_applied, ocr_engine, page_count, source, source_url, ingested_at
-                FROM documents
-                WHERE tenant_id = ? AND knowledge_base_id = ?
-                ORDER BY name
-                """,
-                (tenant_id, knowledge_base_id),
-            ).fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["metadata"] = json.loads(row["metadata_json"])
-            d["ocr_applied"] = bool(row["ocr_applied"])
-            result.append(d)
-        return result
-
-    def count_documents(self, tenant_id: str, knowledge_base_id: str) -> int:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) AS cnt FROM documents WHERE tenant_id = ? AND knowledge_base_id = ?",
-                (tenant_id, knowledge_base_id),
-            ).fetchone()
-        return row["cnt"] if row else 0
-
     def count_chunks(self, tenant_id: str, knowledge_base_id: str) -> int:
         with self._connect() as connection:
             row = connection.execute(
@@ -221,6 +286,8 @@ class SQLiteRagStore:
                 (tenant_id, knowledge_base_id),
             ).fetchone()
         return row["cnt"] if row else 0
+
+    # ── Session turns ──────────────────────────────────────────────────────────
 
     def add_session_turn(self, tenant_id: str, session_id: str, user_id: str, role: str, content: str) -> None:
         with self._connect() as connection:
@@ -237,15 +304,6 @@ class SQLiteRagStore:
             ).fetchall()
         ordered = list(reversed(rows))
         return "\n".join(f"{row['role']}: {row['content']}" for row in ordered)
-
-    def set_user_memory(self, tenant_id: str, user_id: str, key: str, value: str) -> None:
-        with self._connect() as connection:
-            connection.execute("INSERT OR REPLACE INTO user_memory (tenant_id, user_id, key, value) VALUES (?, ?, ?, ?)", (tenant_id, user_id, key, value))
-
-    def get_user_memory(self, tenant_id: str, user_id: str) -> dict[str, str]:
-        with self._connect() as connection:
-            rows = connection.execute("SELECT key, value FROM user_memory WHERE tenant_id = ? AND user_id = ? ORDER BY key", (tenant_id, user_id)).fetchall()
-        return {row["key"]: row["value"] for row in rows}
 
     def list_sessions(self, tenant_id: str) -> list[dict]:
         with self._connect() as connection:
@@ -276,6 +334,22 @@ class SQLiteRagStore:
                 (tenant_id, str(retention_days)),
             )
             return cursor.rowcount
+
+    # ── User memory ────────────────────────────────────────────────────────────
+
+    def set_user_memory(self, tenant_id: str, user_id: str, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO user_memory (tenant_id, user_id, key, value, updated_at) VALUES (?, ?, ?, ?, datetime('now'))",
+                (tenant_id, user_id, key, value),
+            )
+
+    def get_user_memory(self, tenant_id: str, user_id: str) -> dict[str, str]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT key, value FROM user_memory WHERE tenant_id = ? AND user_id = ? ORDER BY key", (tenant_id, user_id)).fetchall()
+        return {row["key"]: row["value"] for row in rows}
+
+    # ── Health ─────────────────────────────────────────────────────────────────
 
     def set_health(self, key: str, value: str) -> None:
         with self._connect() as connection:

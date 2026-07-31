@@ -1,11 +1,12 @@
 """
 In-memory cache with TTL expiration.
-Thread-safe. Future: replace with Redis without changing callers.
+Thread-safe. Can be replaced with RedisCache without changing callers.
 """
 
 from __future__ import annotations
 import time
 import threading
+import os
 from typing import Any
 from .base import BaseCache
 
@@ -44,9 +45,17 @@ class MemoryCache(BaseCache):
             return len(self._store)
 
 
-# Module-level default instance
-default_cache = MemoryCache()
+def _create_backed_cache() -> BaseCache:
+    """Factory: returns RedisCache if REDIS_ENABLED=true, else MemoryCache."""
+    if os.getenv("REDIS_ENABLED", "").lower() in ("1", "true", "yes"):
+        try:
+            from .redis_cache import RedisCache
+            return RedisCache()
+        except Exception:
+            pass
+    return MemoryCache()
 
-# Cloudflare clearance cookie cache (per-domain, short TTL)
-# Separate from default_cache so it can be independently monitored/flushed.
-cf_cache = MemoryCache()
+
+# Module-level default instances — Redis when available, else in-memory
+default_cache: BaseCache = _create_backed_cache()
+cf_cache: BaseCache = MemoryCache()  # CF cookies stay in-memory (per-process)

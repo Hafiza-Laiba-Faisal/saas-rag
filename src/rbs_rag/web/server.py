@@ -30,9 +30,11 @@ from rbs_rag.cloud_sync import sync_cloud_documents
 from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
 from rbs_rag.metrics import MetricsMiddleware, metrics_export, DOCUMENTS_INGESTED, CHUNKS_CREATED, CHUNKS_RETRIEVED, LLM_REQUESTS, LLM_DURATION, PROMPT_INJECTIONS_BLOCKED, ACTIVE_TENANTS, ENGINE_UPTIME
 from rbs_rag.web.admin_db import AdminStore
+from rbs_rag.provisioning import provision_tenant
 from rbs_rag.ocr.service import get_ocr_service, init_ocr_service
 from rbs_rag.services.scraper_service import ScraperService
 from rbs_rag.models import StreamingChunk
+from rbs_rag.cache import redis_client
 
 log = logging.getLogger(__name__)
 
@@ -49,11 +51,41 @@ _engine_cache: dict[str, RagEngine] = {}
 TENANTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _tenant_db_path(tenant_id: str, tenant: dict | None = None) -> Path:
+    """Resolve a tenant's per-tenant rag.db path from admin.db (db_path column)."""
+    if tenant is None:
+        tenant = admin_store.get_tenant(tenant_id) or {}
+    db_path = tenant.get("db_path")
+    if db_path:
+        p = Path(db_path)
+        return p if p.is_absolute() else (ROOT_DIR / p)
+    return TENANTS_DIR / tenant_id / "rag.db"
+
+
+def _tenant_connection(db_path: Path):
+    """Open a raw per-tenant SQLite connection with the standard PRAGMAs."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("TenBit RAG server starting")
+    if redis_client.enabled:
+        restored = redis_client.shgetall("ingestion_status") or {}
+        for tid, raw in restored.items():
+            try:
+                ingestion_status[tid] = json.loads(raw)
+            except Exception:
+                pass
+        log.info("Restored %d ingestion statuses from Redis", len(restored))
     yield
     log.info("TenBit RAG server shutting down")
+    await redis_client.close()
     for engine in _engine_cache.values():
         if hasattr(engine, 'vector_store') and engine.vector_store._client:
             await engine.vector_store.close()
@@ -71,23 +103,21 @@ app.add_middleware(
 
 app.add_middleware(MetricsMiddleware)
 
-static_dir = Path(__file__).parent / "static"
-static_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+spa_dir = Path(os.getenv("RAG_SPA_DIR", str(Path(__file__).parent.parent.parent.parent / "chic-interface-design" / "dist-spa"))).resolve()
+if not spa_dir.exists():
+    spa_dir = Path(__file__).parent / "static"
+    spa_dir.mkdir(parents=True, exist_ok=True)
+assets_dir = spa_dir / "assets"
+app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets") if assets_dir.exists() else None
 
 
 # --- Rate Limiting ---
-_rate_limit_store: dict[str, list[float]] = {}
 
-def _check_rate_limit(client_ip: str, rpm: int = 60):
-    now = time.time()
-    window = 60.0
-    if client_ip not in _rate_limit_store:
-        _rate_limit_store[client_ip] = []
-    _rate_limit_store[client_ip] = [t for t in _rate_limit_store[client_ip] if now - t < window]
-    if len(_rate_limit_store[client_ip]) >= rpm:
+async def _check_rate_limit(client_ip: str, rpm: int = 60):
+    key = f"rate_limit:{client_ip}"
+    allowed = await redis_client.asliding_window(key, rpm, 60)
+    if not allowed:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    _rate_limit_store[client_ip].append(now)
 
 
 # --- Admin Auth ---
@@ -132,15 +162,40 @@ async def admin_login(req: AdminLoginRequest):
     }
 
 
+
+LLM_PROVIDERS = [
+    {"id": "gemini", "name": "Google Gemini Cloud", "defaultBaseUrl": "https://generativelanguage.googleapis.com/v1beta", "models": ["gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]},
+    {"id": "mistral", "name": "Mistral Cloud", "defaultBaseUrl": "https://api.mistral.ai/v1", "models": ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest", "open-mistral-nemo"]},
+    {"id": "openai", "name": "OpenAI", "defaultBaseUrl": "https://api.openai.com/v1", "models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]},
+    {"id": "nvidia", "name": "NVIDIA", "defaultBaseUrl": "https://integrate.api.nvidia.com/v1", "models": ["meta/llama-3.1-8b-instruct", "meta/llama-3.1-70b-instruct", "mistralai/mistral-7b-instruct-v03"]},
+    {"id": "openrouter", "name": "OpenRouter", "defaultBaseUrl": "https://openrouter.ai/api/v1", "models": ["openai/gpt-4o-mini", "openai/gpt-4o", "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.1-8b-instruct"]},
+    {"id": "anthropic", "name": "Anthropic", "defaultBaseUrl": "https://api.anthropic.com/v1", "models": ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest", "claude-3-opus-latest"]},
+    {"id": "openai_compatible", "name": "OpenAI Compatible", "defaultBaseUrl": "http://localhost:11434/v1", "models": ["gpt-4o-mini"]},
+]
+
+EMBEDDING_PROVIDERS = [
+    {"id": "hash", "name": "Local Deterministic Hash (384d)", "defaultBaseUrl": None, "models": ["hash-384"], "defaultDimensions": 384},
+    {"id": "bge", "name": "BGE Small (Local)", "defaultBaseUrl": None, "models": ["BAAI/bge-small-en-v1.5", "BAAI/bge-base-en-v1.5", "BAAI/bge-large-en-v1.5"], "defaultDimensions": 384},
+    {"id": "openai", "name": "OpenAI Embeddings", "defaultBaseUrl": "https://api.openai.com/v1", "models": ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"], "defaultDimensions": 1536},
+    {"id": "gemini", "name": "Google Gemini Embeddings", "defaultBaseUrl": "https://generativelanguage.googleapis.com/v1beta", "models": ["text-embedding-004", "embedding-001"], "defaultDimensions": 768},
+    {"id": "mistral", "name": "Mistral Embeddings", "defaultBaseUrl": "https://api.mistral.ai/v1", "models": ["mistral-embed"], "defaultDimensions": 1024},
+]
+
+
+@app.get("/api/v1/admin/providers")
+def get_providers(_admin=Depends(require_admin)):
+    return LLM_PROVIDERS
+
+
 # --- Pydantic models ---
 class TenantOnboardRequest(BaseModel):
-    tenant_id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$")
+    tenant_id: str = Field(..., pattern=r"^[a-zA-Z0-9 _-]+$")  # slug: letters, digits, spaces, hyphens, underscores
     name: str
     subscription_tier: str = "basic"
     monthly_fee: float = 299.00
     llm_provider: str = "gemini"
     llm_model: str = "gemini-2.5-flash-lite"
-    llm_api_key: str
+    llm_api_key: str | None = None
     llm_base_url: str | None = None
     embedding_provider: str = "hash"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -169,7 +224,7 @@ class TenantUpdateRequest(BaseModel):
     monthly_fee: float = 299.00
     llm_provider: str = "gemini"
     llm_model: str = "gemini-2.5-flash-lite"
-    llm_api_key: str
+    llm_api_key: str | None = None
     llm_base_url: str | None = None
     embedding_provider: str = "hash"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -278,7 +333,7 @@ def _get_tenant_config(tenant: dict) -> AppConfig:
         default_kb="default",
         session_memory_limit=tenant.get("session_memory_limit", 8),
         chat_retention_days=tenant.get("chat_retention_days", 30),
-        storage=StorageConfig(provider="sqlite", path=str(TENANTS_DIR / tenant["tenant_id"] / "rag.db")),
+        storage=StorageConfig(provider="sqlite", path=str(_tenant_db_path(tenant["tenant_id"], tenant))),
         embeddings=EmbeddingConfig(
             provider=tenant["embedding_provider"], model=tenant["embedding_model"],
             dimensions=tenant["embedding_dimensions"], base_url=tenant.get("embedding_base_url"),
@@ -324,12 +379,17 @@ async def _ensure_engine_initialized(engine: RagEngine):
         await engine.initialize()
 
 
+def _sync_ingestion_to_redis(tenant_id: str):
+    if tenant_id in ingestion_status:
+        redis_client.sset_json(f"ingestion:{tenant_id}", ingestion_status[tenant_id], ttl=3600)
+
 def _log_to_ingestion(tenant_id: str, message: str, progress: int | None = None):
     if tenant_id not in ingestion_status:
         ingestion_status[tenant_id] = {"status": "idle", "logs": [], "progress": 0, "summary": None}
     ingestion_status[tenant_id]["logs"].append(message)
     if progress is not None:
         ingestion_status[tenant_id]["progress"] = progress
+    _sync_ingestion_to_redis(tenant_id)
 
 
 def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool = False):
@@ -351,8 +411,7 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
 
         db_path = Path(config.storage.path)
         if db_path.exists():
-            with sqlite3.connect(db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with _tenant_connection(db_path) as conn:
                 db_docs = conn.execute("SELECT document_id, name, path FROM documents").fetchall()
                 for doc in db_docs:
                     doc_id = doc["document_id"]
@@ -367,7 +426,7 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
         db_path = Path(config.storage.path)
         if db_path.exists():
             try:
-                with sqlite3.connect(db_path) as conn:
+                with _tenant_connection(db_path) as conn:
                     rows = conn.execute("SELECT document_id FROM documents").fetchall()
                     already_ingested_ids = {r[0] for r in rows}
             except Exception:
@@ -378,6 +437,7 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
             _log_to_ingestion(tenant_id, "No documents found. Index is clean.", 100)
             ingestion_status[tenant_id]["status"] = "completed"
             ingestion_status[tenant_id]["summary"] = {"documents": 0, "chunks": 0}
+            _sync_ingestion_to_redis(tenant_id)
             return
 
         total_docs = 0
@@ -436,6 +496,7 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
         _log_to_ingestion(tenant_id, f"Ingestion finished! New: {total_docs} docs, {total_chunks} chunks. Skipped: {skipped_docs}. Errors: {len(errors)}", 100)
         ingestion_status[tenant_id]["status"] = status_str
         ingestion_status[tenant_id]["summary"] = {"documents": total_docs, "chunks": total_chunks, "skipped": skipped_docs, "errors": errors}
+        _sync_ingestion_to_redis(tenant_id)
         admin_store.log_activity(tenant_id=tenant_id, level="WARNING" if errors else "INFO", operation="INGESTION",
                                 message=f"Ingestion {'completed with errors' if errors else 'successful'}: {total_docs} new docs, {total_chunks} chunks, {skipped_docs} skipped.",
                                 details={"documents": total_docs, "chunks": total_chunks, "skipped": skipped_docs, "errors": errors})
@@ -444,35 +505,57 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
         _log_to_ingestion(tenant_id, f"[Fatal] {exc}\n{trace}", 100)
         ingestion_status[tenant_id]["status"] = "error"
         ingestion_status[tenant_id]["summary"] = {"error": str(exc)}
+        _sync_ingestion_to_redis(tenant_id)
         admin_store.log_activity(tenant_id=tenant_id, level="ERROR", operation="INGESTION", message=f"Fatal ingestion error: {exc}", traceback=trace)
 
 
-# --- HTML pages ---
+# --- SPA serving ---
+
+_shared_index_html: str | None = None
+
+def _get_spa_index() -> str | None:
+    global _shared_index_html
+    if _shared_index_html is not None:
+        return _shared_index_html
+    idx = spa_dir / "index.html"
+    if idx.exists():
+        _shared_index_html = idx.read_text(encoding="utf-8")
+        return _shared_index_html
+    return None
+
+
+def _spa_response(cache_control: str = "no-store") -> HTMLResponse:
+    html = _get_spa_index()
+    if html is None:
+        return HTMLResponse(content="<h3>Frontend is still generating. Reload in a few seconds...</h3>")
+    resp = HTMLResponse(content=html)
+    resp.headers["Cache-Control"] = cache_control
+    return resp
+
 
 @app.get("/", response_class=HTMLResponse)
 def get_dashboard():
-    dashboard_file = static_dir / "index.html"
-    if dashboard_file.exists():
-        response = HTMLResponse(content=dashboard_file.read_text(encoding="utf-8"))
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        return response
-    return "<h3>Frontend index.html is still generating. Reload in a few seconds...</h3>"
+    return _spa_response()
 
 
 @app.get("/client", response_class=HTMLResponse)
 def get_client_dashboard():
-    client_file = static_dir / "client.html"
-    if client_file.exists():
-        return HTMLResponse(content=client_file.read_text(encoding="utf-8"))
-    return "<h3>Client dashboard is loading...</h3>"
+    return _spa_response()
+
 
 @app.get("/widget", response_class=HTMLResponse)
 def get_chat_widget():
-    widget_file = static_dir / "widget.html"
-    if widget_file.exists():
-        return widget_file.read_text(encoding="utf-8")
-    return "<h3>Frontend widget.html is still generating. Reload in a few seconds...</h3>"
+    return _spa_response()
+
+
+@app.get("/login", response_class=HTMLResponse)
+def get_login():
+    return _spa_response()
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def get_admin_spa():
+    return _spa_response()
 
 
 # --- Health & Monitoring ---
@@ -511,10 +594,10 @@ async def system_status(_admin=Depends(require_admin)):
     total_docs = 0
     total_chunks = 0
     for t in tenants:
-        db_path = TENANTS_DIR / t["tenant_id"] / "rag.db"
+        db_path = _tenant_db_path(t["tenant_id"], t)
         if db_path.exists():
             try:
-                with sqlite3.connect(db_path) as conn:
+                with _tenant_connection(db_path) as conn:
                     row = conn.execute("SELECT COUNT(*) FROM documents").fetchone()
                     if row:
                         total_docs += row[0]
@@ -546,10 +629,10 @@ def get_tenants(_admin=Depends(require_admin)):
         docs_dir = TENANTS_DIR / t["tenant_id"] / "documents"
         t["doc_count"] = len([x for x in docs_dir.glob("*") if x.is_file()]) if docs_dir.exists() else 0
         chunk_count = 0
-        db_path = TENANTS_DIR / t["tenant_id"] / "rag.db"
+        db_path = _tenant_db_path(t["tenant_id"], t)
         if db_path.exists():
             try:
-                with sqlite3.connect(db_path) as conn:
+                with _tenant_connection(db_path) as conn:
                     row = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
                     chunk_count = row[0] if row else 0
             except Exception:
@@ -567,10 +650,11 @@ def onboard_tenant(req: TenantOnboardRequest, _admin=Depends(require_admin)):
     tenant_data = req.model_dump()
     tenant_data["api_key"] = api_key
     tenant_data["status"] = "active"
-    admin_store.upsert_tenant(tenant_data)
+    provision_tenant(admin_store, tenant_data, ROOT_DIR)
     tenant_dir = TENANTS_DIR / req.tenant_id
     (tenant_dir / "documents").mkdir(parents=True, exist_ok=True)
     ingestion_status[req.tenant_id] = {"status": "idle", "logs": ["Tenant created."], "progress": 0, "summary": None}
+    _sync_ingestion_to_redis(req.tenant_id)
     return {"status": "success", "tenant_id": req.tenant_id, "api_key": api_key}
 
 
@@ -593,9 +677,9 @@ def update_tenant(tenant_id: str, req: TenantUpdateRequest, _admin=Depends(requi
     updated_data = req.model_dump()
     updated_data["tenant_id"] = tenant_id
     updated_data["api_key"] = tenant["api_key"]
-    if req.llm_api_key == "***":
+    if not req.llm_api_key or req.llm_api_key == "***":
         updated_data["llm_api_key"] = tenant["llm_api_key"]
-    if req.embedding_api_key == "***":
+    if not req.embedding_api_key or req.embedding_api_key == "***":
         updated_data["embedding_api_key"] = tenant.get("embedding_api_key") or ""
     admin_store.upsert_tenant(updated_data)
     if tenant_id in _engine_cache:
@@ -609,11 +693,18 @@ def delete_tenant(tenant_id: str, _admin=Depends(require_admin)):
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     admin_store.delete_tenant(tenant_id)
+    db_path = _tenant_db_path(tenant_id, tenant)
+    if db_path != (TENANTS_DIR / tenant_id / "rag.db") and db_path.exists():
+        try:
+            db_path.unlink()
+        except OSError:
+            pass
     tenant_dir = TENANTS_DIR / tenant_id
     if tenant_dir.exists():
         shutil.rmtree(tenant_dir)
     ingestion_status.pop(tenant_id, None)
     _engine_cache.pop(tenant_id, None)
+    redis_client.sdelete(f"ingestion:{tenant_id}")
     return {"status": "success"}
 
 
@@ -630,11 +721,10 @@ def list_tenant_documents(tenant_id: str, _admin=Depends(require_admin)):
     # Read all ingested docs from DB for fast lookup
     ingested_map = {}
     doc_source_map = {}
-    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
-            with sqlite3.connect(db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with _tenant_connection(db_path) as conn:
                 rows = conn.execute("SELECT document_id, name, source, source_url, ingested_at FROM documents").fetchall()
                 for r in rows:
                     ingested_map[r["document_id"]] = r["name"]
@@ -651,7 +741,7 @@ def list_tenant_documents(tenant_id: str, _admin=Depends(require_admin)):
             # Count chunks if ingested
             if ingested and db_path.exists():
                 try:
-                    with sqlite3.connect(db_path) as conn:
+                    with _tenant_connection(db_path) as conn:
                         row_chunks = conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)).fetchone()
                         chunk_count = row_chunks[0] if row_chunks else 0
                 except Exception:
@@ -672,11 +762,11 @@ def get_document_chunks(tenant_id: str, filename: str, _admin=Depends(require_ad
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    db_path = _tenant_db_path(tenant_id, tenant)
     if not db_path.exists():
         return []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with _tenant_connection(db_path) as conn:
             conn.row_factory = sqlite3.Row
             doc = conn.execute("SELECT document_id FROM documents WHERE name = ? AND tenant_id = ?", (filename, tenant_id)).fetchone()
             if not doc:
@@ -718,10 +808,10 @@ def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require
     if file_path.exists():
         file_path.unlink()
     doc_id = _document_id(file_path)
-    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
-            with sqlite3.connect(db_path) as conn:
+            with _tenant_connection(db_path) as conn:
                 conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
                 conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
                 conn.commit()
@@ -740,12 +830,13 @@ def trigger_ingestion(tenant_id: str, background_tasks: BackgroundTasks, apply_o
     if tenant_id in ingestion_status and ingestion_status[tenant_id]["status"] == "running":
         return {"status": "already_running"}
     ingestion_status[tenant_id] = {"status": "running", "logs": ["[System] Initiating ingestion."], "progress": 0, "summary": None}
+    redis_client.sset_json(f"ingestion:{tenant_id}", ingestion_status[tenant_id], ttl=3600)
     background_tasks.add_task(_run_ingestion_background, tenant_id, tenant, apply_ocr)
     already_ingested = 0
-    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
-            with sqlite3.connect(str(db_path)) as conn:
+            with _tenant_connection(db_path) as conn:
                 already_ingested = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
         except Exception:
             pass
@@ -757,7 +848,14 @@ def get_ingestion_status(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    status = ingestion_status.get(tenant_id, {"status": "idle", "logs": ["No ingestion tasks run yet."], "progress": 0, "summary": None})
+    status = ingestion_status.get(tenant_id)
+    if status is None and redis_client.enabled:
+        raw = redis_client.sget_json(f"ingestion:{tenant_id}")
+        if raw:
+            ingestion_status[tenant_id] = raw
+            status = raw
+    if status is None:
+        status = {"status": "idle", "logs": ["No ingestion tasks run yet."], "progress": 0, "summary": None}
     return status
 
 
@@ -765,7 +863,7 @@ def get_ingestion_status(tenant_id: str, _admin=Depends(require_admin)):
 
 @app.post("/api/v1/tenants/{tenant_id}/chat")
 async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str = Header("127.0.0.1"), _admin=Depends(require_admin)):
-    _check_rate_limit(x_forwarded_for, 60)
+    await _check_rate_limit(x_forwarded_for, 60)
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -803,7 +901,7 @@ async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str
 
 @app.post("/api/v1/tenants/{tenant_id}/chat/stream")
 async def chat_playground_stream(tenant_id: str, req: ChatRequest, x_forwarded_for: str = Header("127.0.0.1"), _admin=Depends(require_admin)):
-    _check_rate_limit(x_forwarded_for, 30)
+    await _check_rate_limit(x_forwarded_for, 30)
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -831,8 +929,8 @@ async def chat_playground_stream(tenant_id: str, req: ChatRequest, x_forwarded_f
 
 
 @app.post("/api/v1/chat")
-def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key"), x_forwarded_for: str = Header("127.0.0.1")):
-    _check_rate_limit(x_forwarded_for, 60)
+async def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key"), x_forwarded_for: str = Header("127.0.0.1")):
+    await _check_rate_limit(x_forwarded_for, 60)
     tenant = admin_store.get_tenant_by_api_key(x_api_key)
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key.")
@@ -854,7 +952,7 @@ def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API
 
 @app.post("/api/v1/chat/stream")
 async def chat_integration_stream(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key"), x_forwarded_for: str = Header("127.0.0.1")):
-    _check_rate_limit(x_forwarded_for, 30)
+    await _check_rate_limit(x_forwarded_for, 30)
     tenant = admin_store.get_tenant_by_api_key(x_api_key)
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key.")
@@ -904,10 +1002,10 @@ def client_list_documents(tenant=Depends(_resolve_client_tenant)):
     docs_dir = TENANTS_DIR / tenant_id / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     ingested_map = {}
-    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
-            with sqlite3.connect(db_path) as conn:
+            with _tenant_connection(db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute("SELECT document_id, name, source, source_url, ingested_at FROM documents").fetchall()
                 for r in rows:
@@ -922,7 +1020,7 @@ def client_list_documents(tenant=Depends(_resolve_client_tenant)):
             chunk_count = 0
             if ingested and db_path.exists():
                 try:
-                    with sqlite3.connect(db_path) as conn:
+                    with _tenant_connection(db_path) as conn:
                         row_chunks = conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)).fetchone()
                         chunk_count = row_chunks[0] if row_chunks else 0
                 except Exception:
@@ -1004,6 +1102,7 @@ def client_trigger_ingestion(background_tasks: BackgroundTasks, apply_ocr: bool 
     if tenant_id in ingestion_status and ingestion_status[tenant_id]["status"] == "running":
         return {"status": "already_running"}
     ingestion_status[tenant_id] = {"status": "running", "logs": ["[System] Initiating ingestion."], "progress": 0, "summary": None}
+    _sync_ingestion_to_redis(tenant_id)
     background_tasks.add_task(_run_ingestion_background, tenant_id, tenant, apply_ocr)
     return {"status": "started", "apply_ocr": apply_ocr}
 
@@ -1026,20 +1125,19 @@ async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_t
         docs_dir = TENANTS_DIR / tenant_id / "documents"
         docs_dir.mkdir(parents=True, exist_ok=True)
         saved_files = []
-        if job.crawl and job.results:
+        if job.results:
             for result in job.results:
-                if result.is_success:
-                    content = f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
+                text = result.get("text", "")
+                meta = result.get("metadata", {})
+                if text:
+                    title = meta.get("title", "Untitled")
+                    source_url = meta.get("url", req.url)
+                    content = f"# {title}\n\nSource: {source_url}\n\n{text}"
                     safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
                     (docs_dir / safe_name).write_text(content, encoding="utf-8")
-                    saved_files.append({"url": result.url, "file": safe_name, "title": result.title})
-        elif job.result and job.result.is_success:
-            content = f"# {job.result.title}\n\nSource: {job.result.url}\n\n{job.result.content}"
-            safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
-            (docs_dir / safe_name).write_text(content, encoding="utf-8")
-            saved_files.append({"url": job.result.url, "file": safe_name, "title": job.result.title})
+                    saved_files.append({"url": source_url, "file": safe_name, "title": title})
         admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
-        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error, "processing_time_ms": job.processing_time_ms}
+        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scraping error: {e}")
 
@@ -1051,10 +1149,10 @@ def client_delete_document(filename: str, tenant=Depends(_resolve_client_tenant)
         raise HTTPException(status_code=404, detail="File not found")
     file_path.unlink()
     doc_id = _document_id(file_path)
-    db_path = TENANTS_DIR / tenant_id / "rag.db"
+    db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
-            with sqlite3.connect(db_path) as conn:
+            with _tenant_connection(db_path) as conn:
                 conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
                 conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
                 conn.commit()
@@ -1074,7 +1172,7 @@ def _run_isolation_check():
         tid = t["tenant_id"]
         t_dir = TENANTS_DIR / tid
         docs_dir = t_dir / "documents"
-        db_path = t_dir / "rag.db"
+        db_path = _tenant_db_path(tid, t)
         docs_exist = docs_dir.exists()
         db_exists = db_path.exists()
         db_clean = True
@@ -1082,7 +1180,7 @@ def _run_isolation_check():
         chunk_count = 0
         if db_exists:
             try:
-                with sqlite3.connect(db_path) as conn:
+                with _tenant_connection(db_path) as conn:
                     conn.row_factory = sqlite3.Row
                     foreign = conn.execute("SELECT COUNT(*) FROM chunks WHERE tenant_id != ?", (tid,)).fetchone()[0]
                     if foreign > 0:
@@ -1116,6 +1214,7 @@ def trigger_cloud_sync(tenant_id: str, req: CloudSyncRequest, background_tasks: 
         if req.auto_ingest and res.get("count", 0) > 0:
             if tenant_id not in ingestion_status or ingestion_status[tenant_id]["status"] != "running":
                 ingestion_status[tenant_id] = {"status": "running", "logs": [f"[Cloud Sync] Auto-ingesting {res['count']} document(s)..."], "progress": 0, "summary": None}
+                _sync_ingestion_to_redis(tenant_id)
                 background_tasks.add_task(_run_ingestion_background, tenant_id, tenant)
         return res
     except Exception as exc:
@@ -1139,20 +1238,19 @@ async def scrape_url(tenant_id: str, req: ScrapeRequest, _admin=Depends(require_
         docs_dir = TENANTS_DIR / tenant_id / "documents"
         docs_dir.mkdir(parents=True, exist_ok=True)
         saved_files = []
-        if job.crawl and job.results:
+        if job.results:
             for result in job.results:
-                if result.is_success:
-                    content = f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
+                text = result.get("text", "")
+                meta = result.get("metadata", {})
+                if text:
+                    title = meta.get("title", "Untitled")
+                    source_url = meta.get("url", req.url)
+                    content = f"# {title}\n\nSource: {source_url}\n\n{text}"
                     safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
                     (docs_dir / safe_name).write_text(content, encoding="utf-8")
-                    saved_files.append({"url": result.url, "file": safe_name, "title": result.title})
-        elif job.result and job.result.is_success:
-            content = f"# {job.result.title}\n\nSource: {job.result.url}\n\n{job.result.content}"
-            safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
-            (docs_dir / safe_name).write_text(content, encoding="utf-8")
-            saved_files.append({"url": job.result.url, "file": safe_name, "title": job.result.title})
+                    saved_files.append({"url": source_url, "file": safe_name, "title": title})
         admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
-        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error, "processing_time_ms": job.processing_time_ms}
+        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scraping error: {e}")
 
@@ -1481,4 +1579,24 @@ def execute_terminal_command(req: TerminalExecRequest, _admin=Depends(require_ad
         return {"output": f"Q: {qtext}\nA: {ans.text}\nConfidence: {ans.validation.confidence.upper()}", "type": "query_res"}
 
     return {"output": f"Unknown command '{cmd}'. Type '/help' for commands.", "type": "error"}
- 
+
+
+# ── SPA fallback: serve index.html for unmatched browser routes ──────────
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+class SPAFallbackMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if response.status_code == 404 and request.method == "GET":
+            accept = request.headers.get("accept", "")
+            if "text/html" in accept and not request.url.path.startswith("/api/"):
+                html = _get_spa_index()
+                if html:
+                    resp = HTMLResponse(content=html)
+                    resp.headers["Cache-Control"] = "no-store"
+                    return resp
+        return response
+
+app.add_middleware(SPAFallbackMiddleware)

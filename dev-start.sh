@@ -24,11 +24,11 @@ open_term() {
 }
 
 # 3. Directory sanity checks — fail fast with a clear message instead of a silent cd error
-[ -d "$ROOT/rbs-rag-node" ] || { echo "Missing: $ROOT/rbs-rag-node"; exit 1; }
+[ -d "$ROOT/.venv" ] || { echo "Missing: $ROOT/.venv (create it with: python -m venv .venv && .venv/bin/pip install -e .)"; exit 1; }
 [ -d "$ROOT/chic-interface-design" ] || { echo "Missing: $ROOT/chic-interface-design"; exit 1; }
 
-# 4. Backend — new terminal window
-open_term "RAG Backend" "cd '$ROOT/rbs-rag-node' && SCRAPER_SERVICE_URL=http://localhost:8002 npm run dev"
+# 4. Backend (Python) — new terminal window
+open_term "RAG Backend" "cd '$ROOT' && set -a && . ./.env && set +a && RAG_ROOT_DIR='$ROOT/.rbs_rag' PYTHONPATH='$ROOT/src' .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
 
 # 5. Frontend — new terminal window
 open_term "RAG Frontend" "cd '$ROOT/chic-interface-design' && npm run dev"

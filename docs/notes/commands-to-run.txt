@@ -1,12 +1,11 @@
-cd /home/tenbitsolutions/Documents/Tenbit/3-ongoing-projects/RAG/rbs-rag-node
-./scripts/sync-frontend.sh
+# Run (Python backend on :3001, serves the SPA from chic-interface-design/dist-spa)
 
+cd /home/tenbitsolutions/Documents/Tenbit/3-ongoing-projects/RAG
+set -a; . ./.env; set +a
+PYTHONPATH=src .venv/bin/uvicorn rbs_rag.web.server:app --host 0.0.0.0 --port 3001 --reload
 
-cd /home/tenbitsolutions/Documents/Tenbit/3-ongoing-projects/RAG/rbs-rag-node
-bash scripts/start-dev.sh
+# Frontend dev server (optional, proxies /api -> http://127.0.0.1:3001)
+cd chic-interface-design && npm run dev
 
-
-tail -f .logs/server.log
-tail -f .logs/frontend.log
-
-tail -f .logs/server.log
+# Build the SPA (Node >= 22)
+cd chic-interface-design && npm run build
