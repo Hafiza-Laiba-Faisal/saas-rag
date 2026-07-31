@@ -72,6 +72,44 @@ def _tenant_connection(db_path: Path):
     return conn
 
 
+def _list_documents_from_db(db_path: Path, tenant_id: str) -> list[dict]:
+    """List a tenant's documents straight from its rag.db (DB is the source of truth).
+
+    Shapes rows to what the admin/client documents panels already expect:
+    ``name``, ``source``, ``source_url``, ``ingested_at``, ``chunks``,
+    ``ingested``, ``size_bytes``, ``extension``.
+    """
+    if not db_path.exists():
+        return []
+    try:
+        with _tenant_connection(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT d.document_id, d.name, d.source, d.source_url, d.ingested_at,
+                       (SELECT COUNT(*) FROM chunks c WHERE c.document_id = d.document_id) AS chunk_count
+                FROM documents d
+                WHERE d.tenant_id = ?
+                ORDER BY d.ingested_at DESC
+                """,
+                (tenant_id,),
+            ).fetchall()
+    except Exception:
+        return []
+    return [
+        {
+            "name": r["name"],
+            "source": r["source"] or "upload",
+            "source_url": r["source_url"],
+            "ingested_at": r["ingested_at"],
+            "chunks": r["chunk_count"] or 0,
+            "ingested": True,
+            "size_bytes": None,
+            "extension": Path(r["name"]).suffix.lstrip("."),
+        }
+        for r in rows
+    ]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("TenBit RAG server starting")
@@ -626,17 +664,19 @@ def get_tenants(_admin=Depends(require_admin)):
         t["llm_api_key"] = "***"
         if "embedding_api_key" in t and t["embedding_api_key"]:
             t["embedding_api_key"] = "***"
-        docs_dir = TENANTS_DIR / t["tenant_id"] / "documents"
-        t["doc_count"] = len([x for x in docs_dir.glob("*") if x.is_file()]) if docs_dir.exists() else 0
-        chunk_count = 0
         db_path = _tenant_db_path(t["tenant_id"], t)
+        doc_count = 0
+        chunk_count = 0
         if db_path.exists():
             try:
                 with _tenant_connection(db_path) as conn:
+                    row = conn.execute("SELECT COUNT(*) FROM documents").fetchone()
+                    doc_count = row[0] if row else 0
                     row = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
                     chunk_count = row[0] if row else 0
             except Exception:
                 pass
+        t["doc_count"] = doc_count
         t["chunk_count"] = chunk_count
     return tenants
 
@@ -715,46 +755,8 @@ def list_tenant_documents(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    docs_dir = TENANTS_DIR / tenant_id / "documents"
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    files_list = []
-    # Read all ingested docs from DB for fast lookup
-    ingested_map = {}
-    doc_source_map = {}
     db_path = _tenant_db_path(tenant_id, tenant)
-    if db_path.exists():
-        try:
-            with _tenant_connection(db_path) as conn:
-                rows = conn.execute("SELECT document_id, name, source, source_url, ingested_at FROM documents").fetchall()
-                for r in rows:
-                    ingested_map[r["document_id"]] = r["name"]
-                    doc_source_map[r["document_id"]] = {"source": r["source"], "source_url": r["source_url"], "ingested_at": r["ingested_at"]}
-        except Exception:
-            pass
-
-    for item in docs_dir.glob("*"):
-        if item.is_file():
-            doc_id = _document_id(item)
-            ingested = doc_id in ingested_map
-            chunk_count = 0
-            source_info = doc_source_map.get(doc_id, {"source": "upload", "source_url": None})
-            # Count chunks if ingested
-            if ingested and db_path.exists():
-                try:
-                    with _tenant_connection(db_path) as conn:
-                        row_chunks = conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)).fetchone()
-                        chunk_count = row_chunks[0] if row_chunks else 0
-                except Exception:
-                    pass
-            files_list.append({
-                "name": item.name, "size_bytes": item.stat().st_size,
-                "ingested": ingested, "chunks": chunk_count,
-                "extension": item.suffix.lstrip("."),
-                "source": source_info["source"],
-                "source_url": source_info["source_url"],
-                "ingested_at": source_info.get("ingested_at"),
-            })
-    return files_list
+    return _list_documents_from_db(db_path, tenant_id)
 
 
 @app.get("/api/v1/tenants/{tenant_id}/documents/{filename}/chunks")
@@ -807,11 +809,15 @@ def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require
     file_path = TENANTS_DIR / tenant_id / "documents" / filename
     if file_path.exists():
         file_path.unlink()
-    doc_id = _document_id(file_path)
     db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
             with _tenant_connection(db_path) as conn:
+                row = conn.execute(
+                    "SELECT document_id FROM documents WHERE tenant_id = ? AND name = ?",
+                    (tenant_id, filename),
+                ).fetchone()
+                doc_id = row["document_id"] if row else _document_id(file_path)
                 conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
                 conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
                 conn.commit()
@@ -999,38 +1005,8 @@ def _resolve_client_tenant(x_api_key: str | None = Header(None, alias="X-API-Key
 @app.get("/api/v1/client/documents")
 def client_list_documents(tenant=Depends(_resolve_client_tenant)):
     tenant_id = tenant["tenant_id"]
-    docs_dir = TENANTS_DIR / tenant_id / "documents"
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    ingested_map = {}
     db_path = _tenant_db_path(tenant_id, tenant)
-    if db_path.exists():
-        try:
-            with _tenant_connection(db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute("SELECT document_id, name, source, source_url, ingested_at FROM documents").fetchall()
-                for r in rows:
-                    ingested_map[r["document_id"]] = r["name"]
-        except Exception:
-            pass
-    files_list = []
-    for item in docs_dir.glob("*"):
-        if item.is_file():
-            doc_id = _document_id(item)
-            ingested = doc_id in ingested_map
-            chunk_count = 0
-            if ingested and db_path.exists():
-                try:
-                    with _tenant_connection(db_path) as conn:
-                        row_chunks = conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id = ?", (doc_id,)).fetchone()
-                        chunk_count = row_chunks[0] if row_chunks else 0
-                except Exception:
-                    pass
-            files_list.append({
-                "name": item.name, "size_bytes": item.stat().st_size,
-                "ingested": ingested, "chunks": chunk_count,
-                "extension": item.suffix.lstrip("."),
-            })
-    return files_list
+    return _list_documents_from_db(db_path, tenant_id)
 
 @app.get("/api/v1/tenants/{tenant_id}/documents/{filename}")
 def admin_get_document(tenant_id: str, filename: str, _admin=Depends(require_admin)):
@@ -1145,19 +1121,26 @@ async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_t
 def client_delete_document(filename: str, tenant=Depends(_resolve_client_tenant)):
     tenant_id = tenant["tenant_id"]
     file_path = TENANTS_DIR / tenant_id / "documents" / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    file_path.unlink()
-    doc_id = _document_id(file_path)
+    if file_path.exists():
+        file_path.unlink()
     db_path = _tenant_db_path(tenant_id, tenant)
+    deleted = False
     if db_path.exists():
         try:
             with _tenant_connection(db_path) as conn:
+                row = conn.execute(
+                    "SELECT document_id FROM documents WHERE tenant_id = ? AND name = ?",
+                    (tenant_id, filename),
+                ).fetchone()
+                doc_id = row["document_id"] if row else _document_id(file_path)
                 conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
-                conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
+                cur = conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
+                deleted = cur.rowcount > 0
                 conn.commit()
         except Exception:
             pass
+    if not deleted and not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
     return {"status": "deleted", "filename": filename}
 
 
@@ -1170,10 +1153,7 @@ def _run_isolation_check():
     all_clean = True
     for t in tenants:
         tid = t["tenant_id"]
-        t_dir = TENANTS_DIR / tid
-        docs_dir = t_dir / "documents"
         db_path = _tenant_db_path(tid, t)
-        docs_exist = docs_dir.exists()
         db_exists = db_path.exists()
         db_clean = True
         doc_count = 0
@@ -1190,7 +1170,7 @@ def _run_isolation_check():
                     chunk_count = conn.execute("SELECT COUNT(*) FROM chunks WHERE tenant_id = ?", (tid,)).fetchone()[0]
             except Exception:
                 db_clean = False
-        is_isolated = docs_exist and db_clean
+        is_isolated = db_exists and db_clean
         if is_isolated:
             total_isolated += 1
         results.append({"tenant_id": tid, "name": t["name"], "status": t["status"], "isolated": is_isolated, "doc_count": doc_count, "chunk_count": chunk_count})
