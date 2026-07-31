@@ -66,6 +66,9 @@ class ScraperService:
     def health(self) -> dict:
         return self._call_api("GET", "/")
 
+    def get_logs(self, lines: int = 50) -> dict:
+        return self._call_api("GET", f"/logs?lines={lines}")
+
     def get_platforms(self) -> list:
         data = self._call_api("GET", "/platforms")
         return data.get("platforms", [])
@@ -191,7 +194,7 @@ def scrape_and_ingest(
     High-level helper: scrape a URL via the scraper service,
     save as a document with rich metadata, and auto-ingest into the RAG pipeline.
     """
-    client = ScraperService(config)
+    client = ScraperService()
 
     if scrape_type == "smart":
         result = client.crawl_smart(url, timeout=kwargs.get("timeout", 30))
@@ -222,7 +225,8 @@ def scrape_and_ingest(
         scraped_meta["quality_score"] = data["quality_score"]
         scraped_meta["quality_level"] = data.get("quality_level", "unknown")
 
-    tenant_dir = Path(config.rag_root_dir) / "tenants" / tenant_id / "documents"
+    rag_root_dir = store.path.parent.parent.parent
+    tenant_dir = rag_root_dir / "tenants" / tenant_id / "documents"
     tenant_dir.mkdir(parents=True, exist_ok=True)
 
     site_slug = url.replace("https://", "").replace("http://", "").split("/")[0]
@@ -256,7 +260,7 @@ word_count: {scraped_meta['word_count']}
         page_count=None,
     )
 
-    engine = RagEngine(config, Path(config.rag_root_dir))
+    engine = RagEngine(config, rag_root_dir)
     chunker = engine.chunker
     embedding_provider = engine.embedding_provider
 
@@ -268,7 +272,7 @@ word_count: {scraped_meta['word_count']}
     store.upsert_document(doc, tenant_id, knowledge_base_id, source="scrape", source_url=url)
     store.upsert_chunks(chunks)
 
-    if engine.vector_store and engine.vector_store.initialized:
+    if engine.vector_store and engine.vector_store.is_initialized:
         try:
             engine.vector_store.upsert_chunks("rag_chunks", chunks)
         except Exception:

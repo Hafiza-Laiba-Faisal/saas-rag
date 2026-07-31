@@ -28,7 +28,7 @@ open_term() {
 [ -d "$ROOT/chic-interface-design" ] || { echo "Missing: $ROOT/chic-interface-design"; exit 1; }
 
 # 4. Backend (Python) — new terminal window
-open_term "RAG Backend" "cd '$ROOT' && set -a && . ./.env && set +a && RAG_ROOT_DIR='$ROOT/.rbs_rag' PYTHONPATH='$ROOT/src' .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
+open_term "RAG Backend" "cd '$ROOT' && set -a && . ./.env && set +a && RAG_ROOT_DIR='$ROOT/.rbs_rag' QDRANT_HOST=localhost RAG_REDIS_HOST=localhost SCRAPER_SERVICE_URL=http://localhost:8002 PYTHONPATH='$ROOT/src' .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
 
 # 5. Frontend — new terminal window
 open_term "RAG Frontend" "cd '$ROOT/chic-interface-design' && npm run dev"

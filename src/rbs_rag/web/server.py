@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query, Response
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query, Response, Body
+from datetime import datetime
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +26,7 @@ from pydantic import BaseModel, Field
 from rbs_rag.config import AppConfig, StorageConfig, EmbeddingConfig, RetrievalConfig, ChunkingConfig, QdrantConfig, RateLimitConfig, SecurityConfig, ObservabilityConfig
 from rbs_rag.llm import LLMSettings
 from rbs_rag.engine import RagEngine
+from rbs_rag.store import SQLiteRagStore
 from rbs_rag.document_loaders import _document_id, load_document
 from rbs_rag.cloud_sync import sync_cloud_documents
 from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
@@ -41,6 +43,7 @@ log = logging.getLogger(__name__)
 ROOT_DIR = Path(os.getenv("RAG_ROOT_DIR", ".rbs_rag")).resolve()
 ADMIN_DB_PATH = ROOT_DIR / "admin.db"
 TENANTS_DIR = ROOT_DIR / "tenants"
+CRAWL_OUTPUT_DIR = ROOT_DIR / "crawl-output"
 
 admin_store = AdminStore(ADMIN_DB_PATH)
 ingestion_status: dict[str, dict[str, Any]] = {}
@@ -447,18 +450,6 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
             if f.is_file():
                 file_ids.add(_document_id(f))
 
-        db_path = Path(config.storage.path)
-        if db_path.exists():
-            with _tenant_connection(db_path) as conn:
-                db_docs = conn.execute("SELECT document_id, name, path FROM documents").fetchall()
-                for doc in db_docs:
-                    doc_id = doc["document_id"]
-                    if doc_id not in file_ids:
-                        _log_to_ingestion(tenant_id, f"Cleaning up removed document '{doc['name']}'", 20)
-                        conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
-                        conn.execute("DELETE FROM documents WHERE document_id = ?", (doc_id,))
-                conn.commit()
-
         # Build set of already-ingested document IDs to skip duplicates
         already_ingested_ids = set()
         db_path = Path(config.storage.path)
@@ -709,6 +700,43 @@ def get_tenant_details(tenant_id: str, _admin=Depends(require_admin)):
     return tenant
 
 
+@app.get("/api/v1/tenants/{tenant_id}/config")
+def get_tenant_config(tenant_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    def _mask(v):
+        return "***" if v else None
+    return {
+        "name": tenant["name"],
+        "status": tenant["status"],
+        "subscriptionTier": tenant.get("subscription_tier", "basic"),
+        "monthlyFee": tenant.get("monthly_fee", 299.0),
+        "llmProvider": tenant["llm_provider"],
+        "llmModel": tenant["llm_model"],
+        "llmApiKey": _mask(tenant.get("llm_api_key")),
+        "llmBaseUrl": tenant.get("llm_base_url"),
+        "embeddingProvider": tenant["embedding_provider"],
+        "embeddingModel": tenant["embedding_model"],
+        "embeddingDimensions": tenant["embedding_dimensions"],
+        "embeddingBaseUrl": tenant.get("embedding_base_url"),
+        "embeddingApiKey": _mask(tenant.get("embedding_api_key")),
+        "retrievalTopK": tenant["retrieval_top_k"],
+        "retrievalRerankTopK": tenant["retrieval_rerank_top_k"],
+        "retrievalFinalContextK": tenant["retrieval_final_context_k"],
+        "retrievalDenseWeight": tenant["retrieval_dense_weight"],
+        "retrievalSparseWeight": tenant["retrieval_sparse_weight"],
+        "chunkingMaxTokens": tenant["chunking_max_tokens"],
+        "chunkingOverlapTokens": tenant["chunking_overlap_tokens"],
+        "chunkingSemantic": bool(tenant.get("chunking_semantic", 0)),
+        "chunkingSemanticThreshold": tenant.get("chunking_semantic_threshold", 0.75),
+        "rerankerType": tenant.get("reranker_type", "local"),
+        "sessionMemoryLimit": tenant.get("session_memory_limit", 8),
+        "chatRetentionDays": tenant.get("chat_retention_days", 30),
+        "systemPrompt": tenant.get("system_prompt"),
+    }
+
+
 @app.put("/api/v1/tenants/{tenant_id}")
 def update_tenant(tenant_id: str, req: TenantUpdateRequest, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
@@ -717,6 +745,9 @@ def update_tenant(tenant_id: str, req: TenantUpdateRequest, _admin=Depends(requi
     updated_data = req.model_dump()
     updated_data["tenant_id"] = tenant_id
     updated_data["api_key"] = tenant["api_key"]
+    updated_data["db_path"] = tenant.get("db_path") or f"tenants/{tenant_id}/rag.db"
+    if tenant.get("created_at"):
+        updated_data["created_at"] = tenant["created_at"]
     if not req.llm_api_key or req.llm_api_key == "***":
         updated_data["llm_api_key"] = tenant["llm_api_key"]
     if not req.embedding_api_key or req.embedding_api_key == "***":
@@ -1008,6 +1039,23 @@ def client_list_documents(tenant=Depends(_resolve_client_tenant)):
     db_path = _tenant_db_path(tenant_id, tenant)
     return _list_documents_from_db(db_path, tenant_id)
 
+
+@app.get("/api/v1/client/documents/{filename}/chunks")
+def client_get_document_chunks(filename: str, tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    db_path = _tenant_db_path(tenant_id, tenant)
+    if not db_path.exists():
+        return []
+    try:
+        with _tenant_connection(db_path) as conn:
+            doc = conn.execute("SELECT document_id FROM documents WHERE name = ? AND tenant_id = ?", (filename, tenant_id)).fetchone()
+            if not doc:
+                return []
+            rows = conn.execute("SELECT chunk_id, ordinal, text, metadata_json FROM chunks WHERE document_id = ? ORDER BY ordinal", (doc["document_id"],)).fetchall()
+            return [{"chunk_id": r["chunk_id"], "ordinal": r["ordinal"], "text": r["text"], "metadata": json.loads(r["metadata_json"])} for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/tenants/{tenant_id}/documents/{filename}")
 def admin_get_document(tenant_id: str, filename: str, _admin=Depends(require_admin)):
     file_path = TENANTS_DIR / tenant_id / "documents" / filename
@@ -1112,6 +1160,11 @@ async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_t
                     safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
                     (docs_dir / safe_name).write_text(content, encoding="utf-8")
                     saved_files.append({"url": source_url, "file": safe_name, "title": title})
+            _save_crawl_output(
+                site=_crawl_site_slug(req.url),
+                metadata={"strategy": "crawl" if req.crawl else "single", "is_wordpress": False, "languages_found": [], "source_url": req.url},
+                pages=[f"# {r.get('metadata', {}).get('title', 'Untitled')}\n\nSource: {r.get('metadata', {}).get('url', req.url)}\n\n{r.get('text', '')}" for r in job.results if r.get("text")],
+            )
         admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
         return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error}
     except Exception as e:
@@ -1229,6 +1282,11 @@ async def scrape_url(tenant_id: str, req: ScrapeRequest, _admin=Depends(require_
                     safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
                     (docs_dir / safe_name).write_text(content, encoding="utf-8")
                     saved_files.append({"url": source_url, "file": safe_name, "title": title})
+            _save_crawl_output(
+                site=_crawl_site_slug(req.url),
+                metadata={"strategy": "crawl" if req.crawl else "single", "is_wordpress": False, "languages_found": [], "source_url": req.url},
+                pages=[f"# {r.get('metadata', {}).get('title', 'Untitled')}\n\nSource: {r.get('metadata', {}).get('url', req.url)}\n\n{r.get('text', '')}" for r in job.results if r.get("text")],
+            )
         admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
         return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error}
     except Exception as e:
@@ -1308,6 +1366,14 @@ async def enhanced_scrape(req: EnhancedScrapeRequest, tenant=Depends(_resolve_cl
     else:
         result = scraper.crawl_single(req.url, format=req.format)
 
+    if result and result.get("success") and req.scrape_type in ("smart", "single"):
+        data = result.get("data", {})
+        _save_crawl_output(
+            site=_crawl_site_slug(req.url),
+            metadata={"strategy": req.scrape_type, "is_wordpress": False, "languages_found": [], "source_url": req.url, "quality_score": data.get("quality_score")},
+            pages=[data.get("markdown") or data.get("text") or ""],
+        )
+
     return result
 
 
@@ -1338,6 +1404,14 @@ async def tenant_enhanced_scrape(tenant_id: str, req: EnhancedScrapeRequest, _ad
     else:
         result = scraper.crawl_single(req.url, format=req.format)
 
+    if result and result.get("success") and req.scrape_type in ("smart", "single"):
+        data = result.get("data", {})
+        _save_crawl_output(
+            site=_crawl_site_slug(req.url),
+            metadata={"strategy": req.scrape_type, "is_wordpress": False, "languages_found": [], "source_url": req.url, "quality_score": data.get("quality_score")},
+            pages=[data.get("markdown") or data.get("text") or ""],
+        )
+
     return result
 
 
@@ -1363,6 +1437,133 @@ async def get_scrape_platforms():
 async def scraper_health():
     scraper = _get_scraper_service()
     return scraper.health()
+
+
+@app.get("/api/v1/scrape/logs")
+async def scraper_logs(lines: int = Query(default=50, le=500), _admin=Depends(require_admin)):
+    scraper = _get_scraper_service()
+    data = scraper.get_logs(lines)
+    return {"logs": data.get("logs", [])}
+
+
+@app.get("/api/v1/tenants/{tenant_id}/scrape/recursive/{job_id}/status")
+async def admin_recursive_job_status(tenant_id: str, job_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    scraper = _get_scraper_service()
+    return scraper.get_recursive_status(job_id)
+
+
+def _crawl_site_slug(url: str) -> str:
+    try:
+        return urlparse(url).netloc or url.replace("https://", "").replace("http://", "").split("/")[0]
+    except Exception:
+        return url.replace("https://", "").replace("http://", "").split("/")[0]
+
+
+def _save_crawl_output(site: str, metadata: dict, pages: list[str], images: list[str] | None = None, pdfs: list[str] | None = None) -> None:
+    """Persist a crawl result to the local crawl-output catalog (site folders)."""
+    try:
+        site_dir = CRAWL_OUTPUT_DIR / site
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "metadata.json").write_text(
+            json.dumps({"site": site, **metadata, "crawled_at": metadata.get("crawled_at") or datetime.utcnow().isoformat()}),
+            encoding="utf-8",
+        )
+        for idx, page in enumerate(pages):
+            page_dir = site_dir / "pages"
+            page_dir.mkdir(parents=True, exist_ok=True)
+            (page_dir / f"{idx + 1:04d}.md").write_text(page, encoding="utf-8")
+        for kind in ("images", "pdfs"):
+            items = {"images": images, "pdfs": pdfs}.get(kind) or []
+            if items:
+                kind_dir = site_dir / kind
+                kind_dir.mkdir(parents=True, exist_ok=True)
+                for item in items:
+                    name = Path(str(item).split("?")[0]).name or f"{uuid.uuid4().hex}"
+                    if name and not (kind_dir / name).exists():
+                        (kind_dir / name).write_text(str(item), encoding="utf-8")
+    except Exception:
+        log.exception("Failed to persist crawl output for %s", site)
+
+
+@app.get("/api/v1/crawl-output")
+def list_crawl_output(_admin=Depends(require_admin)):
+    sites = []
+    if CRAWL_OUTPUT_DIR.exists():
+        for site_dir in sorted(CRAWL_OUTPUT_DIR.iterdir()):
+            if not site_dir.is_dir():
+                continue
+            meta = {}
+            meta_path = site_dir / "metadata.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+            pages = list((site_dir / "pages").glob("*")) if (site_dir / "pages").exists() else []
+            images = list((site_dir / "images").glob("*")) if (site_dir / "images").exists() else []
+            pdfs = list((site_dir / "pdfs").glob("*")) if (site_dir / "pdfs").exists() else []
+            sites.append({
+                "site": site_dir.name,
+                "metadata": meta,
+                "hasPages": bool(pages),
+                "hasImages": bool(images),
+                "hasPdfs": bool(pdfs),
+            })
+    return {"sites": sites}
+
+
+@app.get("/api/v1/crawl-output/{site}")
+def get_crawl_output_site(site: str, _admin=Depends(require_admin)):
+    site_dir = CRAWL_OUTPUT_DIR / Path(site).name
+    if not site_dir.exists() or not site_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Crawl output not found")
+    meta = {}
+    meta_path = site_dir / "metadata.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    files = {"pages": [], "images": [], "pdfs": []}
+    for kind in files:
+        kind_dir = site_dir / kind
+        if kind_dir.exists():
+            files[kind] = sorted(p.name for p in kind_dir.iterdir() if p.is_file())
+    return {"site": site_dir.name, "metadata": meta, "files": files}
+
+
+@app.post("/api/v1/crawl-output/{site}/import")
+def import_crawl_output(site: str, req: dict = Body(default={}), _admin=Depends(require_admin)):
+    tenant_id = (req or {}).get("tenantId")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenantId is required")
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    site_dir = CRAWL_OUTPUT_DIR / Path(site).name
+    if not site_dir.exists() or not site_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Crawl output not found")
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    imported = 0
+    page_dir = site_dir / "pages"
+    if page_dir.exists():
+        for p in sorted(page_dir.iterdir()):
+            if not p.is_file():
+                continue
+            dest = docs_dir / f"crawl_output_{site}_{p.name}"
+            if not dest.exists():
+                shutil.copyfile(p, dest)
+                imported += 1
+    if imported and tenant_id not in ingestion_status or (tenant_id in ingestion_status and ingestion_status[tenant_id]["status"] != "running"):
+        ingestion_status[tenant_id] = {"status": "running", "logs": [f"[Crawl Import] Importing {imported} page(s) from {site}..."], "progress": 0, "summary": None}
+        _sync_ingestion_to_redis(tenant_id)
+        import threading
+        threading.Thread(target=_run_ingestion_background, args=(tenant_id, tenant), daemon=True).start()
+    return {"success": True, "imported_count": imported, "site": site, "tenant_id": tenant_id}
 
 
 @app.post("/api/v1/tenants/{tenant_id}/scrape/enhanced/ingest")
