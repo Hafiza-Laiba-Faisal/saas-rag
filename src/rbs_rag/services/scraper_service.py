@@ -131,6 +131,15 @@ class ScraperService:
             payload["deepcrawl_api_key"] = self.deepcrawl_api_key
         return self._call_api("POST", "/crawl/smart", payload)
 
+    def crawl_full(self, url: str, max_depth: int = 3, max_pages: int = 50,
+                   download_images: bool = True, download_pdfs: bool = True,
+                   workers: int = 4, respect_robots: bool = True) -> dict:
+        return self._call_api("POST", "/crawl/full", {
+            "url": url, "max_depth": max_depth, "max_pages": max_pages,
+            "download_images": download_images, "download_pdfs": download_pdfs,
+            "workers": workers, "respect_robots": respect_robots,
+        })
+
     def crawl_recursive(self, url: str, max_depth: int = 2, max_pages: int = 50,
                          respect_robots: bool = True, workers: int = 1,
                          allowed_domains: list[str] | None = None) -> dict:
@@ -139,6 +148,19 @@ class ScraperService:
             "respect_robots": respect_robots, "workers": workers,
             "allowed_domains": allowed_domains,
         })
+
+    def get_full_crawl_status(self, job_id: str) -> dict:
+        return self._call_api("GET", f"/crawl/full/status/{job_id}")
+
+    def get_full_crawl_output(self, job_id: str) -> dict:
+        return self._call_api("GET", f"/crawl/full/{job_id}/output")
+
+    def get_full_crawl_report(self, job_id: str) -> dict:
+        return self._call_api("GET", f"/crawl/full/{job_id}/report")
+
+    def list_full_crawl_jobs(self) -> list:
+        data = self._call_api("GET", "/crawl/full/jobs")
+        return data.get("data", {}).get("jobs", [])
 
     def get_recursive_status(self, job_id: str) -> dict:
         return self._call_api("GET", f"/crawl/recursive/status/{job_id}")

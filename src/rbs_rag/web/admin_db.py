@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     chat_retention_days  INTEGER NOT NULL DEFAULT 30,
     system_prompt        TEXT,
     db_path    TEXT NOT NULL,
+    crawl_output_dir TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -103,6 +104,7 @@ class AdminStore:
                 ("chat_retention_days", "ALTER TABLE tenants ADD COLUMN chat_retention_days INTEGER DEFAULT 30"),
                 ("system_prompt", "ALTER TABLE tenants ADD COLUMN system_prompt TEXT"),
                 ("api_key_hash", "ALTER TABLE tenants ADD COLUMN api_key_hash TEXT"),
+                ("crawl_output_dir", "ALTER TABLE tenants ADD COLUMN crawl_output_dir TEXT"),
             ]:
                 _ensure_column(conn, "tenants", col, ddl)
             for col, ddl in [
@@ -226,7 +228,7 @@ class AdminStore:
             "retrieval_dense_weight", "retrieval_sparse_weight",
             "chunking_max_tokens", "chunking_overlap_tokens", "chunking_semantic", "chunking_semantic_threshold",
             "reranker_type", "session_memory_limit", "chat_retention_days", "system_prompt",
-            "db_path", "created_at", "updated_at",
+            "db_path", "crawl_output_dir", "created_at", "updated_at",
         ]
         values = [
             data["tenant_id"], data["name"], data.get("slug", data["tenant_id"]), data["status"], data["subscription_tier"], data["monthly_fee"],
@@ -236,7 +238,7 @@ class AdminStore:
             data["retrieval_dense_weight"], data["retrieval_sparse_weight"],
             data["chunking_max_tokens"], data["chunking_overlap_tokens"], int(data.get("chunking_semantic", 0)), data.get("chunking_semantic_threshold", 0.75),
             data.get("reranker_type", "local"), data.get("session_memory_limit", 8), data.get("chat_retention_days", 30), data.get("system_prompt"),
-            data["db_path"], data.get("created_at", now), now,
+            data["db_path"], data.get("crawl_output_dir"), data.get("created_at", now), now,
         ]
 
         update_cols = [c for c in columns if c not in ("tenant_id", "created_at")]
@@ -252,7 +254,17 @@ class AdminStore:
             )
             conn.commit()
 
+    def set_crawl_output_dir(self, tenant_id: str, crawl_output_dir: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE tenants SET crawl_output_dir = ?, updated_at = ? WHERE tenant_id = ?",
+                (crawl_output_dir, _utcnow(), tenant_id),
+            )
+            conn.commit()
+
     def delete_tenant(self, tenant_id: str) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("DELETE FROM activity_logs WHERE tenant_id = ?", (tenant_id,))
             conn.execute("DELETE FROM tenants WHERE tenant_id = ?", (tenant_id,))
             conn.commit()

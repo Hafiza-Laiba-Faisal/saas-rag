@@ -2300,6 +2300,30 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="duplicateModal" style="display:none;">
+        <div class="modal-box" style="width: 860px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;">
+            <div class="modal-title" id="dupModalTitle">Duplicates detected from scraping</div>
+            <div class="modal-desc">These pages were already scraped before. Choose what to do with each copy before it enters the queue.</div>
+            <div style="flex:1; min-height:0; overflow-y:auto; margin-bottom:16px;">
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                    <thead>
+                        <tr style="text-align:left; color:var(--text-muted); border-bottom:1px solid var(--panel-border);">
+                            <th style="padding:8px 6px;">Page</th>
+                            <th style="padding:8px 6px;">URL</th>
+                            <th style="padding:8px 6px;">Existing file</th>
+                            <th style="padding:8px 6px;">New copy</th>
+                            <th style="padding:8px 6px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dupModalBody"></tbody>
+                </table>
+            </div>
+            <div class="btn-row">
+                <button type="button" class="btn btn-secondary" onclick="closeDuplicateModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Global error logging for debugging
         window.onerror = function(message, source, lineno, colno, error) {
@@ -3155,10 +3179,11 @@
                         <tr>
                             <td style="font-weight:500;">${escapeHtml(d.name)}</td>
                             <td><span style="font-family:'JetBrains Mono'; font-size:12px; color:var(--text-secondary);">${d.extension.toUpperCase()}</span></td>
-                            <td>${(d.size_bytes / 1024).toFixed(1)} KB</td>
+                            <td>${d.size_bytes ? (d.size_bytes / 1024).toFixed(1) + ' KB' : '-'}</td>
                             <td><span class="badge badge-suspended">Awaiting Ingestion</span></td>
                             <td style="text-align:right;">
-                                <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="deleteDocument('${escapeHtml(d.name)}')">🗑️</button>
+                                <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px; margin-right:4px;" onclick="viewDocumentPreview('${escapeHtml(d.name)}')">📄 Review</button>
+                                <button class="btn btn-secondary btn-danger" style="padding:4px 10px; font-size:11px;" onclick="deleteDocument('${escapeHtml(d.name)}')">🗑️</button>
                             </td>
                         </tr>
                     `).join('');
@@ -3177,6 +3202,7 @@
                             <td><span class="doc-source-tag ${d.source}">${d.source}</span></td>
                             <td style="font-size:12px; color:var(--text-muted);">${d.ingested_at ? new Date(d.ingested_at).toLocaleDateString() : '-'}</td>
                             <td style="text-align:right;">
+                                <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px; margin-right:4px;" onclick="viewDocumentPreview('${escapeHtml(d.name)}')">📄 Review</button>
                                 <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px; margin-right:4px;" onclick="viewDocumentChunks('${escapeHtml(d.name)}')">🔍 Chunks</button>
                                 <button class="btn btn-secondary btn-danger" style="padding:4px 10px; font-size:11px;" onclick="deleteDocument('${escapeHtml(d.name)}')">🗑️</button>
                             </td>
@@ -3193,12 +3219,13 @@
                         <tr>
                             <td style="font-weight:500; font-size:12.5px;">${escapeHtml(d.name)}</td>
                             <td style="font-size:12px; color:var(--accent-teal); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                                ${d.source_url ? escapeHtml(d.source_url) : '<span style="color:var(--text-muted)">—</span>'}
+                                ${d.source_url ? `<a href="${escapeHtml(d.source_url)}" target="_blank" style="color:var(--accent-teal); text-decoration:underline;">${escapeHtml(d.source_url)}</a>` : '<span style="color:var(--text-muted)">—</span>'}
                             </td>
                             <td><span style="font-family:'JetBrains Mono'; font-size:12px; color:var(--text-secondary);">${d.extension.toUpperCase()}</span></td>
-                            <td>${(d.size_bytes / 1024).toFixed(1)} KB</td>
+                            <td>${d.size_bytes ? (d.size_bytes / 1024).toFixed(1) + ' KB' : '-'}</td>
                             <td style="text-align:right;">
-                                <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px; margin-right:4px;" ${d.ingested ? `onclick="viewDocumentChunks('${escapeHtml(d.name)}')"`: 'disabled'}>${d.ingested ? '🔍 Chunks' : '⏳ Pending'}</button>
+                                <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px; margin-right:4px;" onclick="viewDocumentPreview('${escapeHtml(d.name)}')">📄 Review</button>
+                                ${d.ingested ? `<button class="btn btn-secondary" style="padding:4px 10px; font-size:11px; margin-right:4px;" onclick="viewDocumentChunks('${escapeHtml(d.name)}')">🔍 Chunks</button>` : `<span class="badge badge-suspended" style="margin-right:4px; font-size:10px;">⏳ Pending</span>`}
                                 <button class="btn btn-secondary btn-danger" style="padding:4px 10px; font-size:11px;" onclick="deleteDocument('${escapeHtml(d.name)}')">🗑️</button>
                             </td>
                         </tr>
@@ -3357,6 +3384,9 @@
                     }
                     status.innerHTML = `<div style="margin-bottom:4px;">✅ <b>Scraped ${result.files_saved} file(s)</b> from <code style="font-size:12px;">${escapeHtml(url)}</code></div>${details}`;
                     showToast(`Scraped ${result.files_saved} file(s) from ${url}`, "success");
+                    if (result.duplicates && result.duplicates.length > 0) {
+                        showDuplicateModal(result.duplicates);
+                    }
                     loadDocuments();
                 } else {
                     status.innerHTML = `❌ Scrape failed: ${escapeHtml(result.error || 'Unknown error')}`;
@@ -3369,6 +3399,71 @@
             } finally {
                 btn.disabled = false;
                 btn.innerText = 'Scrape & Ingest';
+            }
+        }
+
+        // ── Duplicate resolution ──────────────────────────────────────────────
+        let pendingDuplicates = [];
+
+        function showDuplicateModal(duplicates) {
+            pendingDuplicates = duplicates;
+            const body = document.getElementById('dupModalBody');
+            if (duplicates.length === 0) {
+                showToast("No duplicates detected.", "info");
+                return;
+            }
+            body.innerHTML = duplicates.map((d, i) => `
+                <tr>
+                    <td style="font-weight:500;">${escapeHtml(d.title || d.url)}</td>
+                    <td style="font-size:11.5px; color:var(--text-muted); word-break:break-all; max-width:220px;">${escapeHtml(d.url)}</td>
+                    <td style="font-size:11.5px; color:var(--text-secondary);">${escapeHtml(d.existing_file)}</td>
+                    <td style="font-size:11.5px; color:var(--accent-teal);">${escapeHtml(d.new_file)}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-success" style="padding:3px 8px; font-size:10.5px; margin-right:4px;" onclick="resolveDuplicate(${i}, 'remove')">Remove</button>
+                        <button class="btn btn-secondary" style="padding:3px 8px; font-size:10.5px; margin-right:4px;" onclick="resolveDuplicate(${i}, 'keep_both')">Keep both</button>
+                        <button class="btn btn-secondary" style="padding:3px 8px; font-size:10.5px;" onclick="resolveDuplicate(${i}, 'rename')">Rename</button>
+                    </td>
+                </tr>
+            `).join('');
+            document.getElementById('dupModalTitle').textContent = `${duplicates.length} duplicate(s) detected from scraping`;
+            document.getElementById('duplicateModal').style.display = 'flex';
+        }
+
+        function closeDuplicateModal() {
+            document.getElementById('duplicateModal').style.display = 'none';
+        }
+
+        async function resolveDuplicate(index, action) {
+            const d = pendingDuplicates[index];
+            const actions = [];
+            if (action === 'rename') {
+                const newName = prompt(`Rename this copy (current: ${d.new_file}):`);
+                if (!newName) return;
+                actions.push({ existing_file: d.existing_file, new_file: d.new_file, action: 'rename', new_name: newName });
+            } else {
+                actions.push({ existing_file: d.existing_file, new_file: d.new_file, action });
+            }
+            try {
+                const response = await fetch(`/api/v1/tenants/${encodeURIComponent(currentTenantId)}/documents/resolve-duplicates`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ actions })
+                });
+                const res = await response.json();
+                const outcome = res.results && res.results[0] ? res.results[0].action : '?';
+                showToast(`Duplicate ${action} → ${outcome}`, outcome === 'error' ? 'error' : 'success');
+                if (outcome !== 'error') {
+                    pendingDuplicates.splice(index, 1);
+                    if (pendingDuplicates.length === 0) {
+                        closeDuplicateModal();
+                    } else {
+                        showDuplicateModal(pendingDuplicates);
+                    }
+                }
+                loadDocuments();
+            } catch (err) {
+                console.error(err);
+                showToast("Duplicate resolution failed.", "error");
             }
         }
 
@@ -3891,6 +3986,30 @@
         function closeChunkViewerModal() {
             document.getElementById('chunkViewerModal').style.display = 'none';
             document.getElementById('chunkViewerModal').classList.remove('active');
+        }
+
+        async function viewDocumentPreview(filename) {
+            openChunkViewerModal(`Document Preview: ${filename}`);
+            const container = document.getElementById('chunkListContainer');
+            container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-secondary); font-size:13.5px;">Loading document text...</div>`;
+            document.getElementById('chunkViewerDesc').innerText = 'Review raw document text content before or after ingestion.';
+
+            try {
+                const response = await fetch(`/api/v1/tenants/${encodeURIComponent(currentTenantId)}/documents/${encodeURIComponent(filename)}`);
+                if (!response.ok) {
+                    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted); font-size:13px;">Could not load file text content.</div>`;
+                    return;
+                }
+                const text = await response.text();
+                container.innerHTML = `
+                    <div style="background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); border-radius:8px; padding:16px; font-family:'JetBrains Mono', monospace; font-size:12px; white-space:pre-wrap; word-break:break-word; color:var(--text-primary); line-height:1.6;">
+                        ${escapeHtml(text)}
+                    </div>
+                `;
+            } catch (err) {
+                console.error(err);
+                container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--danger-color); font-size:13px;">Failed to fetch file content.</div>`;
+            }
         }
 
         async function viewDocumentChunks(filename) {

@@ -1126,12 +1126,12 @@ function renderDocuments(documents) {
         tbodyScraped.innerHTML = scraped.map(d => `
             <tr>
                 <td>${escapeHtml(d.name)}</td>
-                <td>-</td>
-                <td>${escapeHtml(d.type || 'Text')}</td>
-                <td>${humanFileSize(d.size_bytes)}</td>
+                <td style="color:var(--accent-teal); max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${d.source_url ? `<a href="${escapeHtml(d.source_url)}" target="_blank" style="color:var(--accent-teal);">${escapeHtml(d.source_url)}</a>` : '-'}</td>
+                <td>${escapeHtml(d.extension ? d.extension.toUpperCase() : 'TXT')}</td>
+                <td>${d.size_bytes ? humanFileSize(d.size_bytes) : '-'}</td>
                 <td style="text-align:right;">
-                    <button class="btn btn-secondary" style="padding:6px 12px; font-size:11px; margin-right:6px;" onclick="viewDoc('${d.name}')">View</button>
-                    <button class="btn btn-danger" style="padding:6px 12px; font-size:11px;" onclick="deleteDoc('${d.name}')">Delete</button>
+                    <button class="btn btn-secondary" style="padding:6px 12px; font-size:11px; margin-right:6px;" onclick="viewDoc('${escapeHtml(d.name)}')">View</button>
+                    <button class="btn btn-danger" style="padding:6px 12px; font-size:11px;" onclick="deleteDoc('${escapeHtml(d.name)}')">Delete</button>
                 </td>
             </tr>
         `).join('');
@@ -1238,6 +1238,9 @@ async function scrapeUrl() {
             summaryDiv.style.border = '1px solid rgba(16,185,129,0.2)';
             summaryDiv.style.color = 'var(--success-color)';
             summaryDiv.textContent = `Successfully scraped ${data.files_saved} page(s)!`;
+            if (data.duplicates && data.duplicates.length > 0) {
+                showDuplicateModal(data.duplicates);
+            }
             loadDocuments();
         } else {
             logDiv.innerHTML += `<div class="log-line error">[Scraper] ${data.error || 'Error'}</div>`;
@@ -1252,6 +1255,70 @@ async function scrapeUrl() {
     } finally {
         btn.disabled = false;
         btn.textContent = 'Start Scraping';
+    }
+}
+
+// ── Duplicate resolution (client) ─────────────────────────────────────────
+let pendingDuplicates = [];
+
+function showDuplicateModal(duplicates) {
+    pendingDuplicates = duplicates;
+    const body = document.getElementById('dupModalBody');
+    if (duplicates.length === 0) {
+        showToast('No duplicates detected.', 'info');
+        return;
+    }
+    body.innerHTML = duplicates.map((d, i) => `
+        <tr>
+            <td style="font-weight:500; padding:8px 6px;">${escapeHtml(d.title || d.url)}</td>
+            <td style="font-size:11px; color:var(--text-muted); word-break:break-all; max-width:200px; padding:8px 6px;">${escapeHtml(d.url)}</td>
+            <td style="font-size:11px; color:var(--text-secondary); padding:8px 6px;">${escapeHtml(d.existing_file)}</td>
+            <td style="font-size:11px; color:var(--accent-teal); padding:8px 6px;">${escapeHtml(d.new_file)}</td>
+            <td style="white-space:nowrap; padding:8px 6px;">
+                <button class="btn btn-success" style="padding:3px 8px; font-size:10.5px; margin-right:4px;" onclick="resolveDuplicate(${i}, 'remove')">Remove</button>
+                <button class="btn btn-secondary" style="padding:3px 8px; font-size:10.5px; margin-right:4px;" onclick="resolveDuplicate(${i}, 'keep_both')">Keep both</button>
+                <button class="btn btn-secondary" style="padding:3px 8px; font-size:10.5px;" onclick="resolveDuplicate(${i}, 'rename')">Rename</button>
+            </td>
+        </tr>
+    `).join('');
+    document.getElementById('dupModalTitle').textContent = `${duplicates.length} duplicate(s) detected from scraping`;
+    document.getElementById('duplicateModal').style.display = 'flex';
+}
+
+function closeDuplicateModal() {
+    document.getElementById('duplicateModal').style.display = 'none';
+}
+
+async function resolveDuplicate(index, action) {
+    const d = pendingDuplicates[index];
+    const actions = [];
+    if (action === 'rename') {
+        const newName = prompt(`Rename this copy (current: ${d.new_file}):`);
+        if (!newName) return;
+        actions.push({ existing_file: d.existing_file, new_file: d.new_file, action: 'rename', new_name: newName });
+    } else {
+        actions.push({ existing_file: d.existing_file, new_file: d.new_file, action });
+    }
+    try {
+        const res = await fetch('/api/v1/client/documents/resolve-duplicates', {
+            method: 'POST', headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ actions })
+        });
+        const data = await res.json();
+        const outcome = data.results && data.results[0] ? data.results[0].action : '?';
+        showToast(`Duplicate ${action} → ${outcome}`, outcome === 'error' ? 'error' : 'success');
+        if (outcome !== 'error') {
+            pendingDuplicates.splice(index, 1);
+            if (pendingDuplicates.length === 0) {
+                closeDuplicateModal();
+            } else {
+                showDuplicateModal(pendingDuplicates);
+            }
+        }
+        loadDocuments();
+    } catch (e) {
+        console.error(e);
+        showToast('Duplicate resolution failed.', 'error');
     }
 }
 
@@ -1594,5 +1661,28 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 });
 </script>
+<div id="duplicateModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.8); backdrop-filter:blur(12px); z-index:10000; align-items:flex-start; justify-content:center; padding:24px 20px; overflow-y:auto;">
+    <div style="width:860px; max-height:85vh; background:var(--modal-bg); border:1px solid var(--panel-border); border-radius:14px; padding:24px; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="font-size:16px; font-weight:700; color:var(--text-primary); margin-bottom:4px;" id="dupModalTitle">Duplicates detected from scraping</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">These pages were already scraped before. Choose what to do with each copy before it enters the queue.</div>
+        <div style="flex:1; min-height:0; overflow-y:auto; margin-bottom:16px;">
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                    <tr style="text-align:left; color:var(--text-muted); border-bottom:1px solid var(--panel-border);">
+                        <th style="padding:8px 6px;">Page</th>
+                        <th style="padding:8px 6px;">URL</th>
+                        <th style="padding:8px 6px;">Existing file</th>
+                        <th style="padding:8px 6px;">New copy</th>
+                        <th style="padding:8px 6px;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="dupModalBody"></tbody>
+            </table>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="btn btn-secondary" onclick="closeDuplicateModal()">Close</button>
+        </div>
+    </div>
+</div>
 </body>
 </html>

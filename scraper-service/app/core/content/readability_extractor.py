@@ -18,14 +18,34 @@ class ReadabilityExtractor:
     def __init__(self, base_url: str = ""):
         self.base_url = base_url
 
+    @staticmethod
+    def _safe_remove(element) -> None:
+        """Remove a UI-chrome element only if it is NOT a container holding
+        the main page content. Substring class selectors (e.g. `[class*=overlay]`)
+        can match the root body/wrapper on templated sites (Squarespace puts
+        tweaks like `tweak-show-page-title-overlay-always` on <body>), so we
+        must never extract an element that contains an <article>/<main> content
+        root, and only remove relatively small leaf-ish nodes."""
+        if element is None:
+            return
+        if element.name in ("html", "body"):
+            return
+        # Never remove a container that itself holds article/main content.
+        if element.find(["article", "main", "[role='main']", "#content", "#main"]):
+            return
+        # Popups / cookie banners / overlays are small; skip big content wrappers.
+        if len(element.get_text()) > 2000:
+            return
+        element.extract()
+
     def extract(self, html_content: str) -> dict[str, str]:
         """
         Extract readable content.
         Returns:
-            {"html": str, "markdown": str, "clean_text": str}
+            {"html": str, "markdown": str, "clean_text": str, "text_length": int, "word_count": int}
         """
         if not html_content:
-            return {"html": "", "markdown": "", "clean_text": ""}
+            return {"html": "", "markdown": "", "clean_text": "", "text_length": 0, "word_count": 0}
 
         soup = BeautifulSoup(html_content, "html.parser")
 
@@ -36,18 +56,57 @@ class ReadabilityExtractor:
         # 2. Strip non-content / boilerplate tags
         boilerplate_tags = [
             "header", "footer", "nav", "aside", "script", "style", "form",
-            "iframe", "noscript", "svg", "button", "select", "textarea"
+            "iframe", "noscript", "svg", "button", "select", "textarea", "dialog"  # Added dialog
         ]
         for tag in soup.find_all(boilerplate_tags):
             tag.extract()
+        
+        # 3. Selector-based removal (cookie banners, modals, chat widgets, etc.)
+        ui_chrome_selectors = [
+            "[id*=cookie]", "[class*=cookie]",
+            "[id*=gdpr]", "[class*=gdpr]",
+            "[class*=consent]",
+            ".newsletter", "[class*=newsletter]",
+            "[class*=popup]",
+            "[id*=modal]", "[class*=modal]",
+            ".overlay", "[class*=overlay]",
+            "[class*=livechat]",
+            "[class*=crisp]",
+            "[id*=intercom]",
+            "[id*=chat-widget]",
+            "[class*=support-widget]",
+            "[class*=floating-chat]",
+            # Specific IDs only (not class*= to avoid over-stripping WP sites)
+            "#chat-widget", "#crisp-chatbox", "#intercom-container",
+        ]
+        # Guarded removal (never nuke main-content containers)
+        for selector in ui_chrome_selectors:
+            try:
+                for element in soup.select(selector):
+                    self._safe_remove(element)
+            except Exception:
+                continue
 
         # Try to find main content areas if they exist, to focus extraction
+        # Use minimum length threshold to avoid selecting tiny divs
         main_content = None
-        for selector in ["main", "article", "[role='main']", "#content", ".content", "#main"]:
+        MIN_CONTENT_LENGTH = 500  # at least 500 chars to be considered main content
+        
+        for selector in ["main", "article", "[role='main']", "#content", "#main", ".main-content", ".entry-content", ".page-content"]:
             found = soup.select_one(selector)
-            if found:
+            if found and len(str(found)) >= MIN_CONTENT_LENGTH:
                 main_content = found
                 break
+        
+        # Fallback: find the largest div/section that looks like content
+        if not main_content:
+            candidates = soup.find_all(["div", "section"], recursive=False)
+            if not candidates:
+                candidates = soup.find("body").find_all(["div", "section"], recursive=False) if soup.find("body") else []
+            if candidates:
+                largest = max(candidates, key=lambda el: len(el.get_text()), default=None)
+                if largest and len(largest.get_text()) > 100:
+                    main_content = largest
 
         content_root = main_content if main_content else soup
 
@@ -163,8 +222,32 @@ class ReadabilityExtractor:
         if not markdown_content and clean_text_content:
             markdown_content = clean_text_content
 
+        # Deduplicate repeated paragraphs (WP sites often repeat footer/nav content)
+        markdown_content = self._dedup_paragraphs(markdown_content)
+        clean_text_content = self._dedup_paragraphs(clean_text_content)
+
         return {
             "html": clean_html,
             "markdown": markdown_content,
-            "clean_text": clean_text_content
+            "clean_text": clean_text_content,
+            "text_length": len(clean_text_content),
+            "word_count": len(clean_text_content.split())
         }
+
+    def _dedup_paragraphs(self, text: str) -> str:
+        """Remove duplicate paragraphs/blocks that appear multiple times (WP footer repeating)."""
+        if not text:
+            return text
+        lines = text.split("\n")
+        seen = set()
+        deduped = []
+        for line in lines:
+            stripped = line.strip()
+            # Keep empty lines for spacing, deduplicate non-empty
+            if not stripped:
+                deduped.append(line)
+            elif stripped not in seen:
+                seen.add(stripped)
+                deduped.append(line)
+        result = "\n".join(deduped)
+        return re.sub(r"\n{3,}", "\n\n", result).strip()

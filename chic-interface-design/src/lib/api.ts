@@ -42,7 +42,9 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
     } catch {
       // ignore
     }
-    throw new Error(errMsg);
+    const err = new Error(errMsg) as any;
+    err.status = response.status;
+    throw err;
   }
 
   return response;

@@ -171,9 +171,10 @@ async def get_crawl_status(job_id: str):
         "status": job.status,
         "progress": job.progress,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "message": getattr(job, "message", None),
     }
 
-    if job.status == "completed":
+    if job.status in ("completed", "done"):
         response_data["result"] = job.result
     elif job.status == "failed":
         response_data["error"] = job.error

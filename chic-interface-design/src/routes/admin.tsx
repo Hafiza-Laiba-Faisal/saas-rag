@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState, useEffect, useRef } from "react";
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   BookOpen,
   ChevronDown,
@@ -10,6 +11,7 @@ import {
   Code2,
   Copy,
   Database,
+  Eye,
   FileText,
   Gauge,
   Globe,
@@ -19,6 +21,7 @@ import {
   Loader2,
   MessageSquare,
   Moon,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -106,13 +109,13 @@ function AdminPage() {
       const res = await apiFetch("/tenants");
       const data = await res.json();
       return data.map((t: any) => ({
-        id: t.tenantId,
-        name: t.name || t.tenantId,
-        tier: t.subscriptionTier || t.subscription_tier || "basic",
+        id: t.tenant_id ?? t.tenantId,
+        name: t.name || t.tenant_id || t.tenantId,
+        tier: t.subscription_tier ?? t.subscriptionTier ?? "basic",
         status: t.status || "active",
-        docs: t.docCount ?? 0,
-        fee: t.monthlyFee ?? 0,
-        apiKey: t.apiKey,
+        docs: t.doc_count ?? t.docCount ?? 0,
+        fee: t.monthly_fee ?? t.monthlyFee ?? 0,
+        apiKey: t.api_key ?? t.apiKey,
       })) as Tenant[];
     },
     refetchInterval: 2000,
@@ -130,14 +133,38 @@ function AdminPage() {
   // Mobile responsive sidebar state
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // Select the first tenant if none is active on desktop
+  // Select the first tenant if none is active, or if the active tenant no longer exists
   useEffect(() => {
-    if (!activeId && tenants.length > 0) {
+    if (tenants.length === 0) {
+      if (activeId !== null) setActiveId(null);
+      return;
+    }
+    const stillActive = tenants.some((t) => t.id === activeId);
+    if (!stillActive) {
       setActiveId(tenants[0].id);
     }
   }, [tenants, activeId]);
 
   const active = useMemo(() => tenants.find((t) => t.id === activeId) ?? null, [tenants, activeId]);
+  
+  async function handleDeleteActiveTenant(idToDelete?: string) {
+    const tid = idToDelete || activeId;
+    if (!tid) return;
+    if (!confirm(`Delete client '${tid}' and all associated data? This cannot be undone.`)) return;
+    try {
+      await apiFetch(`/tenants/${tid}`, { method: "DELETE" });
+      const remaining = tenants.filter((t) => t.id !== tid);
+      await queryClient.invalidateQueries({ queryKey: ["tenants"] });
+      if (remaining.length > 0) {
+        setActiveId(remaining[0].id);
+      } else {
+        setActiveId(null);
+      }
+    } catch (e: any) {
+      alert("Delete failed: " + e.message);
+    }
+  }
+
   const filtered = tenants.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()));
 
   return (
@@ -270,7 +297,7 @@ function AdminPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <GhostBtn icon={Cloud} onClick={() => setShowCloudSync(true)}>Cloud Sync</GhostBtn>
                 <GhostBtn icon={Activity} onClick={() => setShowSystemLogs(true)}>System Logs</GhostBtn>
-                <GhostBtn icon={Trash2} tone="danger">Delete</GhostBtn>
+                <GhostBtn icon={Trash2} tone="danger" onClick={() => handleDeleteActiveTenant()}>Delete</GhostBtn>
               </div>
             </div>
 
@@ -296,7 +323,7 @@ function AdminPage() {
             </div>
 
             <div className="flex-1 overflow-hidden">
-              {tab === "config" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><ConfigTab tenant={active} /></div>}
+              {tab === "config" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><ConfigTab tenant={active} onDeleted={() => handleDeleteActiveTenant(active.id)} /></div>}
               {tab === "documents" && <div className="h-full flex flex-col px-4 sm:px-8 py-6 overflow-hidden"><DocumentsTab tenantId={active?.id} /></div>}
               {tab === "playground" && <div className="h-full overflow-hidden flex flex-col"><PlaygroundTab tenantId={active?.id} /></div>}
               {tab === "health" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><HealthTab /></div>}
@@ -687,7 +714,7 @@ function Stat({
 }
 
 
-function ConfigTab({ tenant }: { tenant: Tenant }) {
+function ConfigTab({ tenant, onDeleted }: { tenant: Tenant; onDeleted?: () => void }) {
   const queryClient = useQueryClient();
   const { data: config, isLoading } = useQuery({
     queryKey: ["config", tenant.id],
@@ -766,6 +793,10 @@ function ConfigTab({ tenant }: { tenant: Tenant }) {
   }
 
   async function handleDelete() {
+    if (onDeleted) {
+      onDeleted();
+      return;
+    }
     if (!confirm("Delete this client and all associated data? This cannot be undone.")) return;
     try {
       await apiFetch(`/tenants/${tenant.id}`, { method: "DELETE" });
@@ -1101,27 +1132,49 @@ function Field({ label, children, className }: { label: string; children: React.
 function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [source, setSource] = useState<"files" | "web" | "cloud" | "crawl">("files");
+  const [source, setSource] = useState<"files" | "web" | "cloud" | "crawl">(() => {
+    try {
+      const s = localStorage.getItem(`rag_doc_source_${tenantId}`);
+      return (s === "files" || s === "web" || s === "cloud" || s === "crawl") ? s : "files";
+    } catch { return "files"; }
+  });
   const [uploading, setUploading] = useState(false);
-  const [scrapeConfig, setScrapeConfig] = useState({
-    url: "",
-    depth: 3,
-    pages: 100,
-    mode: "smart" as string,
-    format: "json" as string,
-    contentType: "all" as string,
-    timeout: 30,
-    workers: 1,
-    respectRobots: true,
-    includePages: true,
-    includeMedia: true,
-    deepCrawl: false,
-    downloadImages: false,
-    downloadPdfs: false,
-    playwright: false,
+  const [scrapeConfig, setScrapeConfig] = useState(() => {
+    const defaults = {
+      url: "",
+      depth: 3,
+      pages: 100,
+      mode: "smart" as string,
+      format: "markdown" as string,
+      contentType: "all" as string,
+      timeout: 30,
+      workers: 4,
+      respectRobots: true,
+      includePages: true,
+      includeMedia: true,
+      deepCrawl: false,
+      downloadImages: false,
+      downloadPdfs: false,
+      playwright: false,
+    };
+    try {
+      const raw = localStorage.getItem(`rag_scrape_config_${tenantId}`);
+      return raw ? { ...defaults, ...(JSON.parse(raw) as typeof defaults) } : defaults;
+    } catch { return defaults; }
   });
   const updateScrape = <K extends keyof typeof scrapeConfig>(key: K, value: (typeof scrapeConfig)[K]) =>
     setScrapeConfig(prev => ({ ...prev, [key]: value }));
+
+  // Persist the source tab + scrape form (URL & settings) so they survive a reload
+  useEffect(() => {
+    if (!tenantId) return;
+    try { localStorage.setItem(`rag_doc_source_${tenantId}`, source); } catch {}
+  }, [source, tenantId]);
+
+  useEffect(() => {
+    if (!tenantId) return;
+    try { localStorage.setItem(`rag_scrape_config_${tenantId}`, JSON.stringify(scrapeConfig)); } catch {}
+  }, [scrapeConfig, tenantId]);
   const [scraping, setScraping] = useState(false);
   const [scrapeResult, setScrapeResult] = useState<any>(null);
   const [applyOcrUpload, setApplyOcrUpload] = useState(false);
@@ -1133,8 +1186,21 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
   const [chunks, setChunks] = useState<any[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
+  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [cloudProvider, setCloudProvider] = useState<string | null>(null);
   const [selectedCrawlSite, setSelectedCrawlSite] = useState<string | null>(null);
+
+  // ── Duplicate-resolution dialog ──
+  type DupItem = { url: string; title: string; existing_file: string; new_file: string; action: "replace" | "keep_both" | "skip" };
+  const [dupDialogOpen, setDupDialogOpen] = useState(false);
+  const [dupItems, setDupItems] = useState<DupItem[]>([]);
+  const [dupResolving, setDupResolving] = useState(false);
+
+  // ── Inline rename ──
+  const [renamingFile, setRenamingFile] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
 
   const { data: crawlSites } = useQuery({
     queryKey: ["crawl-sites"],
@@ -1225,37 +1291,76 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
 
   async function handleScrape() {
     if (!scrapeConfig.url || !tenantId) return;
+    let url = scrapeConfig.url.trim();
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    if (url !== scrapeConfig.url) updateScrape('url', url);
     setScraping(true);
     setScrapeResult(null);
     setScrapeJobId(null);
     setScrapeJobStatus(null);
+    localStorage.removeItem(`rag_scrape_job_${tenantId}`);
     try {
-      const body: any = {
-        url: scrapeConfig.url,
-        scrape_type: scrapeConfig.mode,
-        format: scrapeConfig.format,
-        max_depth: scrapeConfig.depth,
-        max_pages: scrapeConfig.pages,
-        timeout: scrapeConfig.timeout,
-        include_pages: scrapeConfig.includePages,
-        include_media: scrapeConfig.includeMedia,
-        workers: scrapeConfig.workers,
-        respect_robots: scrapeConfig.respectRobots,
-        deepcrawl: scrapeConfig.deepCrawl,
-        playwright: scrapeConfig.playwright,
-      };
-      if (scrapeConfig.contentType !== "all") body.content_type = scrapeConfig.contentType;
-      body.download_images = scrapeConfig.downloadImages;
-      body.download_pdfs = scrapeConfig.downloadPdfs;
-      const res = await apiFetch(`/tenants/${tenantId}/scrape/enhanced`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const result = await res.json();
-      setScrapeResult(result);
-      if ((scrapeConfig.mode === "recursive" || scrapeConfig.mode === "full") && result?.data?.job_id) {
-        setScrapeJobId(result.data.job_id);
+      // Full Site Crawl → use new SiteCrawler endpoint directly
+      if (scrapeConfig.mode === "full") {
+        const body = {
+          url,
+          max_pages: scrapeConfig.pages,
+          download_images: false,   // images.json only, no download
+          download_pdfs: scrapeConfig.downloadPdfs,
+          workers: scrapeConfig.workers,
+          respect_robots: scrapeConfig.respectRobots,
+        };
+        const res = await apiFetch(`/tenants/${tenantId}/scrape/full`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const result = await res.json();
+        setScrapeResult(result);
+        if (result?.data?.job_id) {
+          setScrapeJobId(result.data.job_id);
+          localStorage.setItem(`rag_scrape_job_${tenantId}`, result.data.job_id);
+          localStorage.setItem(`rag_scrape_job_mode_${tenantId}`, "full");
+        }
+        // Check for duplicates and open OS-style dialog
+        if (result?.duplicates?.length > 0) {
+          openDupDialog(result.duplicates);
+        }
+      } else {
+        // Smart / other modes → existing enhanced endpoint
+        const body: any = {
+          url,
+          scrape_type: scrapeConfig.mode,
+          format: scrapeConfig.format,
+          max_depth: scrapeConfig.depth,
+          max_pages: scrapeConfig.pages,
+          timeout: scrapeConfig.timeout,
+          include_pages: scrapeConfig.includePages,
+          include_media: scrapeConfig.includeMedia,
+          workers: scrapeConfig.workers,
+          respect_robots: scrapeConfig.respectRobots,
+          deepcrawl: scrapeConfig.deepCrawl,
+          playwright: scrapeConfig.playwright,
+        };
+        if (scrapeConfig.contentType !== "all") body.content_type = scrapeConfig.contentType;
+        body.download_images = scrapeConfig.downloadImages;
+        body.download_pdfs = scrapeConfig.downloadPdfs;
+        const res = await apiFetch(`/tenants/${tenantId}/scrape/enhanced`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const result = await res.json();
+        setScrapeResult(result);
+        if (result?.data?.job_id) {
+          setScrapeJobId(result.data.job_id);
+          localStorage.setItem(`rag_scrape_job_${tenantId}`, result.data.job_id);
+          localStorage.setItem(`rag_scrape_job_mode_${tenantId}`, "smart");
+        }
+        // Check for duplicates if enhanced scrape returns them
+        if (result?.duplicates?.length > 0) {
+          openDupDialog(result.duplicates);
+        }
       }
       refetchDocs();
     } catch (e: any) {
@@ -1265,42 +1370,101 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     }
   }
 
-  // Poll recursive crawl job status
+  // Poll crawl job status — handles both full-site and recursive modes
+  useEffect(() => {
+    if (!tenantId) return;
+    const saved = localStorage.getItem(`rag_scrape_job_${tenantId}`);
+    if (saved && !scrapeJobId) setScrapeJobId(saved);
+  }, [tenantId]);
+
   useEffect(() => {
     if (!scrapeJobId || !tenantId) return;
+    const mode = localStorage.getItem(`rag_scrape_job_mode_${tenantId}`) || "smart";
     const interval = setInterval(async () => {
       try {
-        const res = await apiFetch(`/scrape/recursive/${scrapeJobId}/status?tenantId=${tenantId}`);
-        const status = await res.json();
+        // Full mode → poll admin jobs endpoint
+        const statusUrl = mode === "full"
+          ? `/tenants/${tenantId}/scrape/jobs/${scrapeJobId}`
+          : `/tenants/${tenantId}/scrape/recursive/${scrapeJobId}/status`;
+        const res = await apiFetch(statusUrl);
+        const raw = await res.json();
+        // /tenants/{id}/scrape/jobs/{id} returns flat job dict, others return {data:{status}}
+        const status = raw?.data ? raw : { data: raw };
         setScrapeJobStatus(status);
-        if (status?.data?.status === "done" || status?.data?.status === "completed" || status?.data?.status === "error") {
-          clearInterval(interval);
+        const s = status?.data?.status;
+          if (s === "done" || s === "completed" || s === "error" || s === "failed") {
+            clearInterval(interval);
+            localStorage.removeItem(`rag_scrape_job_${tenantId}`);
+            localStorage.removeItem(`rag_scrape_job_mode_${tenantId}`);
+            if (s === "done" || s === "completed") refetchDocs();
+          }
+        } catch (e: any) {
+          // Job no longer exists (e.g. server restarted) → stop polling instead of looping on 404.
+          if (e?.status === 404) {
+            clearInterval(interval);
+            setScrapeJobId(null);
+            localStorage.removeItem(`rag_scrape_job_${tenantId}`);
+            localStorage.removeItem(`rag_scrape_job_mode_${tenantId}`);
+          }
         }
-      } catch {}
     }, 3000);
     return () => clearInterval(interval);
   }, [scrapeJobId, tenantId]);
 
+  // Ingest polling — shared by a fresh trigger and resume-on-reload
+  const ingestPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  function stopIngestPoll() {
+    if (ingestPollRef.current) {
+      clearInterval(ingestPollRef.current);
+      ingestPollRef.current = null;
+    }
+  }
+  function startIngestPolling() {
+    if (!tenantId) return;
+    stopIngestPoll();
+    setIngesting(true);
+    ingestPollRef.current = setInterval(async () => {
+      try {
+        const res = await apiFetch(`/tenants/${tenantId}/ingest/status`);
+        const data = await res.json();
+        setIngestProgress(data);
+        if (data.status === "completed" || data.status === "error" || data.status === "idle") {
+          stopIngestPoll();
+          setIngesting(false);
+          refetchDocs();
+          queryClient.invalidateQueries({ queryKey: ["tenants"] });
+          setTimeout(() => setIngestProgress(null), 5000);
+        }
+      } catch {
+        stopIngestPoll();
+        setIngesting(false);
+      }
+    }, 1500);
+  }
+
+  // Resume an in-flight ingestion after a page reload (status is persisted in Redis)
+  useEffect(() => {
+    if (!tenantId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(`/tenants/${tenantId}/ingest/status`);
+        const data = await res.json();
+        if (cancelled) return;
+        if (data?.status === "running") startIngestPolling();
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
   async function handleIngest(applyOcr = false) {
     if (!tenantId) return;
-    setIngesting(true);
     setIngestProgress({ status: "starting", progress: 0, logs: [] });
     try {
       await apiFetch(`/tenants/${tenantId}/ingest?apply_ocr=${applyOcr}`, { method: "POST" });
-      const poll = setInterval(async () => {
-        try {
-          const res = await apiFetch(`/tenants/${tenantId}/ingest/status`);
-          const data = await res.json();
-          setIngestProgress(data);
-          if (data.status === "completed" || data.status === "error" || data.status === "idle") {
-            clearInterval(poll);
-            setIngesting(false);
-            refetchDocs();
-            queryClient.invalidateQueries({ queryKey: ["tenants"] });
-          }
-        } catch { clearInterval(poll); setIngesting(false); }
-      }, 1500);
+      startIngestPolling();
     } catch (e: any) {
+      stopIngestPoll();
       setIngesting(false);
       alert("Ingest failed: " + e.message);
     }
@@ -1334,10 +1498,68 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     if (failed > 0) alert(`${failed} file(s) failed to delete.`);
   }
 
+  async function handleStartRename(filename: string) {
+    setRenamingFile(filename);
+    setRenameValue(filename);
+  }
+
+  async function handleCommitRename() {
+    if (!tenantId || !renamingFile || !renameValue.trim()) { setRenamingFile(null); return; }
+    if (renameValue.trim() === renamingFile) { setRenamingFile(null); return; }
+    setRenameSaving(true);
+    try {
+      await apiFetch(`/tenants/${tenantId}/documents/${encodeURIComponent(renamingFile)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: renameValue.trim() }),
+      });
+      refetchDocs();
+    } catch (e: any) {
+      alert("Rename failed: " + e.message);
+    } finally {
+      setRenameSaving(false);
+      setRenamingFile(null);
+    }
+  }
+
+  async function handleResolveDuplicates(actions: { existing_file: string; new_file: string; action: string }[]) {
+    if (!tenantId) return;
+    setDupResolving(true);
+    try {
+      await apiFetch(`/tenants/${tenantId}/documents/resolve-duplicates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actions }),
+      });
+      refetchDocs();
+    } catch (e: any) {
+      alert("Failed to resolve duplicates: " + e.message);
+    } finally {
+      setDupResolving(false);
+      setDupDialogOpen(false);
+      setDupItems([]);
+    }
+  }
+
+  function openDupDialog(duplicates: { url: string; title: string; existing_file: string; new_file: string }[]) {
+    setDupItems(duplicates.map(d => ({ ...d, action: "replace" as const })));
+    setDupDialogOpen(true);
+  }
+
+  function updateDupAction(idx: number, action: "replace" | "keep_both" | "skip") {
+    setDupItems(prev => prev.map((d, i) => i === idx ? { ...d, action } : d));
+  }
+
+  async function applyAllDupAction(action: "replace" | "keep_both" | "skip") {
+    setDupItems(prev => prev.map(d => ({ ...d, action })));
+  }
+
+
   async function handleViewChunks(filename: string) {
     if (!tenantId) return;
     setViewDoc(filename);
     setChunksLoading(true);
+    setPreviewText(null);
     setChunks([]);
     try {
       const res = await apiFetch(`/tenants/${tenantId}/documents/${encodeURIComponent(filename)}/chunks`);
@@ -1347,6 +1569,27 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       alert("Failed to load chunks: " + e.message);
     } finally {
       setChunksLoading(false);
+    }
+  }
+
+  async function handlePreviewDoc(filename: string) {
+    if (!tenantId) return;
+    setViewDoc(filename);
+    setPreviewLoading(true);
+    setPreviewText(null);
+    setChunks([]);
+    try {
+      const res = await apiFetch(`/tenants/${tenantId}/documents/${encodeURIComponent(filename)}`);
+      if (res.ok) {
+        const text = await res.text();
+        setPreviewText(text);
+      } else {
+        setPreviewText("Could not load document text content.");
+      }
+    } catch (e: any) {
+      setPreviewText("Failed to load preview: " + e.message);
+    } finally {
+      setPreviewLoading(false);
     }
   }
 
@@ -1522,13 +1765,13 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
 
           {/* Mode info */}
           {scrapeConfig.mode === "smart" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Smart: Single-page crawl that automatically scores extraction quality and falls back on block (403/429).</span></p>}
-          {scrapeConfig.mode === "full" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Full Site: Crawls all internal links across the site up to max depth, downloading extracted page text, images, and PDFs.</span></p>}
+          {scrapeConfig.mode === "full" && <p className="mt-3 text-xs text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span>Full Site: Crawls entire site across all languages, extracts clean text + image catalogue (images.json). Optionally downloads content images.</span></p>}
 
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_auto]">
             <Field label="URL">
               <input className="input font-mono text-xs" value={scrapeConfig.url} onChange={(e) => updateScrape('url', e.target.value)} placeholder="https://example.com/page" />
             </Field>
-            {(scrapeConfig.mode === "recursive" || scrapeConfig.mode === "full") && (
+            {scrapeConfig.mode === "recursive" && (
               <>
                 <Field label="Max depth">
                   <input className="input" type="number" value={scrapeConfig.depth} onChange={(e) => updateScrape('depth', Number(e.target.value))} />
@@ -1538,6 +1781,11 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                 </Field>
               </>
             )}
+            {scrapeConfig.mode === "full" && (
+              <Field label="Max pages">
+                <input className="input" type="number" value={scrapeConfig.pages} onChange={(e) => updateScrape('pages', Number(e.target.value))} min={10} max={1000} />
+              </Field>
+            )}
             <div className="flex items-end">
               <button disabled={scraping || !scrapeConfig.url} onClick={handleScrape} className="inline-flex h-[38px] items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
                 {scraping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
@@ -1546,7 +1794,76 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
             </div>
           </div>
 
-          {/* Contextual options based on mode */}
+          {/* Full Site Crawl — dedicated options panel */}
+          {scrapeConfig.mode === "full" && (
+            <div className="mt-4 rounded-lg border border-border bg-elevated/30 p-4 space-y-4">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Crawl Settings</h4>
+
+              {/* Row 1: Workers + Robots */}
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <Field label="Workers">
+                  <input className="input" type="number" value={scrapeConfig.workers}
+                    onChange={(e) => updateScrape('workers', Number(e.target.value))} min={1} max={20} />
+                </Field>
+                <div className="flex flex-col justify-end gap-2 col-span-3">
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={scrapeConfig.respectRobots}
+                      onChange={(e) => updateScrape('respectRobots', e.target.checked)} className="accent-primary" />
+                    <span className="text-xs text-muted-foreground">Respect robots.txt</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Row 2: Download options */}
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">Download Options</p>
+                <div className="flex flex-wrap gap-x-6 gap-y-3">
+                  {/* Images toggle */}
+                  <label className="inline-flex items-center gap-2 cursor-pointer group">
+                    <input type="checkbox" checked={scrapeConfig.downloadImages}
+                      onChange={(e) => updateScrape('downloadImages', e.target.checked)}
+                      className="accent-primary h-4 w-4" />
+                    <div>
+                      <span className="text-xs font-medium text-foreground group-hover:text-primary transition-colors">
+                        Download Images
+                      </span>
+                      <p className="text-[10px] text-muted-foreground">
+                        {scrapeConfig.downloadImages
+                          ? "Content images will be saved to disk"
+                          : "images.json catalogue always generated"}
+                      </p>
+                    </div>
+                  </label>
+
+                  {/* PDFs toggle */}
+                  <label className="inline-flex items-center gap-2 cursor-pointer group">
+                    <input type="checkbox" checked={scrapeConfig.downloadPdfs}
+                      onChange={(e) => updateScrape('downloadPdfs', e.target.checked)}
+                      className="accent-primary h-4 w-4" />
+                    <div>
+                      <span className="text-xs font-medium text-foreground group-hover:text-primary transition-colors">
+                        Download PDFs
+                      </span>
+                      <p className="text-[10px] text-muted-foreground">
+                        {scrapeConfig.downloadPdfs ? "PDFs saved to disk" : "PDF links listed only"}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Info bar */}
+              <div className="flex flex-wrap gap-2 text-[10px] text-muted-foreground pt-1 border-t border-border">
+                <span className="rounded bg-elevated px-2 py-0.5">✅ All 5 languages (it/en/fr/de/es)</span>
+                <span className="rounded bg-elevated px-2 py-0.5">✅ images.json with content/decorative</span>
+                <span className="rounded bg-elevated px-2 py-0.5">✅ Duplicate line dedup</span>
+                <span className="rounded bg-elevated px-2 py-0.5">✅ srcset + lazy-load images</span>
+              </div>
+            </div>
+          )}
+
+          {/* Smart mode options */}
+          {scrapeConfig.mode !== "full" && (
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             {scrapeConfig.mode === "smart" && (
               <>
@@ -1563,26 +1880,17 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                 </Field>
                 <Field label="Format">
                   <select className="input text-xs" value={scrapeConfig.format} onChange={(e) => updateScrape('format', e.target.value)}>
-                    <option value="json">JSON</option>
-                    <option value="markdown">Markdown</option>
+                    <option value="markdown">Markdown (.md)</option>
+                    <option value="text">Plain Text (.txt)</option>
                   </select>
                 </Field>
               </>
             )}
-            {scrapeConfig.mode === "full" && (
-              <>
-                <Field label="Workers">
-                  <input className="input" type="number" value={scrapeConfig.workers} onChange={(e) => updateScrape('workers', Number(e.target.value))} min={1} max={10} />
-                </Field>
-                <label className="flex items-center gap-2 mt-6 cursor-pointer">
-                  <input type="checkbox" checked={scrapeConfig.respectRobots} onChange={(e) => updateScrape('respectRobots', e.target.checked)} className="accent-primary" />
-                  <span className="text-xs text-muted-foreground">Respect robots.txt</span>
-                </label>
-              </>
-            )}
           </div>
+          )}
 
-          {/* Additional Options — sab modes ke liye common */}
+          {/* Additional Options — smart mode only */}
+          {scrapeConfig.mode !== "full" && (
           <div className="mt-4 pt-4 border-t border-border">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Additional Options</h4>
             <div className="flex flex-wrap gap-x-6 gap-y-2">
@@ -1604,6 +1912,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
               </label>
             </div>
           </div>
+          )}
 
           {/* Scrape result */}
           {scrapeResult && (
@@ -1674,14 +1983,88 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
           {scrapeJobStatus && (
             <div className="mt-3 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
               <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${scrapeJobStatus.data?.status === "completed" ? "bg-success" : scrapeJobStatus.data?.status === "error" ? "bg-destructive" : "bg-sky-400 animate-pulse"}`} />
-                <span className="font-semibold capitalize">{scrapeJobStatus.data?.status || "running"}</span>
+                <span className={`w-2 h-2 rounded-full ${
+                  scrapeJobStatus.data?.status === "done" || scrapeJobStatus.data?.status === "completed"
+                    ? "bg-success"
+                    : scrapeJobStatus.data?.status === "error" || scrapeJobStatus.data?.status === "failed"
+                    ? "bg-destructive"
+                    : "bg-sky-400 animate-pulse"
+                }`} />
+                <span className="font-semibold capitalize">
+                  {scrapeJobStatus.data?.status === "done" ? "Completed" : scrapeJobStatus.data?.status || "Running"}
+                </span>
+                {scrapeJobStatus.data?.progress !== undefined && (
+                  <span className="ml-auto text-muted-foreground">{scrapeJobStatus.data.progress}%</span>
+                )}
               </div>
-              {scrapeJobStatus.data?.message && <div className="mt-1 text-muted-foreground">{scrapeJobStatus.data.message}</div>}
-              {scrapeJobStatus.data?.error && <div className="mt-1 text-destructive text-[10px] whitespace-pre-wrap">{scrapeJobStatus.data.error}</div>}
+              {scrapeJobStatus.data?.message && (
+                <div className="mt-1 text-muted-foreground">{scrapeJobStatus.data.message}</div>
+              )}
+              {scrapeJobStatus.data?.error && (
+                <div className="mt-1 text-destructive text-[10px] whitespace-pre-wrap">{scrapeJobStatus.data.error}</div>
+              )}
               {scrapeJobStatus.data?.progress !== undefined && (
                 <div className="mt-2 h-1.5 rounded-full bg-elevated overflow-hidden">
-                  <div className="h-full rounded-full bg-primary" style={{ width: `${scrapeJobStatus.data.progress}%` }} />
+                  <div className="h-full rounded-full bg-primary transition-all duration-300" style={{ width: `${scrapeJobStatus.data.progress}%` }} />
+                </div>
+              )}
+              {/* Full crawl done — show rich stats */}
+              {(scrapeJobStatus.data?.status === "done") && scrapeJobStatus.data?.result && (
+                <div className="mt-3 pt-3 border-t border-border space-y-2">
+                  {/* Languages */}
+                  {scrapeJobStatus.data.result.languages?.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {scrapeJobStatus.data.result.languages.map((lang: string) => (
+                        <span key={lang} className="rounded bg-primary/20 text-primary px-1.5 py-0.5 text-[10px] font-medium uppercase">{lang}</span>
+                      ))}
+                    </div>
+                  )}
+                  {/* Stats grid */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded bg-elevated p-2 text-center">
+                      <div className="text-base font-bold text-foreground">{scrapeJobStatus.data.result.pages_found ?? 0}</div>
+                      <div className="text-[10px] text-muted-foreground">Pages</div>
+                    </div>
+                    <div className="rounded bg-elevated p-2 text-center">
+                      <div className="text-base font-bold text-foreground">{scrapeJobStatus.data.result.images_discovered ?? scrapeJobStatus.data.result.images_content ?? 0}</div>
+                      <div className="text-[10px] text-muted-foreground">Images</div>
+                    </div>
+                    <div className="rounded bg-elevated p-2 text-center">
+                      <div className="text-base font-bold text-foreground">{scrapeJobStatus.data.result.pdfs_discovered ?? 0}</div>
+                      <div className="text-[10px] text-muted-foreground">PDFs</div>
+                    </div>
+                  </div>
+                  {/* Pages by language */}
+                  {scrapeJobStatus.data.result.pages_by_language && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+                      {Object.entries(scrapeJobStatus.data.result.pages_by_language).map(([lang, count]: [string, any]) => (
+                        <span key={lang}><span className="font-medium text-foreground">{lang.toUpperCase()}</span>: {count} pages</span>
+                      ))}
+                    </div>
+                  )}
+                  {/* Image classification */}
+                  {(scrapeJobStatus.data.result.images_content > 0 || scrapeJobStatus.data.result.images_decorative > 0) && (
+                    <div className="text-[10px] text-muted-foreground">
+                      🖼 <span className="text-success">{scrapeJobStatus.data.result.images_content} content</span>
+                      {" · "}
+                      <span className="text-muted-foreground">{scrapeJobStatus.data.result.images_decorative} decorative filtered</span>
+                    </div>
+                  )}
+                  {/* Ingest to KB button */}
+                  <div className="pt-2 border-t border-border">
+                    <button
+                      onClick={() => handleIngest(false)}
+                      disabled={ingesting}
+                      className="w-full inline-flex items-center justify-center gap-2 rounded-md bg-[image:var(--gradient-primary)] px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    >
+                      {ingesting
+                        ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Ingesting to KB...</>
+                        : <><Database className="h-3.5 w-3.5" /> Ingest to Knowledge Base</>}
+                    </button>
+                    <p className="text-[10px] text-muted-foreground text-center mt-1">
+                      Embeds all crawled pages into {tenantId}'s KB
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -1976,7 +2359,32 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                     />
                   </td>
                   <td className="px-3 py-3 font-medium">
-                    <div className="flex items-center gap-2"><FileText className="h-4 w-4 text-primary flex-shrink-0" /> <span className="truncate max-w-[260px]" title={d.name}>{d.name}</span></div>
+                    {renamingFile === d.name ? (
+                      <div className="flex items-center gap-1.5">
+                        <FileText className="h-4 w-4 text-primary flex-shrink-0" />
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={e => setRenameValue(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleCommitRename(); if (e.key === 'Escape') setRenamingFile(null); }}
+                          className="border border-primary/40 rounded px-2 py-0.5 text-sm bg-elevated focus:outline-none focus:ring-1 focus:ring-primary w-52"
+                        />
+                        <button onClick={handleCommitRename} disabled={renameSaving} className="text-[10px] rounded px-2 py-0.5 bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50">
+                          {renameSaving ? '…' : '✓'}
+                        </button>
+                        <button onClick={() => setRenamingFile(null)} className="text-[10px] rounded px-2 py-0.5 bg-elevated text-muted-foreground hover:bg-destructive/10 hover:text-destructive">✕</button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 group">
+                        <FileText className="h-4 w-4 text-primary flex-shrink-0" />
+                        <span className="truncate max-w-[240px]" title={d.name}>{d.name}</span>
+                        {!d.ingested && (
+                          <button onClick={() => handleStartRename(d.name)} className="opacity-0 group-hover:opacity-100 transition-opacity rounded p-0.5 text-muted-foreground hover:text-foreground" title="Rename">
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-3">
                     <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${srcColors[src] || srcColors.upload} border`}>{src}</span>
@@ -1986,9 +2394,19 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                   <td className="px-3 py-3"><Pill status={d.ingested ? "indexed" : "queued"} /></td>
                   <td className="px-3 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => handleViewChunks(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated" title="View chunks">
-                        <Database className="h-4 w-4" />
+                      <button onClick={() => handlePreviewDoc(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground" title="Preview text">
+                        <Eye className="h-4 w-4" />
                       </button>
+                      {d.ingested && (
+                        <button onClick={() => handleViewChunks(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground" title="View chunks">
+                          <Database className="h-4 w-4" />
+                        </button>
+                      )}
+                      {!d.ingested && (
+                        <button onClick={() => handleStartRename(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground" title="Rename file">
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      )}
                       <button onClick={() => handleDeleteDoc(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete">
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -2004,22 +2422,30 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       </div>
 
       {viewDoc && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={() => setViewDoc(null)}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={() => { setViewDoc(null); setPreviewText(null); }}>
           <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-border bg-[var(--modal-bg)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
               <div>
-                <h2 className="text-base font-bold">Chunks: {viewDoc}</h2>
-                <p className="text-xs text-muted-foreground">{chunks.length} chunk{chunks.length !== 1 ? 's' : ''}</p>
+                <h2 className="text-base font-bold">{previewText !== null ? "Document Preview: " : "Chunks: "}{viewDoc}</h2>
+                <p className="text-xs text-muted-foreground">
+                  {previewText !== null ? "Raw text content" : `${chunks.length} chunk${chunks.length !== 1 ? 's' : ''}`}
+                </p>
               </div>
-              <button onClick={() => setViewDoc(null)} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
+              <button onClick={() => { setViewDoc(null); setPreviewText(null); }} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-6 space-y-3">
-              {chunksLoading ? (
+              {previewLoading || chunksLoading ? (
                 <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading chunks...
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> {previewLoading ? "Loading preview..." : "Loading chunks..."}
+                </div>
+              ) : previewText !== null ? (
+                <div className="rounded-lg border border-border bg-elevated/50 p-4">
+                  <pre className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap font-mono overflow-x-auto">{previewText}</pre>
                 </div>
               ) : chunks.length === 0 ? (
-                <div className="py-12 text-center text-xs text-muted-foreground">No chunks found</div>
+                <div className="py-12 text-center text-xs text-muted-foreground">
+                  No chunks found. Click the <Eye className="inline h-3.5 w-3.5 mx-1" /> icon to review raw text.
+                </div>
               ) : (
                 chunks.map((c: any, i: number) => (
                   <div key={c.chunk_id || i} className="rounded-lg border border-border bg-elevated/50 p-4">
@@ -2038,6 +2464,83 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── OS-style Duplicate Resolution Dialog ── */}
+      {dupDialogOpen && dupItems.length > 0 && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/70 backdrop-blur-sm">
+          <div className="flex flex-col w-full max-w-2xl max-h-[90vh] rounded-2xl border border-amber-400/30 bg-[var(--modal-bg)] shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center gap-3 border-b border-border px-6 py-5 bg-amber-500/5">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-400/15 flex-shrink-0">
+                <AlertTriangle className="h-5 w-5 text-amber-400" />
+              </div>
+              <div className="flex-1">
+                <h2 className="text-base font-bold">Duplicate Pages Detected</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">{dupItems.length} page{dupItems.length !== 1 ? 's' : ''} already exist from a previous scrape. Choose how to handle each one.</p>
+              </div>
+              <button onClick={() => setDupDialogOpen(false)} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
+            </div>
+
+            {/* Quick apply buttons */}
+            <div className="flex items-center gap-2 px-6 py-3 border-b border-border bg-elevated/30">
+              <span className="text-xs text-muted-foreground mr-1">Apply to all:</span>
+              <button onClick={() => applyAllDupAction('replace')} className="text-[11px] font-semibold rounded-md px-3 py-1 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors">↩ Replace All</button>
+              <button onClick={() => applyAllDupAction('keep_both')} className="text-[11px] font-semibold rounded-md px-3 py-1 bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-colors">+ Keep Both</button>
+              <button onClick={() => applyAllDupAction('skip')} className="text-[11px] font-semibold rounded-md px-3 py-1 bg-muted/60 text-muted-foreground border border-border hover:bg-elevated transition-colors">✕ Skip All (Keep Old)</button>
+            </div>
+
+            {/* Per-file list */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+              {dupItems.map((dup, idx) => (
+                <div key={idx} className={`rounded-xl border p-4 transition-colors ${
+                  dup.action === 'replace' ? 'border-primary/30 bg-primary/5' :
+                  dup.action === 'keep_both' ? 'border-success/30 bg-success/5' :
+                  'border-border bg-elevated/30'
+                }`}>
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate" title={dup.title}>{dup.title || dup.url}</p>
+                      <a href={dup.url} target="_blank" rel="noreferrer" className="text-[11px] text-primary/70 hover:underline truncate block mt-0.5">{dup.url}</a>
+                      <div className="flex items-center gap-4 mt-2 text-[10px] text-muted-foreground">
+                        <span>Existing: <span className="font-mono text-foreground/70">{dup.existing_file}</span></span>
+                        <span>→ New: <span className="font-mono text-foreground/70">{dup.new_file}</span></span>
+                      </div>
+                    </div>
+                    {/* Per-item action selector */}
+                    <div className="flex flex-col gap-1.5 flex-shrink-0">
+                      {(['replace', 'keep_both', 'skip'] as const).map(a => (
+                        <button key={a} onClick={() => updateDupAction(idx, a)}
+                          className={`text-[10px] font-semibold rounded-md px-3 py-1 border transition-colors whitespace-nowrap ${
+                            dup.action === a
+                              ? a === 'replace' ? 'bg-primary text-primary-foreground border-primary'
+                                : a === 'keep_both' ? 'bg-success text-white border-success'
+                                : 'bg-muted text-foreground border-border'
+                              : 'bg-transparent text-muted-foreground border-border hover:bg-elevated'
+                          }`}>
+                          {a === 'replace' ? '↩ Replace' : a === 'keep_both' ? '+ Keep Both' : '✕ Skip'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 border-t border-border px-6 py-4 bg-elevated/20">
+              <button onClick={() => { setDupDialogOpen(false); setDupItems([]); }} className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-elevated transition-colors">Cancel</button>
+              <button
+                onClick={() => handleResolveDuplicates(dupItems.map(d => ({ existing_file: d.existing_file, new_file: d.new_file, action: d.action })))}
+                disabled={dupResolving}
+                className="rounded-lg bg-[image:var(--gradient-primary)] px-5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+              >
+                {dupResolving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                Apply {dupItems.length} Decision{dupItems.length !== 1 ? 's' : ''}
+              </button>
             </div>
           </div>
         </div>
@@ -2750,7 +3253,7 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
     },
   });
 
-  const apiKey = tenantData?.apiKey || "••••••••";
+  const apiKey = tenantData?.api_key || tenantData?.apiKey || "••••••••";
   const baseUrl = window.location.origin + "/api/v1";
   const indexedDocs = (docs as any[]).filter((d: any) => d.ingested).length;
   const totalChunks = (docs as any[]).reduce((sum: number, d: any) => sum + (d.chunks || 0), 0);

@@ -67,6 +67,11 @@ class _InMemoryStore:
     def get_job(self, job_id: str) -> Optional[ScrapeJob]:
         return self.get(job_id)
 
+    def update(self, job: ScrapeJob) -> None:
+        """Update job in store (in-memory: already in dict by reference, just ensure stored)."""
+        with self._lock:
+            self._jobs[job.job_id] = job
+
     def list_jobs(self) -> list[dict]:
         with self._lock:
             return [j.to_dict() for j in self._jobs.values()]
@@ -123,6 +128,13 @@ class _RedisStore:
             self._fallback[job.job_id] = job
         return job
 
+    def update(self, job: ScrapeJob) -> None:
+        if self._enabled and self._client:
+            try:
+                self._client.setex(self._key(job.job_id), 86400, json.dumps(job.to_dict(), default=str))
+            except Exception as e:
+                log.warning("Redis update failed: %s", e)
+
     def get(self, job_id: str) -> Optional[ScrapeJob]:
         if self._enabled and self._client:
             try:
@@ -132,7 +144,13 @@ class _RedisStore:
                     job = ScrapeJob()
                     for k in ScrapeJob.__slots__:
                         if k in data:
-                            setattr(job, k, data[k])
+                            if k == "created_at" and isinstance(data[k], str):
+                                try:
+                                    setattr(job, k, datetime.fromisoformat(data[k]))
+                                except ValueError:
+                                    setattr(job, k, data[k])
+                            else:
+                                setattr(job, k, data[k])
                     return job
             except Exception:
                 pass
@@ -158,10 +176,12 @@ class _RedisStore:
     def delete_job(self, job_id: str) -> bool:
         if self._enabled and self._client:
             try:
-                self._client.delete(self._key(job_id))
+                deleted_count = self._client.delete(self._key(job_id))
+                fallback_deleted = self._fallback.pop(job_id, None) is not None
+                return deleted_count > 0 or fallback_deleted
             except Exception:
                 pass
-        return self._fallback.pop(job_id, None) is not None or True
+        return self._fallback.pop(job_id, None) is not None
 
 
 # ── Select backend ──────────────────────────────────────────────────────────

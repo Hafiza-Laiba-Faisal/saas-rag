@@ -49,6 +49,11 @@ class CrawlResult:
     timing: dict = field(default_factory=dict)
     readability: dict = field(default_factory=dict)
     assets: dict = field(default_factory=dict)
+    # New fields for production crawler
+    raw_html: Optional[str] = None
+    parent_url: str = ""
+    changed: bool = True
+    content_hash: str = ""
 
 
 @dataclass
@@ -71,6 +76,12 @@ class CrawlStats:
     external_skipped: int = 0
     robots_skipped: int = 0
     max_depth_reached: int = 0
+    # Change detection stats
+    unchanged_skipped: int = 0
+    pages_updated: int = 0
+    # Performance stats
+    avg_page_size_bytes: float = 0
+    avg_extraction_time_ms: float = 0
 
 
 class RecursiveCrawler:
@@ -126,9 +137,21 @@ class RecursiveCrawler:
         self._lock = asyncio.Lock()
         self._seen_hashes: set[str] = set()
         self._start_time: float = 0
+        
+        # Performance tracking
+        self._page_sizes: list[int] = []
+        self._extraction_times: list[float] = []
 
         # Output directory for saving crawled data
         self.output_dir = Path(output_dir) if output_dir else Path("crawl_output") / urlparse(seed_url).netloc.replace(".", "_")
+        
+        # Initialize PageStore and ChangeStore
+        from core.crawler.page_store import PageStore
+        from core.crawler.change_store import init_change_store
+        
+        self.page_store = PageStore(self.output_dir)
+        domain = urlparse(seed_url).netloc.replace(".", "_")
+        self.change_store = init_change_store(domain, self.output_dir)
 
 
     async def crawl(self) -> list[CrawlResult]:
@@ -139,7 +162,7 @@ class RecursiveCrawler:
         sitemap_urls = []
         if is_sitemap:
             sitemap_parser = SitemapParser(timeout=self.timeout)
-            sitemap_urls = sitemap_parser.parse(self.seed_url)
+            sitemap_urls = await asyncio.to_thread(sitemap_parser.parse, self.seed_url)
         elif self.scheduler.respect_robots:
             parsed_seed = urlparse(self.seed_url)
             base_url = f"{parsed_seed.scheme}://{parsed_seed.netloc}"
@@ -147,7 +170,7 @@ class RecursiveCrawler:
             if sitemaps:
                 sitemap_parser = SitemapParser(timeout=self.timeout)
                 for sm in sitemaps:
-                    sitemap_urls.extend(sitemap_parser.parse(sm))
+                    sitemap_urls.extend(await asyncio.to_thread(sitemap_parser.parse, sm))
 
         if sitemap_urls:
             for u in sitemap_urls:
@@ -281,32 +304,104 @@ class RecursiveCrawler:
 
             elif self.content_detector.should_parse_html(result.content_type):
                 html = fetch_result.text
+                result.raw_html = html  # Preserve raw HTML
+                
+                # Track page size
+                page_size = len(html.encode("utf-8"))
+                async with self._lock:
+                    self._page_sizes.append(page_size)
 
                 t1 = time.time()
                 tree = self.parser.parse(html)
                 timing["parse_ms"] = round((time.time() - t1) * 1000, 2)
 
                 t2 = time.time()
-                metadata = self.meta_extractor.extract(tree, url)
+                
+                # Extract readability first to get clean text for metadata
+                readability_extractor = ReadabilityExtractor(base_url=url)
+                result.readability = readability_extractor.extract(html)
+                clean_text = result.readability.get("markdown", "") or result.readability.get("clean_text", "")
+                
+                # Compute content hash for change detection
+                import hashlib
+                content_hash = hashlib.sha1(clean_text.encode("utf-8")).hexdigest() if clean_text else ""
+                result.content_hash = content_hash
+                
+                # Check if content has changed
+                if self.change_store.matching(url, content_hash):
+                    # Content unchanged - skip processing
+                    result.changed = False
+                    async with self._lock:
+                        self.stats.unchanged_skipped += 1
+                    self.scheduler.mark_completed(url)
+                    result.timing = timing
+                    return result
+                else:
+                    # Content changed or new
+                    result.changed = True
+                    self.change_store.set(url, content_hash)
+                    async with self._lock:
+                        self.stats.pages_updated += 1
+                
+                # Extract assets for images/pdfs
+                self.asset_extractor.base_url = url
+                result.assets = self.asset_extractor.extract(tree)
+                
+                # Get image and PDF URLs
+                image_urls = [img.get("src", "") for img in result.assets.get("images", [])]
+                pdf_urls = [doc.get("url", "") for doc in result.assets.get("documents", []) if doc.get("url", "").lower().endswith(".pdf")]
+                
+                # Use RichMetadataExtractor with all context
+                from core.extractor.metadata_extractor import RichMetadataExtractor
+                rich_extractor = RichMetadataExtractor()
+                metadata = rich_extractor.extract(
+                    tree,
+                    url=url,
+                    clean_text=clean_text,
+                    parent_url=result.parent_url,
+                    crawl_depth=depth,
+                    images=image_urls,
+                    pdfs=pdf_urls
+                )
+                
                 result.title = metadata.get("og_title") or metadata.get("title", "")
                 result.description = metadata.get("og_description") or metadata.get("description", "")
                 result.metadata = metadata
+                result.content_hash = metadata.get("content_hash", "")
 
                 links_data = self.links_extractor.extract(tree, url)
                 discovered_urls = [link["url"] for link in links_data["links"]]
                 result.links = discovered_urls
-                timing["extract_ms"] = round((time.time() - t2) * 1000, 2)
-
-                readability_extractor = ReadabilityExtractor(base_url=url)
-                result.readability = readability_extractor.extract(html)
-
-                self.asset_extractor.base_url = url
-                result.assets = self.asset_extractor.extract(tree)
+                
+                extraction_time = time.time() - t2
+                timing["extract_ms"] = round(extraction_time * 1000, 2)
+                async with self._lock:
+                    self._extraction_times.append(extraction_time * 1000)
 
                 self.scheduler.add_discovered_urls(
                     discovered_urls,
                     parent_url=url,
                     current_depth=depth
+                )
+                
+                # Save to PageStore
+                page_id = self.page_store.page_id(url)
+                self.page_store.save_raw_html(page_id, html)
+                self.page_store.save_clean_text(page_id, clean_text)
+                self.page_store.save_metadata(page_id, metadata)
+                
+                # Add to manifest
+                self.page_store.append_manifest(
+                    self.page_store.manifest_entry(
+                        page_id=page_id,
+                        url=url,
+                        title=result.title,
+                        language=metadata.get("language", "default"),
+                        section=metadata.get("section", "General"),
+                        changed=result.changed,
+                        depth=depth,
+                        word_count=metadata.get("word_count", 0)
+                    )
                 )
 
             self.scheduler.mark_completed(url)
@@ -326,6 +421,9 @@ class RecursiveCrawler:
                 self.stats.skipped += 1
             else:
                 self.stats.failed += 1
+        elif not result.changed:
+            # Unchanged page (skipped due to change detection)
+            self.stats.skipped += 1
         else:
             self.stats.successful += 1
 
@@ -340,119 +438,86 @@ class RecursiveCrawler:
             self.stats.other_files += 1
 
     async def _save_results(self):
-        """Save crawl results to disk in crawl_output directory."""
+        """Save crawl results using PageStore and generate crawl_summary.json."""
         try:
-            # Create output directory
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            pages_dir = self.output_dir / "pages"
-            pages_dir.mkdir(exist_ok=True)
-
-            # Prepare data structures
-            pages_by_language = {}
-            pages_flat = []
-            content_files = []
-            media = []
-
-            # Process each crawled page
-            for result in self.results:
-                if result.error:
-                    continue
-
-                # Add to flat list
-                page_data = {
-                    "title": result.title or "Untitled",
-                    "url": result.url,
-                    "depth": result.depth,
-                    "source": "recursive",
-                    "status": result.status_code,
-                }
-                if result.description:
-                    page_data["description"] = result.description
-                pages_flat.append(page_data)
-
-                # Detect language from URL
-                domain = urlparse(self.seed_url).netloc.lower()
-                path = result.url.replace(f"https://{domain}", "").replace(f"http://{domain}", "").lstrip("/")
-                first_seg = path.split("/")[0] if path else "default"
-                known_langs = {"it", "fr", "de", "en", "es", "pt", "ru", "zh", "ja", "ko", "ar", "nl", "pl", "tr", "sv"}
-                lang = first_seg if first_seg in known_langs else "default"
-
-                # Add to language-specific list
+            # Calculate performance stats
+            if self._page_sizes:
+                self.stats.avg_page_size_bytes = sum(self._page_sizes) / len(self._page_sizes)
+            if self._extraction_times:
+                self.stats.avg_extraction_time_ms = sum(self._extraction_times) / len(self._extraction_times)
+            
+            # Group pages by language
+            pages_by_language: dict[str, list[dict]] = {}
+            for entry in self.page_store.get_manifest_entries():
+                lang = entry.get("language", "default")
                 if lang not in pages_by_language:
                     pages_by_language[lang] = []
                 pages_by_language[lang].append({
-                    "title": result.title or "Untitled",
-                    "url": result.url,
-                    "source": "recursive",
-                    "type": "page"
+                    "title": entry.get("title", ""),
+                    "url": entry.get("url", ""),
+                    "section": entry.get("section", "General"),
+                    "page_id": entry.get("page_id", "")
                 })
-
-                # Save page content as markdown
-                if result.readability and (result.readability.get("markdown") or result.readability.get("clean_text")):
-                    lang_dir = pages_dir / lang
-                    lang_dir.mkdir(exist_ok=True)
-
-                    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in (result.title or "untitled")).strip()[:40]
-                    md_path = lang_dir / f"{safe_title}.md"
-
-                    content = f"# {result.title or 'Untitled'}\n\n"
-                    content += f"Source: {result.url}\n\n"
-                    content += "---\n\n"
-                    content += result.readability.get("markdown", "") or result.readability.get("clean_text", "")
-
-                    md_path.write_text(content, encoding="utf-8")
-
-                    content_files.append({
-                        "title": result.title or "Untitled",
-                        "url": result.url,
-                        "lang": lang,
-                        "file": f"pages/{lang}/{safe_title}.md",
-                        "text_length": len(result.readability.get("clean_text", "") or result.readability.get("markdown", ""))
-                    })
-
-                # Collect media/assets
-                if result.assets:
-                    for img in result.assets.get("images", []):
-                        media.append({
-                            "url": img.get("src", ""),
-                            "title": img.get("alt", "") or result.title,
-                            "mime": "image/*",
-                            "alt": img.get("alt", "")
-                        })
-
-            # Build index.json
-            index_data = {
-                "site": self.seed_url,
-                "crawled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "strategy": "recursive",
-                "pages_by_language": dict(sorted(pages_by_language.items())),
-                "pages_flat": pages_flat,
-                "content_files": content_files,
-                "media": media[:100],  # Limit media list
-                "stats": {
+            
+            # Write index.json via PageStore
+            self.page_store.write_manifest(
+                site=self.seed_url,
+                strategy="recursive",
+                stats={
                     "total_pages": self.stats.total_pages,
                     "successful": self.stats.successful,
                     "failed": self.stats.failed,
+                    "skipped": self.stats.skipped,
                     "html_pages": self.stats.html_pages,
                     "pdf_files": self.stats.pdf_files,
-                    "images": self.stats.images,
+                    "unchanged_skipped": self.stats.unchanged_skipped,
+                    "pages_updated": self.stats.pages_updated,
                     "total_time_sec": round(self.stats.total_time_sec, 2),
                     "pages_per_second": round(self.stats.pages_per_second, 2),
-                }
+                    "avg_page_size_bytes": round(self.stats.avg_page_size_bytes, 0),
+                    "avg_extraction_time_ms": round(self.stats.avg_extraction_time_ms, 2),
+                },
+                pages_by_language=pages_by_language
+            )
+            
+            # Generate crawl_summary.json
+            from datetime import datetime
+            summary = {
+                "site": self.seed_url,
+                "started_at": datetime.fromtimestamp(self._start_time).isoformat() + "Z",
+                "finished_at": datetime.utcnow().isoformat() + "Z",
+                "duration_sec": round(self.stats.total_time_sec, 2),
+                "urls_discovered": self.stats.queued_urls,
+                "pages_crawled": self.stats.total_pages,
+                "pages_failed": self.stats.failed,
+                "duplicate_urls_removed": self.stats.duplicates_skipped,
+                "duplicate_content_removed": self.stats.skipped - self.stats.unchanged_skipped,
+                "unchanged_skipped": self.stats.unchanged_skipped,
+                "pages_updated": self.stats.pages_updated,
+                "images_extracted": 0,  # Will be filled by AutoCrawler
+                "images_downloaded": 0,
+                "pdfs_downloaded": 0,
+                "languages": list(pages_by_language.keys()),
+                "missing_pages": [],
+                "avg_page_size_bytes": round(self.stats.avg_page_size_bytes, 0),
+                "avg_extraction_time_ms": round(self.stats.avg_extraction_time_ms, 2),
+                "avg_chunk_count": round(self.stats.avg_page_size_bytes / 300, 1) if self.stats.avg_page_size_bytes > 0 else 0
             }
-
-            # Write index.json
-            index_path = self.output_dir / "index.json"
-            index_path.write_text(
-                json.dumps(index_data, indent=2, default=str, ensure_ascii=False),
+            
+            summary_path = self.output_dir / "crawl_summary.json"
+            summary_path.write_text(
+                json.dumps(summary, indent=2, ensure_ascii=False),
                 encoding="utf-8"
             )
-
-            logging.info(f"Recursive crawl results saved to: {self.output_dir}")
-            logging.info(f"Total pages saved: {len(content_files)}")
+            
+            # Save change store
+            self.change_store.bulk_save()
+            
+            logger.info(f"Crawl results saved to: {self.output_dir}")
+            logger.info(f"Total pages: {self.stats.total_pages}, Changed: {self.stats.pages_updated}, Unchanged: {self.stats.unchanged_skipped}")
 
         except Exception as e:
-            logging.error(f"Failed to save crawl results: {e}")
+            logger.error(f"Failed to save crawl results: {e}", exc_info=True)
 
     def get_stats(self) -> CrawlStats:
         """Get current crawl statistics."""

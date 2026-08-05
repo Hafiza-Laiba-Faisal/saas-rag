@@ -27,11 +27,30 @@ open_term() {
 [ -d "$ROOT/.venv" ] || { echo "Missing: $ROOT/.venv (create it with: python -m venv .venv && .venv/bin/pip install -e .)"; exit 1; }
 [ -d "$ROOT/chic-interface-design" ] || { echo "Missing: $ROOT/chic-interface-design"; exit 1; }
 
-# 4. Backend (Python) — new terminal window
-open_term "RAG Backend" "cd '$ROOT' && set -a && . ./.env && set +a && RAG_ROOT_DIR='$ROOT/.rbs_rag' QDRANT_HOST=localhost RAG_REDIS_HOST=localhost SCRAPER_SERVICE_URL=http://localhost:8002 PYTHONPATH='$ROOT/src' .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
+# 4. Backend (Python) — new terminal window (skip if a backend is already on :3001)
+if curl -s -o /dev/null -m 1 http://127.0.0.1:3001/api/v1/health; then
+  echo "Backend already running on http://localhost:3001 — skipping backend terminal."
+else
+  open_term "RAG Backend" "cd '$ROOT' && \
+    set -a && . ./.env && set +a && \
+    RAG_ROOT_DIR='$ROOT/.rbs_rag' \
+    QDRANT_HOST=localhost \
+    QDRANT_PORT=6333 \
+    RAG_REDIS_HOST=localhost \
+    REDIS_HOST=localhost \
+    REDIS_PORT=6379 \
+    REDIS_ENABLED=true \
+    SCRAPER_SERVICE_URL=http://localhost:8002 \
+    PYTHONPATH='$ROOT/src' \
+    .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
+fi
 
-# 5. Frontend — new terminal window
-open_term "RAG Frontend" "cd '$ROOT/chic-interface-design' && npm run dev"
+# 5. Frontend — new terminal window (skip if a dev server is already on :5173)
+if curl -s -o /dev/null -m 1 http://127.0.0.1:5173; then
+  echo "Frontend already running on http://localhost:5173 — skipping frontend terminal."
+else
+  open_term "RAG Frontend" "cd '$ROOT/chic-interface-design' && npm run dev"
+fi
 
 # 6. Docker logs — new terminal window (scraper + ocr, since these run detached and had no visible logs)
 open_term "Docker Logs (scraper + ocr)" "docker compose logs -f scraper_service ocr_service"

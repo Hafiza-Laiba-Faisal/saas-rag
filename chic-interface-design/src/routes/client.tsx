@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect, useRef } from "react";
-import { ArrowLeft, Cloud, Database, FileText, Globe, KeyRound, Loader2, MessageSquare, Send, Trash2, Upload, X, Zap } from "lucide-react";
+import { ArrowLeft, Cloud, Database, Eye, FileText, Globe, KeyRound, Loader2, MessageSquare, Send, Trash2, Upload, X, Zap } from "lucide-react";
 import { streamChat, StreamChunk } from "@/lib/streaming";
 import { parseLLMResponse, ParsedContent } from "@/lib/text-parser";
 import { renderMarkdown } from "@/lib/markdown-renderer";
@@ -647,6 +647,8 @@ function ClientDocumentsTab({
   const [viewDoc, setViewDoc] = useState<string | null>(null);
   const [chunks, setChunks] = useState<any[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
+  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [cloudSyncOpen, setCloudSyncOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("google_drive");
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -709,7 +711,30 @@ function ClientDocumentsTab({
         headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      setScrapeResult(await res.json());
+      const result = await res.json();
+      if (crawlToggle && result?.data?.job_id) {
+        const jobId = result.data.job_id;
+        for (let i = 0; i < 200; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const sr = await fetch(`/api/v1/scrape/recursive/${jobId}/status`, { headers: { "X-API-Key": apiKey } });
+            const status = await sr.json();
+            const s = status?.data?.status;
+            if (s === "done" || s === "completed") {
+              const r = status?.data?.result || {};
+              const n = typeof r.pages_found === "number" ? r.pages_found : r.stats?.total_pages ?? 0;
+              setScrapeResult({ status: "completed", url: scrapeUrl, files_saved: n, pages: n });
+              break;
+            }
+            if (s === "error" || s === "failed") {
+              setScrapeResult({ status: "failed", error: status?.data?.error || "Crawl failed" });
+              break;
+            }
+          } catch {}
+        }
+      } else {
+        setScrapeResult(result);
+      }
       onDocsChange();
     } catch (e: any) {
       setScrapeResult({ status: "failed", error: e.message });
@@ -732,21 +757,9 @@ function ClientDocumentsTab({
   }
 
   async function handleViewChunks(filename: string) {
-     setViewDoc(filename);
-     setChunksLoading(true);
-     setChunks([]);
-     try {
-       const res = await fetch(`/api/v1/client/documents/${encodeURIComponent(filename)}/chunks`, {
-         headers: { "X-API-Key": apiKey },
-       });
-       const data = await res.json();
-       setChunks(Array.isArray(data) ? data : []);
-     } catch (e) {
-       setChunks([]);
-     }
-     finally { setChunksLoading(false); }
     setViewDoc(filename);
     setChunksLoading(true);
+    setPreviewText(null);
     setChunks([]);
     try {
       const res = await fetch(`/api/v1/client/documents/${encodeURIComponent(filename)}/chunks`, {
@@ -754,8 +767,33 @@ function ClientDocumentsTab({
       });
       const data = await res.json();
       setChunks(Array.isArray(data) ? data : []);
-    } catch { setChunks([]); }
-    finally { setChunksLoading(false); }
+    } catch {
+      setChunks([]);
+    } finally {
+      setChunksLoading(false);
+    }
+  }
+
+  async function handlePreviewDoc(filename: string) {
+    setViewDoc(filename);
+    setPreviewLoading(true);
+    setPreviewText(null);
+    setChunks([]);
+    try {
+      const res = await fetch(`/api/v1/client/documents/${encodeURIComponent(filename)}?api_key=${encodeURIComponent(apiKey)}`, {
+        headers: { "X-API-Key": apiKey },
+      });
+      if (res.ok) {
+        const text = await res.text();
+        setPreviewText(text);
+      } else {
+        setPreviewText("Could not load document text content.");
+      }
+    } catch (e: any) {
+      setPreviewText("Failed to load preview: " + e.message);
+    } finally {
+      setPreviewLoading(false);
+    }
   }
 
   function formatSize(bytes?: number) {
@@ -954,9 +992,14 @@ function ClientDocumentsTab({
                     <td className="px-5 py-3"><ClientPill status={d.ingested ? "indexed" : "queued"} /></td>
                     <td className="px-5 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => handleViewChunks(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated" title="View chunks">
-                          <Database className="h-4 w-4" />
+                        <button onClick={() => handlePreviewDoc(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground" title="Review document text">
+                          <Eye className="h-4 w-4" />
                         </button>
+                        {d.ingested && (
+                          <button onClick={() => handleViewChunks(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-elevated hover:text-foreground" title="View chunks">
+                            <Database className="h-4 w-4" />
+                          </button>
+                        )}
                         <button onClick={() => handleDelete(d.name)} className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete">
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -970,24 +1013,32 @@ function ClientDocumentsTab({
         )}
       </div>
 
-      {/* Chunk viewer modal */}
+      {/* Chunk / Document text viewer modal */}
       {viewDoc && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={() => setViewDoc(null)}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={() => { setViewDoc(null); setPreviewText(null); }}>
           <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-border bg-[var(--modal-bg)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-border px-6 py-4">
               <div>
-                <h2 className="text-base font-bold">Chunks: {viewDoc}</h2>
-                <p className="text-xs text-muted-foreground">{chunks.length} chunk{chunks.length !== 1 ? "s" : ""}</p>
+                <h2 className="text-base font-bold">{previewText !== null ? "Document Preview: " : "Chunks: "}{viewDoc}</h2>
+                <p className="text-xs text-muted-foreground">
+                  {previewText !== null ? "Raw text content" : `${chunks.length} chunk${chunks.length !== 1 ? "s" : ""}`}
+                </p>
               </div>
-              <button onClick={() => setViewDoc(null)} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
+              <button onClick={() => { setViewDoc(null); setPreviewText(null); }} className="rounded-md p-1.5 text-muted-foreground hover:bg-elevated"><X className="h-4 w-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-6 space-y-3">
-              {chunksLoading ? (
+              {previewLoading || chunksLoading ? (
                 <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading chunks...
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" /> {previewLoading ? "Loading preview..." : "Loading chunks..."}
+                </div>
+              ) : previewText !== null ? (
+                <div className="rounded-lg border border-border bg-elevated/50 p-4">
+                  <pre className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap font-mono overflow-x-auto">{previewText}</pre>
                 </div>
               ) : chunks.length === 0 ? (
-                <div className="py-12 text-center text-xs text-muted-foreground">No chunks found</div>
+                <div className="py-12 text-center text-xs text-muted-foreground">
+                  No chunks found. Click the <Eye className="inline h-3.5 w-3.5 mx-1" /> icon to review raw text.
+                </div>
               ) : (
                 chunks.map((c: any, i: number) => (
                   <div key={c.chunk_id || i} className="rounded-lg border border-border bg-elevated/50 p-4">

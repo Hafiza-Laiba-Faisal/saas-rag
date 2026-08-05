@@ -166,14 +166,14 @@ class AutoCrawler:
             result.pages = all_pages
 
             self._progress(30, "Extracting page text content...")
-            content_files = self._save_content_from_results(
+            content_files = await self._extract_pages_content(
                 crawl_results, all_pages, out_dir, by_lang, primary_lang, domain
             )
             result.content_files = content_files
 
             if download_images:
                 self._progress(50, "Discovering images from all pages...")
-                all_images = self._collect_images_from_results(crawl_results, all_pages, page_title_map)
+                all_images = await self._discover_all_images(crawl_results, all_pages, page_title_map)
                 result.images = all_images
                 imgs_by_lang: dict[str, list[dict]] = {}
                 for img in all_images:
@@ -194,7 +194,7 @@ class AutoCrawler:
             if download_pdfs:
                 self._progress(80, "Discovering and downloading PDFs...")
                 wp_pdfs = [m for m in all_media if m.get("mime") == "application/pdf"]
-                html_pdfs = self._collect_pdfs_from_results(crawl_results)
+                html_pdfs = await self._collect_pdfs_from_results(crawl_results, all_pages)
                 existing_urls = {p["url"] for p in wp_pdfs}
                 for p in html_pdfs:
                     if p["url"] not in existing_urls:
@@ -298,7 +298,7 @@ class AutoCrawler:
 
         return discovered, results
 
-    def _save_content_from_results(
+    async def _extract_pages_content(
         self,
         crawl_results: list,
         all_pages: list[dict],
@@ -310,48 +310,60 @@ class AutoCrawler:
         result_map = {r.url: r for r in crawl_results if not r.error}
         content_files = []
         pages_dir = out_dir / "pages"
+        sem = asyncio.Semaphore(4)
 
-        for lang, lang_pages in by_lang.items():
-            lang_dir = pages_dir / lang
-            lang_dir.mkdir(parents=True, exist_ok=True)
+        async def _extract(p: dict, lang: str) -> Optional[dict]:
+            page_url = p["url"]
+            title = p.get("title", "untitled")
+            safe_name = _sanitize(title)
+            md_path = pages_dir / lang / f"{safe_name}.md"
 
-            for p in lang_pages:
-                page_url = p["url"]
-                title = p.get("title", "untitled")
-                safe_name = _sanitize(title)
-                md_path = lang_dir / f"{safe_name}.md"
-
-                if md_path.exists():
-                    content_files.append({
-                        "title": title, "url": page_url, "lang": lang,
-                        "file": str(md_path.relative_to(out_dir)),
-                    })
-                    continue
-
-                cr = result_map.get(page_url)
-                if cr and cr.readability:
-                    markdown = cr.readability.get("markdown", "")
-                    clean_text = cr.readability.get("clean_text", "")
-                    text = markdown or clean_text
-                else:
-                    continue
-
-                if not text:
-                    continue
-
-                content = f"# {title}\n\nSource: {page_url}\n\n---\n\n{text}"
-                md_path.write_text(content, encoding="utf-8")
-                content_files.append({
+            if md_path.exists():
+                return {
                     "title": title, "url": page_url, "lang": lang,
                     "file": str(md_path.relative_to(out_dir)),
-                    "text_length": len(text),
-                })
+                }
+
+            cr = result_map.get(page_url)
+            text = ""
+            if cr and cr.readability:
+                text = cr.readability.get("markdown", "") or cr.readability.get("clean_text", "")
+            else:
+                async with sem:
+                    try:
+                        fr = await self.fetcher.get(page_url, timeout=20)
+                        if not fr.ok:
+                            return None
+                        readability = ReadabilityExtractor(base_url=page_url)
+                        extracted = readability.extract(fr.text)
+                        text = extracted.get("markdown", "") or extracted.get("clean_text", "")
+                    except Exception:
+                        return None
+
+            if not text:
+                return None
+
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(f"# {title}\n\nSource: {page_url}\n\n---\n\n{text}", encoding="utf-8")
+            return {
+                "title": title, "url": page_url, "lang": lang,
+                "file": str(md_path.relative_to(out_dir)),
+                "text_length": len(text),
+            }
+
+        for lang, lang_pages in by_lang.items():
+            (pages_dir / lang).mkdir(parents=True, exist_ok=True)
+            tasks = [_extract(p, lang) for p in lang_pages]
+            for res in await asyncio.gather(*tasks):
+                if res:
+                    content_files.append(res)
 
         return content_files
 
-    def _collect_images_from_results(
+    async def _discover_all_images(
         self, crawl_results: list, all_pages: list[dict], page_title_map: dict
     ) -> list[dict]:
+        crawled = {r.url for r in crawl_results if not r.error}
         seen_urls = set()
         all_imgs = []
 
@@ -368,16 +380,41 @@ class AutoCrawler:
                         "page_url": cr.url, "page_title": page_title,
                     })
 
-        for p in all_pages:
-            pu = p["url"]
-            if pu not in {r.url for r in crawl_results}:
-                seen_urls.discard(pu)
+        sem = asyncio.Semaphore(4)
+        pages_to_fetch = [p for p in all_pages if p["url"] not in crawled]
+
+        async def _fetch_images(p: dict) -> None:
+            page_url = p["url"]
+            async with sem:
+                try:
+                    fr = await self.fetcher.get(page_url, timeout=20)
+                    if not fr.ok:
+                        return
+                    tree = self.parser.parse(fr.text)
+                    self.asset_ext.base_url = page_url
+                    assets = self.asset_ext.extract(tree)
+                    page_title = page_title_map.get(page_url, p.get("title", "page"))
+                    for img in assets.get("images", []):
+                        src = img.get("src", "")
+                        if src and src not in seen_urls and not src.startswith("data:"):
+                            seen_urls.add(src)
+                            all_imgs.append({
+                                "url": src, "alt": img.get("alt", ""),
+                                "page_url": page_url, "page_title": page_title,
+                            })
+                except Exception:
+                    return
+
+        for _ in await asyncio.gather(*[_fetch_images(p) for p in pages_to_fetch]):
+            pass
 
         return all_imgs
 
-    def _collect_pdfs_from_results(self, crawl_results: list) -> list[dict]:
+    async def _collect_pdfs_from_results(self, crawl_results: list, all_pages: list[dict]) -> list[dict]:
+        crawled = {r.url for r in crawl_results if not r.error}
         pdfs = []
         seen = set()
+
         for cr in crawl_results:
             if cr.error or not cr.assets:
                 continue
@@ -391,6 +428,34 @@ class AutoCrawler:
                         "page_url": cr.url,
                         "source": "content_sniff",
                     })
+
+        sem = asyncio.Semaphore(4)
+        pages_to_fetch = [p for p in all_pages if p["url"] not in crawled]
+
+        async def _sniff(p: dict) -> None:
+            page_url = p["url"]
+            async with sem:
+                try:
+                    fr = await self.fetcher.get(page_url, timeout=20)
+                    if not fr.ok:
+                        return
+                    tree = self.parser.parse(fr.text)
+                    for a in tree.find_all("a", href=True):
+                        href = a["href"].strip()
+                        if href.lower().endswith(".pdf") and href.startswith("http") and href not in seen:
+                            seen.add(href)
+                            pdfs.append({
+                                "url": href,
+                                "title": a.get_text(strip=True) or p.get("title", "document"),
+                                "page_url": page_url,
+                                "source": "content_sniff",
+                            })
+                except Exception:
+                    return
+
+        for _ in await asyncio.gather(*[_sniff(p) for p in pages_to_fetch]):
+            pass
+
         return pdfs
 
     async def _bulk_download(

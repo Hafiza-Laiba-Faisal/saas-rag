@@ -1,0 +1,52 @@
+{
+  "decorative_patterns": [
+    "logo",
+    "favicon",
+    "icon",
+    "facebook",
+    "instagram",
+    "twitter",
+    "whatsapp",
+    "youtube",
+    "tiktok",
+    "linkedin",
+    "social",
+    "footer",
+    "header",
+    "button",
+    "badge",
+    "tracking",
+    "pixel",
+    "dummy",
+    "marker",
+    "bordo",
+    "separator",
+    "bullet",
+    "spinner",
+    "loading",
+    "placeholder",
+    "wp-content/uploads/2022/0",
+    "wp-content/uploads/2021/",
+    "arrow",
+    "chevron",
+    "close",
+    "hamburger",
+    "menu-icon"
+  ],
+  "blocked_extensions": [
+    "svg",
+    "ico"
+  ],
+  "min_width": 80,
+  "min_height": 80,
+  "content_keywords": [
+    "room",
+    "restaurant",
+    "hotel",
+    "meeting",
+    "spa",
+    "gallery",
+    "photo",
+    "image"
+  ]
+}

@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query, Response, Body
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -75,42 +75,359 @@ def _tenant_connection(db_path: Path):
     return conn
 
 
+def _normalize_title(title: str) -> str:
+    """Normalize a title for matching: lowercase, collapse whitespace, drop non-alphanumerics."""
+    return re.sub(r"[^a-z0-9]+", "", title.strip().lower())
+
+
+def _make_relevant_filename(title: str = "", url: str = "", docs_dir: Path | None = None, prefix: str = "scraped") -> str:
+    """Generate a clean, relevant, human-readable filename based on page title or URL path."""
+    base = ""
+    if title and title.strip():
+        clean_title = re.sub(r'\s*[\-|–|—]\s*.*$', '', title.strip(), flags=re.IGNORECASE)
+        base = clean_title.strip()
+    if not base and url:
+        parsed = url.rstrip("/").split("/")[-1]
+        base = parsed
+    if not base:
+        base = "page"
+
+    slug = re.sub(r'[^a-zA-Z0-9_\-]', '_', base).strip('_')
+    slug = re.sub(r'_+', '_', slug)[:45].lower()
+    if not slug:
+        slug = "page"
+
+    candidate = f"{prefix}_{slug}.txt"
+    if docs_dir and (docs_dir / candidate).exists():
+        candidate = f"{prefix}_{slug}_{uuid.uuid4().hex[:4]}.txt"
+    return candidate
+
+
+def _ts_to_epoch(value) -> float:
+    """Best-effort parse of a SQLite timestamp (UTC) / ISO string into epoch seconds."""
+    if not value:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        s = str(value).strip().replace("Z", "+00:00")
+        if "." not in s and "T" not in s:
+            s = s.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _scan_existing_urls(tenant_id: str) -> dict[str, str]:
+    """Return mapping of {source_url → filename} for all existing scraped files in tenant docs dir.
+    Used for duplicate detection before saving a new scrape."""
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    url_map: dict[str, str] = {}
+    if not docs_dir.exists():
+        return url_map
+    # Scan all .txt and .md files (crawl-imported files are named by title,
+    # e.g. "Home - Hotel de la Ville.md", not "scraped_*"), indexing each by
+    # its Source: header so crawl-imports don't get re-copied on every refresh.
+    for pattern in ("*.txt", "*.md"):
+        for f in docs_dir.glob(pattern):
+            try:
+                with f.open("r", encoding="utf-8", errors="ignore") as fp:
+                    for _ in range(6):
+                        line = fp.readline()
+                        if line.startswith("Source:"):
+                            url = line.replace("Source:", "").strip()
+                            if url:
+                                url_map[url] = f.name
+                            break
+            except Exception:
+                pass
+    return url_map
+
+
+def _scraped_source_url(file_path: Path) -> str | None:
+    """Read the Source: line from a scraped file header."""
+    try:
+        with file_path.open("r", encoding="utf-8", errors="ignore") as fp:
+            for _ in range(8):
+                line = fp.readline()
+                if line.startswith("Source:"):
+                    return line.replace("Source:", "").strip()
+    except Exception:
+        pass
+    return None
+
+
+def _purge_crawl_output_for_file(source_url: str | None, filename: str) -> None:
+    """Remove a deleted document's pages/PDFs from the crawl-output catalog so
+    _sync_crawl_outputs_to_tenant won't re-import them on the next list refresh."""
+    search_dirs = [
+        ROOT_DIR / "crawl-output",
+        Path("scraper-service/crawl_output"),
+        Path("scraper-service/app/crawl_output"),
+    ]
+    # Match the tenant filename the sync step would generate for a given md page.
+    def _derived_prefix(md_file: Path) -> str:
+        try:
+            title = f"{md_file.stem} ({md_file.parent.name.upper()})"
+            base = _make_relevant_filename(title=title, url=source_url or "", prefix="scraped")
+            return base[:-4]  # strip ".txt" -> "scraped_<slug>"
+        except Exception:
+            return ""
+
+    for base_dir in search_dirs:
+        if not base_dir.exists():
+            continue
+        for site_dir in base_dir.iterdir():
+            if not site_dir.is_dir():
+                continue
+            # Remove matching markdown pages (matched by Source: URL or derived filename).
+            pages_dir = site_dir / "pages"
+            if pages_dir.exists():
+                for md_file in pages_dir.glob("*.md"):
+                    remove = False
+                    try:
+                        with md_file.open("r", encoding="utf-8", errors="ignore") as fp:
+                            for _ in range(8):
+                                line = fp.readline()
+                                if line.startswith("Source:"):
+                                    if line.replace("Source:", "").strip() == source_url:
+                                        remove = True
+                                    break
+                    except Exception:
+                        pass
+                    if not remove:
+                        prefix = _derived_prefix(md_file)
+                        if prefix and filename.startswith(prefix):
+                            remove = True
+                    if remove:
+                        try:
+                            md_file.unlink()
+                        except Exception:
+                            pass
+            # Remove matching downloaded PDFs (matched by filename).
+            pdfs_dir = site_dir / "pdfs"
+            if pdfs_dir.exists():
+                target = pdfs_dir / filename
+                if target.exists():
+                    try:
+                        target.unlink()
+                    except Exception:
+                        pass
+
+
+def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, site_dir: Path | None = None) -> list[dict]:
+    """Scan crawler output directories and import completed pages into tenant documents.
+
+    If ``site_dir`` is provided only that site folder is scanned (used after a crawl
+    completes). Otherwise, when the tenant has a stored ``crawl_output_dir`` only that
+    folder is scanned. Falls back to scanning all known crawler output directories.
+    """
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    existing_url_map = _scan_existing_urls(tenant_id)
+
+    search_dirs = [
+        ROOT_DIR / "crawl-output",
+        Path("scraper-service/crawl_output"),
+        Path("scraper-service/app/crawl_output"),
+    ]
+
+    tenant = admin_store.get_tenant(tenant_id)
+    tenant_crawl_dir = tenant.get("crawl_output_dir") if tenant else None
+
+    if site_dir is not None:
+        base_dirs: list[Path] = [site_dir]
+    elif tenant_crawl_dir:
+        base_dirs = [Path(tenant_crawl_dir)]
+    else:
+        base_dirs = search_dirs
+
+    def _load_site_url_map(site_dir: Path) -> dict[tuple[str, str], str]:
+        """Load {(lang, title): url} per page from a crawler site's index.json."""
+        index_file = site_dir / "index.json"
+        url_map: dict[tuple[str, str], str] = {}
+        if not index_file.exists():
+            return url_map
+        try:
+            data = json.loads(index_file.read_text(encoding="utf-8", errors="ignore"))
+            by_lang = data.get("pages_by_language") or data.get("pages") or {}
+            if isinstance(by_lang, dict):
+                for lang, lang_pages in by_lang.items():
+                    if isinstance(lang_pages, list):
+                        for p in lang_pages:
+                            if isinstance(p, dict) and p.get("title") and p.get("url"):
+                                key = (str(lang).lower(), _normalize_title(p["title"]))
+                                url_map[key] = p["url"]
+            elif isinstance(by_lang, list):
+                for p in by_lang:
+                    if isinstance(p, dict) and p.get("title") and p.get("url"):
+                        key = (str(p.get("language", "")).lower(), _normalize_title(p["title"]))
+                        url_map[key] = p["url"]
+        except Exception:
+            pass
+        return url_map
+
+    saved_files = []
+    for base_dir in base_dirs:
+        if not base_dir.exists():
+            continue
+        if site_dir is not None or tenant_crawl_dir:
+            site_folders: list[Path] = [base_dir]
+        else:
+            site_folders = [p for p in base_dir.iterdir() if p.is_dir()]
+        for site_dir in site_folders:
+            pages_dir = site_dir / "pages"
+            if not pages_dir.exists():
+                continue
+            site_url_map = _load_site_url_map(site_dir)
+            for md_file in pages_dir.rglob("*.md"):
+                try:
+                    text = md_file.read_text(encoding="utf-8", errors="ignore")
+                    if not text.strip():
+                        continue
+                    lang = md_file.parent.name
+                    filename = md_file.stem
+                    source_url = site_url or f"https://{site_dir.name.replace('_', '.')}/"
+
+                    meta_file = md_file.with_suffix(".metadata.json")
+                    title = f"{filename} ({lang.upper()})"
+                    if meta_file.exists():
+                        try:
+                            mdata = json.loads(meta_file.read_text(encoding="utf-8"))
+                            source_url = mdata.get("url") or mdata.get("source_url") or source_url
+                            title = mdata.get("title") or title
+                        except Exception:
+                            pass
+                    else:
+                        # Fall back to the site's index.json for per-page URLs.
+                        page_url = site_url_map.get((lang.lower(), _normalize_title(filename)))
+                        if page_url:
+                            source_url = page_url
+
+                    if source_url in existing_url_map:
+                        continue
+
+                    target = docs_dir / md_file.name
+                    if target.exists():
+                        target = docs_dir / f"{Path(filename).stem}_{uuid.uuid4().hex[:4]}.md"
+                    content = f"# {title}\n\nSource: {source_url}\n\n{text}"
+                    target.write_text(content, encoding="utf-8")
+                    existing_url_map[source_url] = target.name
+                    saved_files.append({"url": source_url, "file": target.name, "title": title})
+                except Exception:
+                    pass
+
+            # Also sync downloaded PDFs found during crawl (original extension).
+            pdfs_dir = site_dir / "pdfs"
+            if pdfs_dir.exists():
+                for pdf_file in pdfs_dir.glob("*.pdf"):
+                    try:
+                        target_pdf = docs_dir / pdf_file.name
+                        if not target_pdf.exists():
+                            shutil.copy(pdf_file, target_pdf)
+                            saved_files.append({"url": pdf_file.name, "file": pdf_file.name, "title": pdf_file.stem})
+                    except Exception:
+                        pass
+
+            # Also sync JSON catalog files from the crawl (original extension).
+            for json_file in site_dir.glob("*.json"):
+                try:
+                    target_json = docs_dir / json_file.name
+                    if not target_json.exists():
+                        shutil.copy(json_file, target_json)
+                        saved_files.append({"url": json_file.name, "file": json_file.name, "title": json_file.stem})
+                except Exception:
+                    pass
+    return saved_files
+
+
 def _list_documents_from_db(db_path: Path, tenant_id: str) -> list[dict]:
-    """List a tenant's documents straight from its rag.db (DB is the source of truth).
+    """List a tenant's documents from DB (ingested) merged with disk documents (pending ingestion).
 
     Shapes rows to what the admin/client documents panels already expect:
     ``name``, ``source``, ``source_url``, ``ingested_at``, ``chunks``,
     ``ingested``, ``size_bytes``, ``extension``.
     """
-    if not db_path.exists():
-        return []
-    try:
-        with _tenant_connection(db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT d.document_id, d.name, d.source, d.source_url, d.ingested_at,
-                       (SELECT COUNT(*) FROM chunks c WHERE c.document_id = d.document_id) AS chunk_count
-                FROM documents d
-                WHERE d.tenant_id = ?
-                ORDER BY d.ingested_at DESC
-                """,
-                (tenant_id,),
-            ).fetchall()
-    except Exception:
-        return []
-    return [
-        {
-            "name": r["name"],
-            "source": r["source"] or "upload",
-            "source_url": r["source_url"],
-            "ingested_at": r["ingested_at"],
-            "chunks": r["chunk_count"] or 0,
-            "ingested": True,
-            "size_bytes": None,
-            "extension": Path(r["name"]).suffix.lstrip("."),
-        }
-        for r in rows
-    ]
+    _sync_crawl_outputs_to_tenant(tenant_id)
+    db_docs = {}
+    if db_path.exists():
+        try:
+            with _tenant_connection(db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT d.document_id, d.name, d.source, d.source_url, d.ingested_at,
+                           (SELECT COUNT(*) FROM chunks c WHERE c.document_id = d.document_id) AS chunk_count
+                    FROM documents d
+                    WHERE d.tenant_id = ?
+                    ORDER BY d.ingested_at DESC
+                    """,
+                    (tenant_id,),
+                ).fetchall()
+                for r in rows:
+                    db_docs[r["name"]] = {
+                        "name": r["name"],
+                        "source": r["source"] or "upload",
+                        "source_url": r["source_url"],
+                        "ingested_at": r["ingested_at"],
+                        "chunks": r["chunk_count"] or 0,
+                        "ingested": True,
+                        "size_bytes": None,
+                        "extension": Path(r["name"]).suffix.lstrip("."),
+                        "_sort_ts": _ts_to_epoch(r["ingested_at"]),
+                    }
+        except Exception:
+            pass
+
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    pending_docs = []
+    if docs_dir.exists():
+        for f in sorted(docs_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if f.is_file():
+                if f.name in db_docs:
+                    try:
+                        db_docs[f.name]["size_bytes"] = f.stat().st_size
+                    except Exception:
+                        pass
+                else:
+                    src_url = None
+                    # Updated is_scrape detection to match any file starting with scraped_
+                    is_scrape = f.name.lower().startswith("scraped_")
+                    source_type = "scrape" if is_scrape else "upload"
+                    if is_scrape:
+                        try:
+                            with f.open("r", encoding="utf-8", errors="ignore") as fp:
+                                header = "".join([fp.readline() for _ in range(5)])
+                                for line in header.splitlines():
+                                    if line.startswith("Source:"):
+                                        src_url = line.replace("Source:", "").strip()
+                                        break
+                        except Exception:
+                            pass
+                    try:
+                        sz = f.stat().st_size
+                    except Exception:
+                        sz = 0
+                    pending_docs.append({
+                        "name": f.name,
+                        "source": source_type,
+                        "source_url": src_url,
+                        "ingested_at": None,
+                        "chunks": 0,
+                        "ingested": False,
+                        "size_bytes": sz,
+                        "extension": f.suffix.lstrip("."),
+                        "_sort_ts": f.stat().st_mtime,
+                    })
+
+    items = list(db_docs.values()) + pending_docs
+    items.sort(key=lambda d: d.get("_sort_ts") or 0, reverse=True)
+    for d in items:
+        d.pop("_sort_ts", None)
+    return items
+
 
 
 @asynccontextmanager
@@ -259,31 +576,31 @@ class TenantOnboardRequest(BaseModel):
 
 
 class TenantUpdateRequest(BaseModel):
-    name: str
-    status: str = "active"
-    subscription_tier: str = "basic"
-    monthly_fee: float = 299.00
-    llm_provider: str = "gemini"
-    llm_model: str = "gemini-2.5-flash-lite"
+    name: str | None = None
+    status: str | None = None
+    subscription_tier: str | None = None
+    monthly_fee: float | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None
-    embedding_provider: str = "hash"
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
-    embedding_dimensions: int = 384
+    embedding_provider: str | None = None
+    embedding_model: str | None = None
+    embedding_dimensions: int | None = None
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
-    retrieval_top_k: int = 20
-    retrieval_rerank_top_k: int = 8
-    retrieval_final_context_k: int = 5
-    retrieval_dense_weight: float = 0.55
-    retrieval_sparse_weight: float = 0.45
-    chunking_max_tokens: int = 320
-    chunking_overlap_tokens: int = 48
-    chunking_semantic: bool = False
-    chunking_semantic_threshold: float = 0.75
-    reranker_type: str = "local"
-    session_memory_limit: int = 8
-    chat_retention_days: int = 30
+    retrieval_top_k: int | None = None
+    retrieval_rerank_top_k: int | None = None
+    retrieval_final_context_k: int | None = None
+    retrieval_dense_weight: float | None = None
+    retrieval_sparse_weight: float | None = None
+    chunking_max_tokens: int | None = None
+    chunking_overlap_tokens: int | None = None
+    chunking_semantic: bool | None = None
+    chunking_semantic_threshold: float | None = None
+    reranker_type: str | None = None
+    session_memory_limit: int | None = None
+    chat_retention_days: int | None = None
     system_prompt: str | None = None
 
 
@@ -742,16 +1059,13 @@ def update_tenant(tenant_id: str, req: TenantUpdateRequest, _admin=Depends(requi
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    updated_data = req.model_dump()
+    updated_data = dict(tenant)
+    for field, value in req.model_dump(exclude_none=True).items():
+        if value != "***":
+            updated_data[field] = value
     updated_data["tenant_id"] = tenant_id
     updated_data["api_key"] = tenant["api_key"]
     updated_data["db_path"] = tenant.get("db_path") or f"tenants/{tenant_id}/rag.db"
-    if tenant.get("created_at"):
-        updated_data["created_at"] = tenant["created_at"]
-    if not req.llm_api_key or req.llm_api_key == "***":
-        updated_data["llm_api_key"] = tenant["llm_api_key"]
-    if not req.embedding_api_key or req.embedding_api_key == "***":
-        updated_data["embedding_api_key"] = tenant.get("embedding_api_key") or ""
     admin_store.upsert_tenant(updated_data)
     if tenant_id in _engine_cache:
         del _engine_cache[tenant_id]
@@ -763,19 +1077,40 @@ def delete_tenant(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # 1. Pop & close any cached engine for tenant
+    engine = _engine_cache.pop(tenant_id, None)
+    if engine:
+        try:
+            if hasattr(engine.store, "close"):
+                engine.store.close()
+        except Exception:
+            pass
+
+    # 2. Delete tenant record from admin_store DB
     admin_store.delete_tenant(tenant_id)
+
+    # 3. Remove DB file & directory safely
     db_path = _tenant_db_path(tenant_id, tenant)
-    if db_path != (TENANTS_DIR / tenant_id / "rag.db") and db_path.exists():
+    if db_path.exists():
         try:
             db_path.unlink()
         except OSError:
             pass
+
     tenant_dir = TENANTS_DIR / tenant_id
     if tenant_dir.exists():
-        shutil.rmtree(tenant_dir)
+        try:
+            shutil.rmtree(tenant_dir, ignore_errors=True)
+        except Exception as e:
+            log.warning("Failed to remove tenant dir %s: %s", tenant_dir, e)
+
     ingestion_status.pop(tenant_id, None)
-    _engine_cache.pop(tenant_id, None)
-    redis_client.sdelete(f"ingestion:{tenant_id}")
+    try:
+        redis_client.sdelete(f"ingestion:{tenant_id}")
+    except Exception:
+        pass
+
     return {"status": "success"}
 
 
@@ -838,8 +1173,10 @@ def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    source_url = _scraped_source_url(file_path) if file_path.exists() else None
     if file_path.exists():
         file_path.unlink()
+    _purge_crawl_output_for_file(source_url, filename)
     db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
@@ -855,6 +1192,94 @@ def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Database sync error: {e}")
     return {"status": "success"}
+
+
+@app.patch("/api/v1/tenants/{tenant_id}/documents/{filename}")
+def rename_tenant_document(tenant_id: str, filename: str, req: dict = Body(...), _admin=Depends(require_admin)):
+    """Rename a pending (not yet ingested) document file on disk.
+    Body: { \"new_name\": \"friendly-name.txt\" }"""
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    new_name = req.get("new_name", "").strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="new_name is required")
+    # Only allow safe filenames (no path traversal)
+    safe = Path(new_name).name
+    if safe != new_name or "/" in new_name or "\\" in new_name:
+        raise HTTPException(status_code=422, detail="Invalid filename")
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    old_path = docs_dir / filename
+    new_path = docs_dir / safe
+    if not old_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    if new_path.exists() and new_path != old_path:
+        raise HTTPException(status_code=409, detail="A file with that name already exists")
+    old_path.rename(new_path)
+    return {"status": "success", "old_name": filename, "new_name": safe}
+
+
+def _resolve_duplicate_actions(tenant_id: str, actions: list[dict]) -> list[dict]:
+    """Resolve staged duplicate files. Each action item:
+    {existing_file, new_file, action: remove|keep_both|rename|replace, new_name?}
+    new_file refers to a file staged in <docs>/.pending/.
+    """
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    pending_dir = docs_dir / _PENDING_DIR
+    results = []
+    for action_item in actions:
+        existing_file = Path(action_item.get("existing_file", "")).name
+        new_file = Path(action_item.get("new_file", "")).name
+        action = action_item.get("action", "remove")
+        pending_path = pending_dir / new_file
+        existing_path = docs_dir / existing_file
+        try:
+            if action == "remove":
+                if pending_path.exists():
+                    pending_path.unlink()
+                results.append({"file": new_file, "action": "removed", "kept": existing_file})
+            elif action == "replace":
+                if existing_path.exists():
+                    existing_path.unlink()
+                if pending_path.exists():
+                    pending_path.rename(docs_dir / existing_file)
+                results.append({"file": new_file, "action": "replaced", "kept": existing_file})
+            elif action == "rename":
+                new_name = Path(action_item.get("new_name", "")).name.strip()
+                if not new_name or "/" in new_name or "\\" in new_name:
+                    results.append({"file": new_file, "action": "error", "error": "new_name is required"})
+                elif pending_path.exists():
+                    target = _friendly_unique_name(docs_dir, new_name)
+                    pending_path.rename(docs_dir / target)
+                    results.append({"file": new_file, "action": "renamed", "kept": target})
+                else:
+                    results.append({"file": new_file, "action": "error", "error": "pending file not found"})
+            else:  # keep_both
+                if pending_path.exists():
+                    target = _friendly_unique_name(docs_dir, new_file)
+                    pending_path.rename(docs_dir / target)
+                    results.append({"file": new_file, "action": "kept_both", "kept": target})
+                else:
+                    results.append({"file": new_file, "action": "error", "error": "pending file not found"})
+        except Exception as e:
+            results.append({"file": new_file, "action": "error", "error": str(e)})
+    return results
+
+
+@app.post("/api/v1/tenants/{tenant_id}/documents/resolve-duplicates")
+def resolve_duplicates(tenant_id: str, req: dict = Body(...), _admin=Depends(require_admin)):
+    """Resolve duplicate files staged from scraping.
+    Body: { \"actions\": [{\"existing_file\": \"...\", \"new_file\": \"...\", \"action\": \"remove\"|\"keep_both\"|\"rename\"|\"replace\", \"new_name\": \"...\"}] }
+    - remove:    delete the staged copy (keep existing)
+    - keep_both: move the staged copy into documents (auto ' (2)' suffix if needed)
+    - rename:    move the staged copy into documents under new_name
+    - replace:   delete existing, move staged copy to the existing name
+    """
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    actions = req.get("actions", [])
+    return {"status": "success", "results": _resolve_duplicate_actions(tenant_id, actions)}
 
 
 # --- INGESTION APIs ---
@@ -1040,6 +1465,13 @@ def client_list_documents(tenant=Depends(_resolve_client_tenant)):
     return _list_documents_from_db(db_path, tenant_id)
 
 
+@app.post("/api/v1/client/documents/resolve-duplicates")
+def client_resolve_duplicates(req: dict = Body(...), tenant=Depends(_resolve_client_tenant)):
+    """Client equivalent of resolve-duplicates (staged duplicate files from scraping)."""
+    actions = req.get("actions", [])
+    return {"status": "success", "results": _resolve_duplicate_actions(tenant["tenant_id"], actions)}
+
+
 @app.get("/api/v1/client/documents/{filename}/chunks")
 def client_get_document_chunks(filename: str, tenant=Depends(_resolve_client_tenant)):
     tenant_id = tenant["tenant_id"]
@@ -1146,27 +1578,22 @@ async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_t
             job = await scraper.crawl_url(req.url, max_pages=req.max_pages, max_depth=req.max_depth, full_site=req.full_site)
         else:
             job = await scraper.scrape_url(req.url)
-        docs_dir = TENANTS_DIR / tenant_id / "documents"
-        docs_dir.mkdir(parents=True, exist_ok=True)
-        saved_files = []
-        if job.results:
-            for result in job.results:
-                text = result.get("text", "")
-                meta = result.get("metadata", {})
-                if text:
-                    title = meta.get("title", "Untitled")
-                    source_url = meta.get("url", req.url)
-                    content = f"# {title}\n\nSource: {source_url}\n\n{text}"
-                    safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
-                    (docs_dir / safe_name).write_text(content, encoding="utf-8")
-                    saved_files.append({"url": source_url, "file": safe_name, "title": title})
+        pages = [
+            {"text": r.get("text", ""), "metadata": r.get("metadata", {})}
+            for r in (job.results or []) if r.get("text")
+        ]
+        saved_files, duplicates = _save_scraped_pages(tenant_id, pages, req.url)
+        if saved_files:
             _save_crawl_output(
                 site=_crawl_site_slug(req.url),
                 metadata={"strategy": "crawl" if req.crawl else "single", "is_wordpress": False, "languages_found": [], "source_url": req.url},
-                pages=[f"# {r.get('metadata', {}).get('title', 'Untitled')}\n\nSource: {r.get('metadata', {}).get('url', req.url)}\n\n{r.get('text', '')}" for r in job.results if r.get("text")],
+                pages=[f"# {f['title']}\n\nSource: {f['url']}\n\n" for f in saved_files],
             )
-        admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
-        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error}
+        admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE",
+                                message=f"Scraped {req.url}: {len(saved_files)} file(s), {len(duplicates)} duplicate(s)",
+                                details={"url": req.url, "files": saved_files, "duplicates": duplicates})
+        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url,
+                "files_saved": len(saved_files), "files": saved_files, "duplicates": duplicates, "error": job.error}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scraping error: {e}")
 
@@ -1174,8 +1601,10 @@ async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_t
 def client_delete_document(filename: str, tenant=Depends(_resolve_client_tenant)):
     tenant_id = tenant["tenant_id"]
     file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    source_url = _scraped_source_url(file_path) if file_path.exists() else None
     if file_path.exists():
         file_path.unlink()
+    _purge_crawl_output_for_file(source_url, filename)
     db_path = _tenant_db_path(tenant_id, tenant)
     deleted = False
     if db_path.exists():
@@ -1268,27 +1697,22 @@ async def scrape_url(tenant_id: str, req: ScrapeRequest, _admin=Depends(require_
             job = await scraper.crawl_url(req.url, max_pages=req.max_pages, max_depth=req.max_depth, full_site=req.full_site)
         else:
             job = await scraper.scrape_url(req.url)
-        docs_dir = TENANTS_DIR / tenant_id / "documents"
-        docs_dir.mkdir(parents=True, exist_ok=True)
-        saved_files = []
-        if job.results:
-            for result in job.results:
-                text = result.get("text", "")
-                meta = result.get("metadata", {})
-                if text:
-                    title = meta.get("title", "Untitled")
-                    source_url = meta.get("url", req.url)
-                    content = f"# {title}\n\nSource: {source_url}\n\n{text}"
-                    safe_name = f"scraped_{uuid.uuid4().hex[:8]}.txt"
-                    (docs_dir / safe_name).write_text(content, encoding="utf-8")
-                    saved_files.append({"url": source_url, "file": safe_name, "title": title})
+        pages = [
+            {"text": r.get("text", ""), "metadata": r.get("metadata", {})}
+            for r in (job.results or []) if r.get("text")
+        ]
+        saved_files, duplicates = _save_scraped_pages(tenant_id, pages, req.url)
+        if saved_files:
             _save_crawl_output(
                 site=_crawl_site_slug(req.url),
                 metadata={"strategy": "crawl" if req.crawl else "single", "is_wordpress": False, "languages_found": [], "source_url": req.url},
-                pages=[f"# {r.get('metadata', {}).get('title', 'Untitled')}\n\nSource: {r.get('metadata', {}).get('url', req.url)}\n\n{r.get('text', '')}" for r in job.results if r.get("text")],
+                pages=[f"# {f['title']}\n\nSource: {f['url']}\n\n" for f in saved_files],
             )
-        admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE", message=f"Scraped {req.url}: {len(saved_files)} file(s)", details={"url": req.url, "files": saved_files})
-        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files, "error": job.error}
+        admin_store.log_activity(tenant_id=tenant_id, level="INFO" if saved_files else "WARNING", operation="SCRAPE",
+                                message=f"Scraped {req.url}: {len(saved_files)} file(s), {len(duplicates)} duplicate(s)",
+                                details={"url": req.url, "files": saved_files, "duplicates": duplicates})
+        return {"status": "completed" if saved_files else "failed", "job_id": job.job_id, "url": req.url,
+                "files_saved": len(saved_files), "files": saved_files, "duplicates": duplicates, "error": job.error}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scraping error: {e}")
 
@@ -1308,10 +1732,206 @@ async def get_scrape_job(tenant_id: str, job_id: str, _admin=Depends(require_adm
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     scraper = _get_scraper_service()
-    job = scraper.get_job(job_id)
+    job = await scraper.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job.to_dict()
+
+
+class FullScrapeRequest(BaseModel):
+    url: str
+    max_pages: int = 50
+    max_depth: int = 3
+    download_images: bool = False
+    download_pdfs: bool = True
+    workers: int = 4
+    respect_robots: bool = True
+
+
+_PENDING_DIR = ".pending"
+
+
+def _friendly_unique_name(docs_dir: Path, base_name: str, used: set[str] | None = None) -> str:
+    """Return base_name without clobbering an existing file, appending ' (n)'
+    before the extension (never random hex garbage)."""
+    used = used or set()
+    stem = Path(base_name).stem
+    ext = Path(base_name).suffix or ".txt"
+    candidate = base_name
+    n = 2
+    while candidate in used or (docs_dir / candidate).exists():
+        candidate = f"{stem} ({n}){ext}"
+        n += 1
+    return candidate
+
+
+def _save_scraped_pages(tenant_id: str, pages: list[dict], base_url: str, ext: str = ".txt") -> tuple[list[dict], list[dict]]:
+    """Write scraped page content into the tenant docs dir with duplicate control.
+
+    - URLs not scraped yet  → written to docs_dir, returned in saved_files.
+    - URLs already scraped (same ``Source:`` header) → written to ``.pending/``
+      (invisible to the docs list, queue, and ingestion) and returned as
+      duplicates for the user to Remove / Keep both / Rename via the
+      resolve-duplicates endpoint.
+
+    Returns (saved_files, duplicates); each duplicate =
+    {url, title, existing_file, new_file} where new_file lives in .pending/.
+    """
+    docs_dir = TENANTS_DIR / tenant_id / "documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    pending_dir = docs_dir / _PENDING_DIR
+    pending_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_url_map = _scan_existing_urls(tenant_id)
+    saved_files: list[dict] = []
+    duplicates: list[dict] = []
+    used = set(existing_url_map.values())
+
+    for page in pages:
+        text = page.get("text") or page.get("markdown") or page.get("content", "")
+        if not text:
+            continue
+        meta = page.get("metadata", {})
+        source_url = meta.get("url") or meta.get("source_url") or base_url
+        title = meta.get("title") or meta.get("og_title") or "Untitled"
+        base_name = _make_relevant_filename(title=title, url=source_url, prefix="scraped")
+        if not base_name.endswith(ext):
+            base_name = Path(base_name).stem + ext
+        content = f"# {title}\n\nSource: {source_url}\n\n{text}"
+
+        if source_url in existing_url_map:
+            # Duplicate → stage for the user to decide; never auto-add to the queue.
+            pending_name = _friendly_unique_name(pending_dir, base_name, used)
+            (pending_dir / pending_name).write_text(content, encoding="utf-8")
+            used.add(pending_name)
+            duplicates.append({
+                "url": source_url,
+                "title": title,
+                "existing_file": existing_url_map[source_url],
+                "new_file": pending_name,
+            })
+        else:
+            name = _friendly_unique_name(docs_dir, base_name, used)
+            (docs_dir / name).write_text(content, encoding="utf-8")
+            used.add(name)
+            existing_url_map[source_url] = name
+            saved_files.append({"url": source_url, "file": name, "title": title})
+
+    return saved_files, duplicates
+
+
+def _save_pages_from_full_crawl(tenant_id: str, result: dict, base_url: str) -> tuple[list[dict], list[dict]]:
+    """Parse crawl_full() output and delegate duplicate-aware saving.
+    Returns (saved_files, duplicates) where duplicates = [{url, existing_file, new_file, title}]."""
+    data = result.get("data", result)
+    # crawl_full returns {"data": {"pages": [...]}} or {"pages": [...]}
+    pages = data.get("pages") or data.get("results") or []
+    if not pages and result.get("markdown"):
+        pages = [{"text": result.get("markdown", ""), "metadata": {"url": base_url, "title": "Page"}}]
+    return _save_scraped_pages(tenant_id, pages, base_url)
+
+
+
+
+@app.post("/api/v1/scrape/full")
+async def full_scrape(req: FullScrapeRequest, tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    _validate_scrape_url(req.url)
+    scraper = _get_scraper_service()
+    try:
+        result = scraper.crawl_full(
+            req.url,
+            max_depth=req.max_depth,
+            max_pages=req.max_pages,
+            download_images=req.download_images,
+            download_pdfs=req.download_pdfs,
+            workers=req.workers,
+            respect_robots=req.respect_robots,
+        )
+        saved_files, duplicates = _save_pages_from_full_crawl(tenant_id, result, req.url)
+        if saved_files:
+            _save_crawl_output(
+                site=_crawl_site_slug(req.url),
+                metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": req.url},
+                pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved_files],
+            )
+        # Auto-queue documents from the crawler output folder back into this tenant.
+        if tenant_id:
+            _sync_site_to_tenant(tenant_id, req.url)
+        admin_store.log_activity(
+            tenant_id=tenant_id,
+            level="INFO" if saved_files else "WARNING",
+            operation="SCRAPE_FULL",
+            message=f"Full site scrape {req.url}: {len(saved_files)} page(s), {len(duplicates)} duplicate(s)",
+            details={"url": req.url, "files": saved_files, "duplicates": duplicates},
+        )
+        job_id = result.get("data", {}).get("job_id") or result.get("job_id")
+        return {
+            "success": True,
+            "status": "completed" if saved_files else "running",
+            "data": {"job_id": job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files},
+            "files_saved": len(saved_files),
+            "files": saved_files,
+            "duplicates": duplicates,
+        }
+    except Exception as e:
+        log.exception("Full scrape error: %s", e)
+        return {"success": False, "status": "failed", "error": str(e), "data": {"job_id": None}}
+
+
+@app.post("/api/v1/tenants/{tenant_id}/scrape/full")
+async def tenant_full_scrape(tenant_id: str, req: FullScrapeRequest, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    _validate_scrape_url(req.url)
+    scraper = _get_scraper_service()
+    try:
+        result = scraper.crawl_full(
+            req.url,
+            max_depth=req.max_depth,
+            max_pages=req.max_pages,
+            download_images=req.download_images,
+            download_pdfs=req.download_pdfs,
+            workers=req.workers,
+            respect_robots=req.respect_robots,
+        )
+        saved_files, duplicates = _save_pages_from_full_crawl(tenant_id, result, req.url)
+        if saved_files:
+            _save_crawl_output(
+                site=_crawl_site_slug(req.url),
+                metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": req.url},
+                pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved_files],
+            )
+        # Auto-queue documents from the crawler output folder back into this tenant.
+        _sync_site_to_tenant(tenant_id, req.url)
+        admin_store.log_activity(
+            tenant_id=tenant_id,
+            level="INFO" if saved_files else "WARNING",
+            operation="SCRAPE_FULL",
+            message=f"Full site scrape {req.url}: {len(saved_files)} page(s), {len(duplicates)} duplicate(s)",
+            details={"url": req.url, "files": saved_files, "duplicates": duplicates},
+        )
+        job_id = result.get("data", {}).get("job_id") or result.get("job_id")
+        return {
+            "success": True,
+            "status": "completed" if saved_files else "running",
+            "data": {"job_id": job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files},
+            "files_saved": len(saved_files),
+            "files": saved_files,
+            "duplicates": duplicates,
+        }
+    except Exception as e:
+        log.exception("Full scrape error: %s", e)
+        return {"success": False, "status": "failed", "error": str(e), "data": {"job_id": None}}
+
+
+@app.get("/api/v1/scrape/full/status/{job_id}")
+async def get_full_scrape_status(job_id: str):
+    scraper = _get_scraper_service()
+    job = await scraper.get_job(job_id)
+    status_str = job.status if job else "done"
+    return {"success": True, "data": {"status": status_str, "job_id": job_id}}
 
 
 # ── Enhanced Scraper Endpoints (smart crawl, wordpress, facebook, deepcrawl) ──
@@ -1368,13 +1988,23 @@ async def enhanced_scrape(req: EnhancedScrapeRequest, tenant=Depends(_resolve_cl
 
     if result and result.get("success") and req.scrape_type in ("smart", "single"):
         data = result.get("data", {})
-        _save_crawl_output(
-            site=_crawl_site_slug(req.url),
-            metadata={"strategy": req.scrape_type, "is_wordpress": False, "languages_found": [], "source_url": req.url, "quality_score": data.get("quality_score")},
-            pages=[data.get("markdown") or data.get("text") or ""],
-        )
+        content_text = data.get("markdown") or data.get("text") or ""
+        title = data.get("title") or data.get("og_title") or req.url.rstrip("/").split("/")[-1] or "page"
+        ext = ".md" if req.format == "markdown" else ".txt"
+        if content_text:
+            pages = [{"text": content_text, "metadata": {"url": req.url, "title": title}}]
+            saved_files, duplicates = _save_scraped_pages(tenant_id, pages, req.url, ext=ext)
+            result_out = dict(result or {})
+            result_out["saved_files"] = saved_files
+            result_out["files_saved"] = len(saved_files)
+            result_out["duplicates"] = duplicates
+            return result_out
 
-    return result
+    result_out = result or {}
+    result_out["saved_files"] = []
+    result_out["files_saved"] = 0
+    result_out["duplicates"] = []
+    return result_out
 
 
 @app.post("/api/v1/tenants/{tenant_id}/scrape/enhanced")
@@ -1404,15 +2034,29 @@ async def tenant_enhanced_scrape(tenant_id: str, req: EnhancedScrapeRequest, _ad
     else:
         result = scraper.crawl_single(req.url, format=req.format)
 
+    saved_files = []
+    duplicates = []
     if result and result.get("success") and req.scrape_type in ("smart", "single"):
         data = result.get("data", {})
+        # Prefer markdown content, fall back to text
+        content_text = data.get("markdown") or data.get("text") or ""
+        title = data.get("title") or data.get("og_title") or req.url.rstrip("/").split("/")[-1] or "page"
+        ext = ".md" if req.format == "markdown" else ".txt"
+        if content_text:
+            pages = [{"text": content_text, "metadata": {"url": req.url, "title": title}}]
+            saved_files, duplicates = _save_scraped_pages(tenant_id, pages, req.url, ext=ext)
+
         _save_crawl_output(
             site=_crawl_site_slug(req.url),
             metadata={"strategy": req.scrape_type, "is_wordpress": False, "languages_found": [], "source_url": req.url, "quality_score": data.get("quality_score")},
-            pages=[data.get("markdown") or data.get("text") or ""],
+            pages=[content_text],
         )
 
-    return result
+    result_out = result or {}
+    result_out["saved_files"] = saved_files
+    result_out["files_saved"] = len(saved_files)
+    result_out["duplicates"] = duplicates
+    return result_out
 
 
 @app.get("/api/v1/scrape/recursive/{job_id}/status")
@@ -1460,6 +2104,45 @@ def _crawl_site_slug(url: str) -> str:
         return urlparse(url).netloc or url.replace("https://", "").replace("http://", "").split("/")[0]
     except Exception:
         return url.replace("https://", "").replace("http://", "").split("/")[0]
+
+
+def _find_crawl_site_dir(url: str) -> Path | None:
+    """Locate the crawler output site folder matching a scraped URL, if it exists."""
+    candidates = [
+        ROOT_DIR / "crawl-output",
+        Path("scraper-service/crawl_output"),
+        Path("scraper-service/app/crawl_output"),
+    ]
+    host = _crawl_site_slug(url)
+    host_unders = host.replace(".", "_")
+    for base_dir in candidates:
+        if not base_dir.exists():
+            continue
+        for site_dir in base_dir.iterdir():
+            if not site_dir.is_dir():
+                continue
+            if site_dir.name == host or site_dir.name == host_unders:
+                return site_dir
+            # Also match via index.json's site/origin field
+            index_file = site_dir / "index.json"
+            if index_file.exists():
+                try:
+                    data = json.loads(index_file.read_text(encoding="utf-8", errors="ignore"))
+                    site_field = str(data.get("site") or data.get("source_url") or data.get("origin") or "")
+                    if host in site_field:
+                        return site_dir
+                except Exception:
+                    pass
+    return None
+
+
+def _sync_site_to_tenant(tenant_id: str, url: str) -> list[dict]:
+    """After a crawl completes, record the crawl output folder on the tenant and
+    import all its documents (md/json/pdf, original extensions) into the tenant."""
+    site_dir = _find_crawl_site_dir(url)
+    if site_dir and site_dir.exists():
+        admin_store.set_crawl_output_dir(tenant_id, str(site_dir))
+    return _sync_crawl_outputs_to_tenant(tenant_id, site_url=url, site_dir=site_dir)
 
 
 def _save_crawl_output(site: str, metadata: dict, pages: list[str], images: list[str] | None = None, pdfs: list[str] | None = None) -> None:
