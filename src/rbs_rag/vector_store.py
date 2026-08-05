@@ -86,6 +86,8 @@ class QdrantVectorStore:
             }
             if chunk.metadata:
                 payload.update(chunk.metadata)
+            if "tenant_id" not in payload and chunk.metadata.get("tenant_id"):
+                payload["tenant_id"] = chunk.metadata["tenant_id"]
             point_id = _make_point_id(chunk.chunk_id)
             points.append(m.PointStruct(id=point_id, vector=chunk.embedding, payload=payload))
         for i in range(0, len(points), batch_size):

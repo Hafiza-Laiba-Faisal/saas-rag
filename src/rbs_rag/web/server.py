@@ -421,8 +421,7 @@ def _list_documents_from_db(db_path: Path, tenant_id: str) -> list[dict]:
                         pass
                 else:
                     src_url = None
-                    # Updated is_scrape detection to match any file starting with scraped_
-                    is_scrape = f.name.lower().startswith("scraped_")
+                    is_scrape = _is_scraped_document_name(f.name)
                     source_type = "scrape" if is_scrape else "upload"
                     if is_scrape:
                         try:
@@ -573,6 +572,13 @@ def get_providers(_admin=Depends(require_admin)):
     return LLM_PROVIDERS
 
 
+@app.put("/api/v1/admin/providers")
+def update_providers(providers: list[dict], _admin=Depends(require_admin)):
+    global LLM_PROVIDERS
+    LLM_PROVIDERS = providers
+    return {"status": "success", "providers": providers}
+
+
 # --- Pydantic models ---
 class TenantOnboardRequest(BaseModel):
     tenant_id: str = Field(..., pattern=r"^[a-zA-Z0-9 _-]+$")  # slug: letters, digits, spaces, hyphens, underscores
@@ -704,6 +710,22 @@ def _validate_upload_file(filename: str, file_size: int) -> None:
         raise HTTPException(status_code=400, detail=f"File type '{ext}' not allowed")
     if file_size > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024} MB)")
+
+
+def _resolve_tenant_document_path(tenant_id: str, filename: str, docs_dir: Path | None = None) -> Path:
+    if not filename or not isinstance(filename, str):
+        raise ValueError("Invalid filename")
+    candidate = Path(filename).name
+    if not candidate or candidate in {".", ".."} or candidate != filename:
+        raise ValueError("Invalid filename")
+    base_dir = docs_dir or (TENANTS_DIR / tenant_id / "documents")
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir / candidate
+
+
+def _is_scraped_document_name(name: str) -> bool:
+    normalized = str(name).lower()
+    return normalized.startswith("scraped_") or normalized.startswith("_scraped_") or normalized.startswith("scrape_")
 
 
 def _get_scraper_service() -> ScraperService:
@@ -849,8 +871,9 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
                     chunk.embedding = embedding
 
                 _log_to_ingestion(tenant_id, f"[Step 5] Upserting {file_path.name} to storage...", progress_pct)
-                source = "scrape" if "_scraped_" in file_path.name.lower() else "upload"
+                source = "scrape" if _is_scraped_document_name(file_path.name) else "upload"
                 source_url = document.metadata.get("source_url") if hasattr(document, "metadata") else None
+                document.metadata["tenant_id"] = engine.config.tenant_id
                 engine.store.upsert_document(document, engine.config.tenant_id, "default", source=source, source_url=source_url)
                 engine.store.upsert_chunks(chunks)
 
@@ -1200,7 +1223,10 @@ def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    try:
+        file_path = _resolve_tenant_document_path(tenant_id, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     source_url = _scraped_source_url(file_path) if file_path.exists() else None
     if file_path.exists():
         file_path.unlink()
@@ -1233,12 +1259,16 @@ def rename_tenant_document(tenant_id: str, filename: str, req: dict = Body(...),
     new_name = req.get("new_name", "").strip()
     if not new_name:
         raise HTTPException(status_code=422, detail="new_name is required")
-    # Only allow safe filenames (no path traversal)
-    safe = Path(new_name).name
-    if safe != new_name or "/" in new_name or "\\" in new_name:
-        raise HTTPException(status_code=422, detail="Invalid filename")
     docs_dir = TENANTS_DIR / tenant_id / "documents"
-    old_path = docs_dir / filename
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        safe = _resolve_tenant_document_path(tenant_id, new_name, docs_dir).name
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        old_path = _resolve_tenant_document_path(tenant_id, filename, docs_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     new_path = docs_dir / safe
     if not old_path.exists():
         raise HTTPException(status_code=404, detail="Document not found")
@@ -1519,7 +1549,10 @@ def client_get_document_chunks(filename: str, tenant=Depends(_resolve_client_ten
 
 @app.get("/api/v1/tenants/{tenant_id}/documents/{filename}")
 def admin_get_document(tenant_id: str, filename: str, _admin=Depends(require_admin)):
-    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    try:
+        file_path = _resolve_tenant_document_path(tenant_id, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     content = file_path.read_bytes()
@@ -1546,7 +1579,10 @@ def client_get_document(filename: str, x_api_key: str | None = Header(None, alia
     if tenant["status"] != "active":
         raise HTTPException(status_code=403, detail="Client account is suspended.")
     tenant_id = tenant["tenant_id"]
-    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    try:
+        file_path = _resolve_tenant_document_path(tenant_id, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     content = file_path.read_bytes()
@@ -1629,7 +1665,10 @@ async def client_scrape_url(req: ScrapeRequest, tenant=Depends(_resolve_client_t
 @app.delete("/api/v1/client/documents/{filename}")
 def client_delete_document(filename: str, tenant=Depends(_resolve_client_tenant)):
     tenant_id = tenant["tenant_id"]
-    file_path = TENANTS_DIR / tenant_id / "documents" / filename
+    try:
+        file_path = _resolve_tenant_document_path(tenant_id, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     source_url = _scraped_source_url(file_path) if file_path.exists() else None
     if file_path.exists():
         file_path.unlink()
@@ -1693,6 +1732,24 @@ def _run_isolation_check():
 @app.get("/api/v1/isolation-check")
 def run_isolation_check(_admin=Depends(require_admin)):
     return _run_isolation_check()
+
+
+@app.post("/api/v1/client/cloud-sync")
+def client_trigger_cloud_sync(req: CloudSyncRequest, background_tasks: BackgroundTasks, tenant=Depends(_resolve_client_tenant)):
+    tenant_id = tenant["tenant_id"]
+    try:
+        res = sync_cloud_documents(tenant_id=tenant_id, tenants_dir=TENANTS_DIR, provider=req.provider, cloud_url_or_id=req.cloud_url_or_id, api_key_or_token=req.api_key_or_token, custom_filename=req.custom_filename)
+        admin_store.log_activity(tenant_id=tenant_id, level="INFO" if res.get("downloaded") else "WARNING", operation="CLOUD_SYNC", message=f"Cloud sync ({req.provider}): {len(res.get('downloaded', []))} file(s)", details={"provider": req.provider, "downloaded": res.get("downloaded", []), "errors": res.get("errors", [])})
+        if req.auto_ingest and res.get("count", 0) > 0:
+            if tenant_id not in ingestion_status or ingestion_status[tenant_id]["status"] != "running":
+                ingestion_status[tenant_id] = {"status": "running", "logs": [f"[Cloud Sync] Auto-ingesting {res['count']} document(s)..."], "progress": 0, "summary": None}
+                _sync_ingestion_to_redis(tenant_id)
+                background_tasks.add_task(_run_ingestion_background, tenant_id, tenant)
+        return res
+    except Exception as exc:
+        tb_str = traceback.format_exc()
+        admin_store.log_activity(tenant_id=tenant_id, level="ERROR", operation="CLOUD_SYNC", message=f"Cloud sync failed: {exc}", traceback=tb_str)
+        raise HTTPException(status_code=500, detail=f"Cloud sync error: {exc}")
 
 
 @app.post("/api/v1/tenants/{tenant_id}/cloud-sync")
@@ -2313,7 +2370,10 @@ async def ocr_document(tenant_id: str, file: UploadFile = File(...), _admin=Depe
     docs_dir = TENANTS_DIR / tenant_id / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     filename = Path(file.filename).name
-    target_path = docs_dir / filename
+    try:
+        target_path = _resolve_tenant_document_path(tenant_id, filename, docs_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     with target_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     ocr_svc = get_ocr_service()

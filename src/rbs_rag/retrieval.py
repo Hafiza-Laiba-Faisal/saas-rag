@@ -44,9 +44,10 @@ class HybridRetriever:
         t_qd0 = time.perf_counter()
         if self.vector_store:
             try:
-                kb_filter = {"knowledge_base_id": knowledge_base_id}
+                kb_filter = {"knowledge_base_id": knowledge_base_id, "tenant_id": self.tenant_id}
                 if filters:
                     kb_filter.update(filters)
+                kb_filter["tenant_id"] = self.tenant_id
                 qdrant_chunks = self.vector_store.search(
                     self.collection,
                     query_embedding,

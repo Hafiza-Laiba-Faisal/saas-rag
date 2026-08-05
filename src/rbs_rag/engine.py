@@ -71,6 +71,8 @@ class RagEngine:
         if use_ocr and document.ocr_engine is None:
             document.ocr_engine = ocr_engine or "paddle"
         chunks = self.chunker.chunk(document, tenant_id=self.config.tenant_id, knowledge_base_id=knowledge_base_id)
+        for chunk in chunks:
+            chunk.metadata.setdefault("tenant_id", self.config.tenant_id)
         embeddings = self.embedding_provider.embed([chunk.text for chunk in chunks])
         for chunk, embedding in zip(chunks, embeddings):
             chunk.embedding = embedding
