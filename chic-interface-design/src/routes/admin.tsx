@@ -1656,7 +1656,9 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   }
 
   return (
-    <div className="flex flex-col h-full gap-3 overflow-hidden min-h-0">
+    <div className="flex h-full gap-3 overflow-hidden min-h-0">
+      {/* Left column: source cards + source panels */}
+      <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto min-h-0">
       {/* Top: fixed source cards */}
       <div className="grid gap-3 md:grid-cols-4 flex-shrink-0">
         <SourceCard active={source === "files"} onClick={() => setSource("files")} accent="amber" icon={Upload} title="File upload" desc="PDF, DOCX, MD, TXT, CSV, HTML" />
@@ -1666,7 +1668,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       </div>
 
       {source === "files" && (
-        <div className="panel p-4 flex-shrink-0 max-h-96 overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           <div className="rounded-xl border-2 border-dashed border-border bg-elevated/40 p-8 text-center">
             <Upload className="mx-auto h-8 w-8 text-primary" />
             <p className="mt-3 text-sm font-medium">Drop files here or click to browse</p>
@@ -1739,7 +1741,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "web" && (
-        <div className="panel p-4 flex-shrink-0 max-h-[420px] overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           {/* Scraper service health indicator */}
           <div className="flex items-center gap-2 mb-4">
             <span className={`w-2 h-2 rounded-full ${scraperHealth?.alive ? "bg-success" : "bg-destructive"}`} />
@@ -2257,7 +2259,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       )}
 
       {source === "cloud" && (
-        <div className="panel p-4 flex-shrink-0 max-h-64 overflow-y-auto">
+        <div className="panel p-4 flex-shrink-0 overflow-y-auto">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Connect a cloud source</h3>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {[
@@ -2278,8 +2280,9 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
           </div>
         </div>
       )}
+      </div>
 
-      <div className="panel overflow-hidden flex flex-col flex-1 min-h-0">
+      <div className="panel overflow-hidden flex flex-col w-96 lg:w-[28rem] flex-shrink-0 min-h-0">
         <div className="flex items-center justify-between border-b border-border px-5 py-3 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="text-sm font-semibold">Documents</div>

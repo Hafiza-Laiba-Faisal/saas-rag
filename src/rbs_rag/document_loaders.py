@@ -4,6 +4,7 @@ import csv
 import hashlib
 import html.parser
 import io
+import json
 import re
 import traceback
 import xml.etree.ElementTree as ET
@@ -13,7 +14,7 @@ from zipfile import ZipFile
 
 from .models import LoadedDocument
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".xlsx", ".xls", ".pptx", ".ppt", ".csv"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".xlsx", ".xls", ".pptx", ".ppt", ".csv", ".json"}
 
 
 def iter_document_files(path: Path) -> list[Path]:
@@ -37,6 +38,8 @@ def load_document(path: Path, metadata: dict | None = None, use_ocr: bool = Fals
         text = _read_pptx(path)
     elif suffix == ".csv":
         text = _read_csv(path)
+    elif suffix == ".json":
+        text = _read_json(path)
     elif suffix == ".pdf":
         text = _read_pdf(path, use_ocr=use_ocr)
     elif suffix == ".xlsx":
@@ -141,6 +144,38 @@ def _read_csv(path: Path) -> str:
             if line:
                 rows.append(line)
     return "\n".join(rows) if rows else ""
+
+
+def _json_to_text(value: object, indent: int = 0) -> str:
+    """Recursively flatten a JSON value into readable lines, keeping key paths."""
+    pad = "  " * indent
+    lines: list[str] = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(v, (dict, list)):
+                lines.append(f"{pad}{k}:")
+                lines.append(_json_to_text(v, indent + 1))
+            else:
+                lines.append(f"{pad}{k}: {v}")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}- [{i}]")
+                lines.append(_json_to_text(item, indent + 1))
+            else:
+                lines.append(f"{pad}- {item}")
+    else:
+        lines.append(f"{pad}{value}")
+    return "\n".join(lines)
+
+
+def _read_json(path: Path) -> str:
+    """Read a JSON file as a flattened, LLM-friendly key/value text."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        return _json_to_text(data)
+    except Exception as exc:
+        return f"[Error reading .json: {exc}]"
 
 
 def _read_pdf(path: Path, use_ocr: bool = False) -> str:

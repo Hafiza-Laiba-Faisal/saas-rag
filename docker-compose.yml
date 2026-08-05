@@ -116,6 +116,7 @@ services:
       dockerfile: Dockerfile
     container_name: tenbit-scraper
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
     networks:
       - rag_network
     ports:

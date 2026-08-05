@@ -999,10 +999,6 @@
     max-height: calc(var(--spacing) * 48);
   }
 
-  .max-h-64 {
-    max-height: calc(var(--spacing) * 64);
-  }
-
   .max-h-96 {
     max-height: calc(var(--spacing) * 96);
   }
@@ -1025,10 +1021,6 @@
 
   .max-h-\[300px\] {
     max-height: 300px;
-  }
-
-  .max-h-\[420px\] {
-    max-height: 420px;
   }
 
   .max-h-\[var\(--radix-dropdown-menu-content-available-height\)\] {
@@ -1158,6 +1150,10 @@
 
   .w-72 {
     width: calc(var(--spacing) * 72);
+  }
+
+  .w-96 {
+    width: calc(var(--spacing) * 96);
   }
 
   .w-\[1px\] {
@@ -4486,6 +4482,10 @@
 
     .lg\:hidden {
       display: none;
+    }
+
+    .lg\:w-\[28rem\] {
+      width: 28rem;
     }
 
     .lg\:translate-x-0 {

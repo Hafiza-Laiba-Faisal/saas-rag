@@ -160,6 +160,28 @@ def _scraped_source_url(file_path: Path) -> str | None:
     return None
 
 
+def _tombstone_path(tenant_id: str) -> Path:
+    """Per-tenant JSON file recording source URLs the user has deleted, so the
+    crawl-output sync never re-imports them even if the source files remain."""
+    return TENANTS_DIR / tenant_id / "deleted_sources.json"
+
+
+def _load_tombstones(tenant_id: str) -> set[str]:
+    try:
+        return set(json.loads(_tombstone_path(tenant_id).read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def _mark_deleted_source(tenant_id: str, source_url: str | None, filename: str | None = None) -> None:
+    tombstones = _load_tombstones(tenant_id)
+    if source_url:
+        tombstones.add(source_url)
+    if filename:
+        tombstones.add(f"file:{filename}")
+    _tombstone_path(tenant_id).write_text(json.dumps(sorted(tombstones)), encoding="utf-8")
+
+
 def _purge_crawl_output_for_file(source_url: str | None, filename: str) -> None:
     """Remove a deleted document's pages/PDFs from the crawl-output catalog so
     _sync_crawl_outputs_to_tenant won't re-import them on the next list refresh."""
@@ -186,7 +208,7 @@ def _purge_crawl_output_for_file(source_url: str | None, filename: str) -> None:
             # Remove matching markdown pages (matched by Source: URL or derived filename).
             pages_dir = site_dir / "pages"
             if pages_dir.exists():
-                for md_file in pages_dir.glob("*.md"):
+                for md_file in pages_dir.rglob("*.md"):
                     remove = False
                     try:
                         with md_file.open("r", encoding="utf-8", errors="ignore") as fp:
@@ -228,6 +250,7 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
     docs_dir = TENANTS_DIR / tenant_id / "documents"
     docs_dir.mkdir(parents=True, exist_ok=True)
     existing_url_map = _scan_existing_urls(tenant_id)
+    deleted_urls = _load_tombstones(tenant_id)
 
     search_dirs = [
         ROOT_DIR / "crawl-output",
@@ -307,7 +330,7 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
                         if page_url:
                             source_url = page_url
 
-                    if source_url in existing_url_map:
+                    if source_url in existing_url_map or source_url in deleted_urls:
                         continue
 
                     target = docs_dir / md_file.name
@@ -325,6 +348,8 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
             if pdfs_dir.exists():
                 for pdf_file in pdfs_dir.glob("*.pdf"):
                     try:
+                        if f"file:{pdf_file.name}" in deleted_urls:
+                            continue
                         target_pdf = docs_dir / pdf_file.name
                         if not target_pdf.exists():
                             shutil.copy(pdf_file, target_pdf)
@@ -335,12 +360,15 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
             # Also sync JSON catalog files from the crawl (original extension).
             for json_file in site_dir.glob("*.json"):
                 try:
+                    if f"file:{json_file.name}" in deleted_urls:
+                        continue
                     target_json = docs_dir / json_file.name
                     if not target_json.exists():
                         shutil.copy(json_file, target_json)
                         saved_files.append({"url": json_file.name, "file": json_file.name, "title": json_file.stem})
                 except Exception:
                     pass
+
     return saved_files
 
 
@@ -1177,6 +1205,7 @@ def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require
     if file_path.exists():
         file_path.unlink()
     _purge_crawl_output_for_file(source_url, filename)
+    _mark_deleted_source(tenant_id, source_url, filename)
     db_path = _tenant_db_path(tenant_id, tenant)
     if db_path.exists():
         try:
@@ -1605,6 +1634,7 @@ def client_delete_document(filename: str, tenant=Depends(_resolve_client_tenant)
     if file_path.exists():
         file_path.unlink()
     _purge_crawl_output_for_file(source_url, filename)
+    _mark_deleted_source(tenant_id, source_url, filename)
     db_path = _tenant_db_path(tenant_id, tenant)
     deleted = False
     if db_path.exists():
