@@ -422,17 +422,10 @@ def _list_documents_from_db(db_path: Path, tenant_id: str) -> list[dict]:
                 else:
                     src_url = None
                     is_scrape = _is_scraped_document_name(f.name)
+                    if not is_scrape:
+                        src_url = _scraped_source_url(f)
+                        is_scrape = bool(src_url)
                     source_type = "scrape" if is_scrape else "upload"
-                    if is_scrape:
-                        try:
-                            with f.open("r", encoding="utf-8", errors="ignore") as fp:
-                                header = "".join([fp.readline() for _ in range(5)])
-                                for line in header.splitlines():
-                                    if line.startswith("Source:"):
-                                        src_url = line.replace("Source:", "").strip()
-                                        break
-                        except Exception:
-                            pass
                     try:
                         sz = f.stat().st_size
                     except Exception:

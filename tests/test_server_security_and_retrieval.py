@@ -61,6 +61,25 @@ class ServerSecurityAndRetrievalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 server_module._resolve_tenant_document_path("tenant-a", "../secret.txt", docs_dir)
 
+    def test_list_documents_classifies_content_header_scraped_files_as_scrape(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root_dir = Path(temp_dir)
+            docs_dir = root_dir / "tenant-a" / "documents"
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            (docs_dir / "page.md").write_text("# Page\n\nSource: https://example.com\n\nBody", encoding="utf-8")
+
+            original_tenants_dir = server_module.TENANTS_DIR
+            try:
+                server_module.TENANTS_DIR = root_dir
+                with patch.object(server_module, "_sync_crawl_outputs_to_tenant", return_value=[]):
+                    items = server_module._list_documents_from_db(root_dir / "tenant.db", "tenant-a")
+            finally:
+                server_module.TENANTS_DIR = original_tenants_dir
+
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["source"], "scrape")
+            self.assertEqual(items[0]["source_url"], "https://example.com")
+
 
 if __name__ == "__main__":
     unittest.main()
