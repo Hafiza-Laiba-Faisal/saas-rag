@@ -64,7 +64,6 @@ function ClientPage() {
     { role: "bot", text: "Hi! I'm connected to your indexed documents. Ask me anything to test retrieval." },
   ]);
   const [input, setInput] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -187,7 +186,7 @@ function ClientPage() {
     return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
   };
 
-   const send = async (e: React.FormEvent, systemPrompt?: string) => {
+   const send = async (e: React.FormEvent) => {
     e.preventDefault();
     const q = input.trim();
     if (!q || !activeApiKey) return;
@@ -458,10 +457,12 @@ function ClientPage() {
                           {m.isStreaming ? (
                             <>
                               {m.text ? renderMarkdown(m.text) : <Loader2 className="h-4 w-4 animate-spin" />}
-                              {m.text && <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse" />}
+                              {m.text && <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse align-middle" />}
                             </>
-                          ) : (
+                          ) : m.text ? (
                             renderMarkdown(m.text)
+                          ) : (
+                            <Loader2 className="h-4 w-4 animate-spin" />
                           )}
                         </div>
                         {m.sources && m.sources.length > 0 && !m.isStreaming && (
@@ -485,16 +486,7 @@ function ClientPage() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
-               <form onSubmit={(e) => send(e, systemPrompt)} className="flex items-center gap-2 border-t border-border px-4 py-3">
-                 <div className="flex flex-col sm:flex-row gap-2">
-                   <input
-                     value={systemPrompt || ""}
-                     onChange={(e) => setSystemPrompt(e.target.value)}
-                     className="input flex-1"
-                     placeholder="System prompt (optional)"
-                     disabled={isLoading}
-                   />
-                 </div>
+               <form onSubmit={(e) => send(e)} className="flex items-center gap-2 border-t border-border px-4 py-3">
                  <input
                    value={input}
                    onChange={(e) => setInput(e.target.value)}
@@ -522,7 +514,6 @@ function ClientPage() {
                   <button onClick={() => {
                     setMessages([]);
                     setInput("");
-                    setSystemPrompt("");
                     setSelectedSource(null);
                  }} className="rounded-md border border-border bg-panel px-3 py-1.5 text-xs text-muted-foreground hover:bg-elevated hover:text-foreground">
                     Clear
@@ -630,6 +621,13 @@ function ClientDocumentsTab({
   docs: Document[];
   onDocsChange: () => void;
 }) {
+  const UI_SUPPORTED_EXTENSIONS = [
+    ".txt", ".md", ".markdown", ".html", ".htm", ".doc", ".docx", ".pdf",
+    ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".xls", ".xlsx",
+    ".ppt", ".pptx", ".csv", ".json",
+  ];
+  const UI_UNSUPPORTED_EXAMPLES = [".db", ".zip", ".exe", ".py", "no-extension"];
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [source, setSource] = useState<"files" | "web" | "cloud">("files");
   const [uploading, setUploading] = useState(false);
@@ -643,6 +641,7 @@ function ClientDocumentsTab({
   const [scrapePages, setScrapePages] = useState(100);
   const [scraping, setScraping] = useState(false);
   const [scrapeResult, setScrapeResult] = useState<any>(null);
+  const [scrapeNotice, setScrapeNotice] = useState<{ type: "info" | "error"; text: string } | null>(null);
   const [crawlToggle, setCrawlToggle] = useState(false);
   const [viewDoc, setViewDoc] = useState<string | null>(null);
   const [chunks, setChunks] = useState<any[]>([]);
@@ -651,23 +650,78 @@ function ClientDocumentsTab({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [cloudSyncOpen, setCloudSyncOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState("google_drive");
+  const [uploadNotice, setUploadNotice] = useState<{ type: "ok" | "error"; text: string } | null>(null);
+
+  function getScrapeUrlBlockReason(rawUrl: string): string | null {
+    try {
+      const parsed = new URL(rawUrl.trim());
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return "Only http/https URLs are allowed.";
+      }
+      const host = (parsed.hostname || "").toLowerCase();
+      if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(host)) {
+        return "Localhost/private targets are blocked for scraping.";
+      }
+      if (
+        host.startsWith("10.") ||
+        host.startsWith("192.168.") ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+      ) {
+        return "Private network targets are blocked for scraping.";
+      }
+      return null;
+    } catch {
+      return "Please enter a valid URL (example: https://example.com/page).";
+    }
+  }
+
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || !files.length) return;
+
+    const selected = Array.from(files);
+    const unsupported = selected.filter((f) => {
+      const dot = f.name.lastIndexOf(".");
+      const ext = dot >= 0 ? f.name.slice(dot).toLowerCase() : "";
+      return !ext || !UI_SUPPORTED_EXTENSIONS.includes(ext);
+    });
+
+    if (unsupported.length) {
+      const names = unsupported.map((f) => f.name).slice(0, 5).join(", ");
+      const suffix = unsupported.length > 5 ? `, +${unsupported.length - 5} more` : "";
+      setUploadNotice({
+        type: "error",
+        text: `Unsupported file type selected: ${names}${suffix}. Please use supported formats only.`,
+      });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    setUploadNotice({ type: "ok", text: `Selected ${selected.length} supported file(s). Uploading...` });
     setUploading(true);
     try {
       const form = new FormData();
       for (let i = 0; i < files.length; i++) form.append("files", files[i]);
-      await fetch(`/api/v1/client/documents?apply_ocr=${applyOcr}`, {
+      const res = await fetch(`/api/v1/client/documents?apply_ocr=${applyOcr}`, {
         method: "POST",
         headers: { "X-API-Key": apiKey },
         body: form,
       });
+
+      if (!res.ok) {
+        const contentType = res.headers.get("content-type") || "";
+        const payload = contentType.includes("application/json") ? await res.json() : { detail: await res.text() };
+        throw new Error(payload?.detail || payload?.error || `Upload failed (HTTP ${res.status})`);
+      }
+
+      setUploadNotice({ type: "ok", text: "Upload successful. Ingestion started." });
       onDocsChange();
       // Auto-trigger ingest after upload
       handleIngest(applyOcr);
     } catch (e: any) {
-      alert("Upload failed: " + e.message);
+      const message = e?.message || "Upload failed";
+      setUploadNotice({ type: "error", text: message });
+      alert("Upload failed: " + message);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -702,32 +756,57 @@ function ClientDocumentsTab({
 
   async function handleScrape() {
     if (!scrapeUrl) return;
+    const blockReason = getScrapeUrlBlockReason(scrapeUrl);
+    if (blockReason) {
+      setScrapeNotice({ type: "error", text: blockReason });
+      setScrapeResult({ status: "failed", error: blockReason });
+      return;
+    }
+
     setScraping(true);
     setScrapeResult(null);
+    setScrapeNotice({
+      type: "info",
+      text: crawlToggle
+        ? "Recursive crawl started: linked pages will be scanned within your depth/pages limits."
+        : "Single-page scrape started: only the provided URL will be fetched.",
+    });
     try {
-      const body: any = { url: scrapeUrl, scrape_type: crawlToggle ? "full" : "smart", max_depth: scrapeDepth, max_pages: scrapePages };
+      const body: any = {
+        url: scrapeUrl,
+        scrape_type: crawlToggle ? "recursive" : "single",
+        max_depth: scrapeDepth,
+        max_pages: scrapePages,
+      };
       const res = await fetch("/api/v1/scrape/enhanced", {
         method: "POST",
         headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const result = await res.json();
-      if (crawlToggle && result?.data?.job_id) {
-        const jobId = result.data.job_id;
+      const contentType = res.headers.get("content-type") || "";
+      const result = contentType.includes("application/json")
+        ? await res.json()
+        : { status: "failed", error: await res.text() };
+      if (!res.ok) {
+        throw new Error(result?.error || result?.detail || `Scrape failed with HTTP ${res.status}`);
+      }
+      const jobId = result?.data?.job_id || result?.job_id;
+      if (crawlToggle && jobId) {
         for (let i = 0; i < 200; i++) {
           await new Promise(r => setTimeout(r, 3000));
           try {
             const sr = await fetch(`/api/v1/scrape/recursive/${jobId}/status`, { headers: { "X-API-Key": apiKey } });
-            const status = await sr.json();
-            const s = status?.data?.status;
+            const statusContentType = sr.headers.get("content-type") || "";
+            const status = statusContentType.includes("application/json") ? await sr.json() : { status: "failed", error: await sr.text() };
+            const s = status?.data?.status || status?.status;
             if (s === "done" || s === "completed") {
-              const r = status?.data?.result || {};
+              const r = status?.data?.result || status?.result || {};
               const n = typeof r.pages_found === "number" ? r.pages_found : r.stats?.total_pages ?? 0;
               setScrapeResult({ status: "completed", url: scrapeUrl, files_saved: n, pages: n });
               break;
             }
             if (s === "error" || s === "failed") {
-              setScrapeResult({ status: "failed", error: status?.data?.error || "Crawl failed" });
+              setScrapeResult({ status: "failed", error: status?.data?.error || status?.error || "Crawl failed" });
               break;
             }
           } catch {}
@@ -738,6 +817,7 @@ function ClientDocumentsTab({
       onDocsChange();
     } catch (e: any) {
       setScrapeResult({ status: "failed", error: e.message });
+      setScrapeNotice({ type: "error", text: e?.message || "Scrape failed" });
     } finally {
       setScraping(false);
     }
@@ -846,7 +926,20 @@ function ClientDocumentsTab({
             <Upload className="mx-auto h-8 w-8 text-primary" />
             <p className="mt-3 text-sm font-medium">Drop files here or click to browse</p>
             <p className="mt-1 text-xs text-muted-foreground">PDF, DOCX, PPTX, MD, TXT, HTML, CSV, JSON</p>
-            <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileUpload} />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Supported: {UI_SUPPORTED_EXTENSIONS.join(", ")}
+            </p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Not supported: {UI_UNSUPPORTED_EXAMPLES.join(", ")}
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.markdown,.txt,.html,.htm,.csv,.json,.png,.jpg,.jpeg,.tiff,.bmp,.webp"
+              className="hidden"
+              onChange={handleFileUpload}
+            />
             <button disabled={uploading} onClick={() => fileInputRef.current?.click()}
               className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
               {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
@@ -856,6 +949,17 @@ function ClientDocumentsTab({
               <input type="checkbox" checked={applyOcr} onChange={(e) => setApplyOcr(e.target.checked)} className="accent-primary" />
               <span className="text-xs text-muted-foreground">Apply OCR</span>
             </label>
+            {uploadNotice && (
+              <div
+                className={`mt-3 rounded-md border px-3 py-2 text-xs ${
+                  uploadNotice.type === "error"
+                    ? "border-destructive/40 bg-destructive/10 text-destructive"
+                    : "border-success/40 bg-success/10 text-success"
+                }`}
+              >
+                {uploadNotice.text}
+              </div>
+            )}
           </div>
           <div className="mt-4 flex gap-3">
             <button onClick={() => handleIngest(false)} disabled={ingesting}
@@ -900,7 +1004,15 @@ function ClientDocumentsTab({
           <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Scrape a web page</h3>
           <div className="mt-4 grid gap-4 md:grid-cols-[1fr_140px_140px_auto]">
             <ClientField label="URL">
-              <input className="input font-mono text-xs" value={scrapeUrl} onChange={(e) => setScrapeUrl(e.target.value)} placeholder="https://docs.example.com/page" />
+              <input
+                className="input font-mono text-xs"
+                value={scrapeUrl}
+                onChange={(e) => {
+                  setScrapeUrl(e.target.value);
+                  setScrapeNotice(null);
+                }}
+                placeholder="https://docs.example.com/page"
+              />
             </ClientField>
             <ClientField label="Max depth">
               <input className="input" type="number" value={scrapeDepth} onChange={(e) => setScrapeDepth(Number(e.target.value))} />
@@ -917,14 +1029,66 @@ function ClientDocumentsTab({
             </div>
           </div>
           <label className="mt-3 inline-flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={crawlToggle} onChange={(e) => setCrawlToggle(e.target.checked)} className="accent-primary" />
+            <input
+              type="checkbox"
+              checked={crawlToggle}
+              onChange={(e) => {
+                setCrawlToggle(e.target.checked);
+                setScrapeNotice({
+                  type: "info",
+                  text: e.target.checked
+                    ? "Mode: Recursive crawl (follows links)."
+                    : "Mode: Single page (does not follow links).",
+                });
+              }}
+              className="accent-primary"
+            />
             <span className="text-xs text-muted-foreground">Crawl linked pages</span>
           </label>
+          <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+            <div>
+              Mode: {crawlToggle ? "Recursive crawl (uses max depth/pages)." : "Single page only (one URL)."}
+            </div>
+            <div>Blocked URLs: localhost, 127.0.0.1, 10.x.x.x, 192.168.x.x, 172.16-31.x.x</div>
+          </div>
+          {scrapeNotice && (
+            <div
+              className={`mt-3 rounded-md border px-3 py-2 text-xs ${
+                scrapeNotice.type === "error"
+                  ? "border-destructive/40 bg-destructive/10 text-destructive"
+                  : "border-primary/30 bg-primary/10 text-foreground"
+              }`}
+            >
+              {scrapeNotice.text}
+            </div>
+          )}
           {scrapeResult && (
             <div className="mt-3 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
-              {scrapeResult.status === "completed"
-                ? <div className="text-success font-semibold">✅ Scraped {scrapeResult.files_saved} file(s) from {scrapeResult.url}</div>
-                : <div className="text-destructive">❌ {scrapeResult.error || "Scrape failed"}</div>}
+              {scrapeResult.status === "completed" || scrapeResult.success === true || (scrapeResult.files_saved != null && scrapeResult.files_saved >= 0 && !scrapeResult.error) ? (
+                <div>
+                  <div className="text-success font-semibold">
+                    ✅ {scrapeResult.data?.title
+                      ? `"${scrapeResult.data.title}" scraped successfully`
+                      : `Scraped ${scrapeResult.files_saved ?? 0} file(s)`}
+                  </div>
+                  {scrapeResult.files_saved != null && (
+                    <div className="text-muted-foreground mt-1">
+                      Files saved: {scrapeResult.files_saved}
+                      {scrapeResult.duplicates?.length > 0 && ` · Duplicates skipped: ${scrapeResult.duplicates.length}`}
+                    </div>
+                  )}
+                  {scrapeResult.data?.elapsed_ms && (
+                    <div className="text-muted-foreground text-[10px] mt-0.5">Time: {scrapeResult.data.elapsed_ms}ms</div>
+                  )}
+                </div>
+              ) : scrapeResult.status === "failed" || scrapeResult.error ? (
+                <div className="text-destructive">❌ {scrapeResult.error || "Scrape failed"}</div>
+              ) : (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
+                  <span>{scrapeResult.status || "Processing..."}</span>
+                </div>
+              )}
             </div>
           )}
         </div>

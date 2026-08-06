@@ -140,12 +140,18 @@ export async function streamChat(
     if (buffer.trim()) {
       const chunk = parseSSELine(buffer.trim());
       if (chunk) {
+        if (chunk.text) fullText += chunk.text;
+        if (chunk.citations) lastCitations = chunk.citations;
         onChunk(chunk);
         if (chunk.done) {
-          onComplete?.(fullText || chunk.text, chunk.citations || lastCitations);
+          onComplete?.(fullText, chunk.citations || lastCitations);
+          return;
         }
       }
     }
+
+    // Stream ended without a done:true chunk — call onComplete anyway
+    onComplete?.(fullText, lastCitations);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     onError?.(err);
