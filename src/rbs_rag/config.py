@@ -35,7 +35,7 @@ class RetrievalConfig:
     final_context_k: int = 5
     dense_weight: float = 0.55
     sparse_weight: float = 0.45
-    reranker: str = "bge_cross_encoder"   # local | bge_cross_encoder
+    reranker: str = "local"
 
 
 @dataclass(slots=True)

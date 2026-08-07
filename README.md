@@ -11,6 +11,8 @@ sudo ./start.sh
 
 Open **https://localhost/** (accept self-signed cert warning), login with `admin` / `admin`, create a tenant with your LLM API key.
 
+For deployment/container environments, ensure the scraper service has a writable crawl-output volume. The compose setup already mounts [scraper-service/crawl_output](scraper-service/crawl_output) into the container and exports `SCRAPER_OUTPUT_ROOT=/app/crawl_output` and `SCRAPER_OUTPUT_FALLBACK=/app/crawl_output` for the scraper service.
+
 ## Services
 
 | Container | Purpose |

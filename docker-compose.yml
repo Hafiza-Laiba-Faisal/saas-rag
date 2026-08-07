@@ -133,6 +133,8 @@ services:
       - REDIS_HOST=${RAG_REDIS_HOST:-redis}
       - REDIS_PORT=${RAG_REDIS_PORT:-6379}
       - REDIS_PASSWORD=${RAG_REDIS_PASSWORD:-}
+      - SCRAPER_OUTPUT_ROOT=/app/crawl_output
+      - SCRAPER_OUTPUT_FALLBACK=/app/crawl_output
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s

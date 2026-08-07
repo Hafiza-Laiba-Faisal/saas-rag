@@ -28,6 +28,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from core.fetcher.escalating_fetcher import EscalatingFetcher
+from config.settings import resolve_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ class SiteCrawler:
 
         base_domain = get_domain(config.url)
         site_name = urlparse(config.url).netloc.replace(".", "_").replace("-", "_")
-        out_dir = self.output_base / site_name
+        out_dir = resolve_output_dir(self.output_base, site_name)
         out_dir.mkdir(parents=True, exist_ok=True)
         result.output_dir = str(out_dir)
 

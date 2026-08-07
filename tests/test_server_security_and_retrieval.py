@@ -82,6 +82,48 @@ class ServerSecurityAndRetrievalTests(unittest.TestCase):
             self.assertEqual(items[0]["source"], "scrape")
             self.assertEqual(items[0]["source_url"], "https://example.com")
 
+    def test_crawl_output_sync_stays_scoped_to_the_current_tenant(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root_dir = Path(temp_dir)
+            tenants_dir = root_dir / "tenants"
+            docs_dir_a = tenants_dir / "tenant-a" / "documents"
+            docs_dir_b = tenants_dir / "tenant-b" / "documents"
+            docs_dir_a.mkdir(parents=True, exist_ok=True)
+            docs_dir_b.mkdir(parents=True, exist_ok=True)
+
+            original_root_dir = server_module.ROOT_DIR
+            original_tenants_dir = server_module.TENANTS_DIR
+            original_crawl_output_dir = server_module.CRAWL_OUTPUT_DIR
+            try:
+                server_module.ROOT_DIR = root_dir
+                server_module.TENANTS_DIR = tenants_dir
+                server_module.CRAWL_OUTPUT_DIR = root_dir / "crawl-output"
+
+                server_module._save_crawl_output(
+                    site="tenant-a.example",
+                    metadata={"source_url": "https://tenant-a.example"},
+                    pages=["# Tenant A\n\nSource: https://tenant-a.example\n\nBody A"],
+                    tenant_id="tenant-a",
+                )
+                server_module._save_crawl_output(
+                    site="tenant-b.example",
+                    metadata={"source_url": "https://tenant-b.example"},
+                    pages=["# Tenant B\n\nSource: https://tenant-b.example\n\nBody B"],
+                    tenant_id="tenant-b",
+                )
+
+                with patch.object(server_module.admin_store, "get_tenant", side_effect=lambda tenant_id: {"tenant_id": tenant_id, "crawl_output_dir": str(server_module._tenant_crawl_output_root(tenant_id))}):
+                    saved = server_module._sync_crawl_outputs_to_tenant("tenant-a")
+            finally:
+                server_module.ROOT_DIR = original_root_dir
+                server_module.TENANTS_DIR = original_tenants_dir
+                server_module.CRAWL_OUTPUT_DIR = original_crawl_output_dir
+
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]["url"], "https://tenant-a.example")
+            self.assertTrue((docs_dir_a / saved[0]["file"]).exists())
+            self.assertFalse((docs_dir_b / saved[0]["file"]).exists())
+
     def test_store_migrates_session_turns_table_for_existing_databases(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "rag.db"

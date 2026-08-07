@@ -143,13 +143,12 @@ class RecursiveCrawler:
         self._extraction_times: list[float] = []
 
         # Output directory for saving crawled data
-        self.output_dir = Path(output_dir) if output_dir else Path("crawl_output") / urlparse(seed_url).netloc.replace(".", "_")
+        self.output_dir = Path(output_dir) if output_dir else resolve_output_dir("crawl_output", urlparse(seed_url).netloc.replace(".", "_").replace("-", "_"))
         
         # Initialize PageStore and ChangeStore
         from core.crawler.page_store import PageStore
         from core.crawler.change_store import init_change_store
-        
-        self.page_store = PageStore(self.output_dir)
+from config.settings import resolve_output_dir
         domain = urlparse(seed_url).netloc.replace(".", "_")
         self.change_store = init_change_store(domain, self.output_dir)
 

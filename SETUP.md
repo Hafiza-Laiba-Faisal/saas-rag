@@ -68,6 +68,13 @@ docker compose up --build -d
 
 ### 2.4 Verify the stack
 
+If you run the scraper service in Docker and see `Permission denied` while crawling, make sure the container has a writable crawl-output path. The compose file already mounts the host folder and exports these variables for the scraper service:
+
+```bash
+SCRAPER_OUTPUT_ROOT=/app/crawl_output
+SCRAPER_OUTPUT_FALLBACK=/app/crawl_output
+```
+
 ```bash
 docker compose ps
 # All 6 services should be Up (healthy); if OCR/scraper are still "starting"
@@ -203,23 +210,40 @@ Prefer `docker compose` over raw `docker start/stop tenbit-*` — it manages the
 You still need Redis + Qdrant running (use Docker for just those two):
 
 ```bash
-# Backend
-cd rag
+# 1. Python virtualenv + dependencies
 python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install -e ".[all]"
 
-# only Redis + Qdrant via Docker
-docker run -d --name rag-redis -p 6379:6379 redis:7-alpine redis-server --appendonly yes
+# 2. Redis + Qdrant only via Docker
+docker run -d --name rag-redis  -p 6379:6379 redis:7-alpine redis-server --appendonly yes
 docker run -d --name rag-qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
 
-cp .env.example .env   # edit keys as in §2.2
-RAG_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+# 3. Environment file
+cp .env.example .env   # then edit — see §2.2 for required keys
 
-PYTHONPATH=src .venv/bin/uvicorn rbs_rag.web.server:app --reload --host 0.0.0.0 --port 3001
+# 4. Start backend (port 3001)
+RAG_ROOT_DIR='.rbs_rag' \
+QDRANT_HOST=localhost QDRANT_PORT=6333 \
+RAG_REDIS_HOST=localhost REDIS_HOST=localhost REDIS_PORT=6379 \
+REDIS_ENABLED=true \
+SCRAPER_SERVICE_URL=http://localhost:8002 \
+PYTHONPATH=src \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+.venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload
 
-# Frontend dev (separate terminal)
+# 5. Frontend dev (separate terminal)
 cd chic-interface-design && npm install && npm run dev   # → http://localhost:5173
+```
+
+> **`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`** — set these to avoid HuggingFace network calls on startup. The reranker uses a local word-overlap algorithm with no model downloads required.
+
+### Dev launcher (all-in-one)
+
+```bash
+./dev-start.sh
+# Opens separate terminal windows for backend, frontend, and docker logs.
+# Requires konsole / gnome-terminal / xterm.
 ```
 
 ### Environment Variables (reference)
@@ -274,7 +298,8 @@ docker compose logs -f scraper_service
 | Qdrant errors | `curl http://qdrant:6333/health` inside stack, or host: `curl :6333/health` |
 | Encrypted-key mismatch (old data) | You changed `RAG_ENCRYPTION_KEY` → delete re-created tables: `docker compose exec rag_api rm -rf /data/.rbs_rag` (⚠️ deletes all tenants/docs) |
 | OCR/scraper stuck at "starting" longer than 2 min | Read logs; on the first boot only, models/Chromium may download (needs internet). Afterwards they start fast. |
-| 404 on scrape job poll | Ensure `scraper_service` runs with 1 worker (`<=` see §6) so the in-memory job store matches |
+| 404 on scrape job poll | Ensure `scraper_service` runs with 1 worker (see §6) so the in-memory job store matches |
+| Backend hangs on first query (dev) | Set `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` — prevents HuggingFace network retries |
 
 ---
 

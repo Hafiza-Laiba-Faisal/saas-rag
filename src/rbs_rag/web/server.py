@@ -187,6 +187,7 @@ def _purge_crawl_output_for_file(source_url: str | None, filename: str) -> None:
     _sync_crawl_outputs_to_tenant won't re-import them on the next list refresh."""
     search_dirs = [
         ROOT_DIR / "crawl-output",
+        ROOT_DIR / "crawl-output" / "tenants",  # tenant-scoped catalog roots
         Path("scraper-service/crawl_output"),
         Path("scraper-service/app/crawl_output"),
     ]
@@ -253,7 +254,8 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
     deleted_urls = _load_tombstones(tenant_id)
 
     search_dirs = [
-        ROOT_DIR / "crawl-output",
+        _tenant_crawl_output_root(tenant_id),
+        CRAWL_OUTPUT_DIR,
         Path("scraper-service/crawl_output"),
         Path("scraper-service/app/crawl_output"),
     ]
@@ -297,8 +299,13 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
     for base_dir in base_dirs:
         if not base_dir.exists():
             continue
-        if site_dir is not None or tenant_crawl_dir:
+        if site_dir is not None:
             site_folders: list[Path] = [base_dir]
+        elif tenant_crawl_dir:
+            if (base_dir / "pages").exists():
+                site_folders = [base_dir]
+            else:
+                site_folders = [p for p in base_dir.iterdir() if p.is_dir()]
         else:
             site_folders = [p for p in base_dir.iterdir() if p.is_dir()]
         for site_dir in site_folders:
@@ -1968,6 +1975,7 @@ def _import_full_crawl_output(tenant_id: str, job_id: str, scraper) -> list[dict
             site=_crawl_site_slug(site or "crawl"),
             metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": site},
             pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved],
+            tenant_id=tenant_id,
         )
 
     # Auto-ingest: move imported pages into the documents queue + vector store
@@ -2029,6 +2037,7 @@ async def full_scrape(req: FullScrapeRequest, tenant=Depends(_resolve_client_ten
                 site=_crawl_site_slug(req.url),
                 metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": req.url},
                 pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved_files],
+                tenant_id=tenant_id,
             )
         if tenant_id:
             _sync_site_to_tenant(tenant_id, req.url)
@@ -2087,6 +2096,7 @@ async def tenant_full_scrape(tenant_id: str, req: FullScrapeRequest, _admin=Depe
                 site=_crawl_site_slug(req.url),
                 metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": req.url},
                 pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved_files],
+                tenant_id=tenant_id,
             )
         _sync_site_to_tenant(tenant_id, req.url)
         admin_store.log_activity(
@@ -2235,6 +2245,7 @@ async def tenant_enhanced_scrape(tenant_id: str, req: EnhancedScrapeRequest, _ad
             site=_crawl_site_slug(req.url),
             metadata={"strategy": req.scrape_type, "is_wordpress": False, "languages_found": [], "source_url": req.url, "quality_score": data.get("quality_score")},
             pages=[content_text],
+            tenant_id=tenant_id,
         )
 
     result_out = result or {}
@@ -2291,10 +2302,17 @@ def _crawl_site_slug(url: str) -> str:
         return url.replace("https://", "").replace("http://", "").split("/")[0]
 
 
-def _find_crawl_site_dir(url: str) -> Path | None:
+def _tenant_crawl_output_root(tenant_id: str | None) -> Path:
+    if tenant_id:
+        return CRAWL_OUTPUT_DIR / "tenants" / tenant_id
+    return CRAWL_OUTPUT_DIR
+
+
+def _find_crawl_site_dir(url: str, tenant_id: str | None = None) -> Path | None:
     """Locate the crawler output site folder matching a scraped URL, if it exists."""
     candidates = [
-        ROOT_DIR / "crawl-output",
+        _tenant_crawl_output_root(tenant_id),
+        CRAWL_OUTPUT_DIR,
         Path("scraper-service/crawl_output"),
         Path("scraper-service/app/crawl_output"),
     ]
@@ -2324,25 +2342,66 @@ def _find_crawl_site_dir(url: str) -> Path | None:
 def _sync_site_to_tenant(tenant_id: str, url: str) -> list[dict]:
     """After a crawl completes, record the crawl output folder on the tenant and
     import all its documents (md/json/pdf, original extensions) into the tenant."""
-    site_dir = _find_crawl_site_dir(url)
+    site_dir = _find_crawl_site_dir(url, tenant_id=tenant_id)
     if site_dir and site_dir.exists():
         admin_store.set_crawl_output_dir(tenant_id, str(site_dir))
     return _sync_crawl_outputs_to_tenant(tenant_id, site_url=url, site_dir=site_dir)
 
 
-def _save_crawl_output(site: str, metadata: dict, pages: list[str], images: list[str] | None = None, pdfs: list[str] | None = None) -> None:
-    """Persist a crawl result to the local crawl-output catalog (site folders)."""
+def _page_source_url(page: str, metadata: dict) -> str:
+    """Extract the per-page source URL from a page's ``Source:`` header, falling
+    back to the site-level metadata."""
+    m = re.search(r"^Source:\s*(\S+)", page, re.MULTILINE)
+    return (m.group(1) if m else metadata.get("source_url") or "").strip()
+
+
+def _page_stem(page: str, idx: int) -> str:
+    """Derive a filesystem-safe page stem from the page's leading heading."""
+    m = re.search(r"^#\s+(.+)$", page, re.MULTILINE)
+    base = m.group(1).strip() if m else ""
+    slug = re.sub(r"[^a-zA-Z0-9 _-]", "", base).strip() or f"page-{idx + 1:03d}"
+    return slug[:80]
+
+
+def _save_crawl_output(site: str, metadata: dict, pages: list[str], images: list[str] | None = None, pdfs: list[str] | None = None, tenant_id: str | None = None) -> None:
+    """Persist a crawl result to the crawl-output catalog.
+
+    With ``tenant_id`` the output is written to that tenant's scoped catalog
+    root (``<CRAWL_OUTPUT_DIR>/tenants/<tenant_id>``) and pages are stored in
+    the crawler-service layout (``pages/<lang>/<name>.md`` plus per-page
+    ``*.metadata.json``) so ``_sync_crawl_outputs_to_tenant`` can import them
+    from the tenant's own ``crawl_output_dir``. Without it, pages are written
+    as plain ``pages/NNNN.md`` stubs in the shared catalog, which the sync step
+    deliberately ignores.
+    """
     try:
-        site_dir = CRAWL_OUTPUT_DIR / site
-        site_dir.mkdir(parents=True, exist_ok=True)
+        if tenant_id:
+            site_dir = _tenant_crawl_output_root(tenant_id) / site
+            site_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            site_dir = CRAWL_OUTPUT_DIR / site
+            site_dir.mkdir(parents=True, exist_ok=True)
         (site_dir / "metadata.json").write_text(
             json.dumps({"site": site, **metadata, "crawled_at": metadata.get("crawled_at") or datetime.utcnow().isoformat()}),
             encoding="utf-8",
         )
+        page_dir = site_dir / "pages"
+        page_dir.mkdir(parents=True, exist_ok=True)
         for idx, page in enumerate(pages):
-            page_dir = site_dir / "pages"
-            page_dir.mkdir(parents=True, exist_ok=True)
-            (page_dir / f"{idx + 1:04d}.md").write_text(page, encoding="utf-8")
+            if tenant_id:
+                lang_dir = page_dir / "en"
+                lang_dir.mkdir(parents=True, exist_ok=True)
+                md_file = lang_dir / f"{_page_stem(page, idx)}.md"
+                if md_file.exists():
+                    # Avoid silently overwriting a same-titled page.
+                    md_file = lang_dir / f"{md_file.stem}_{uuid.uuid4().hex[:4]}.md"
+                page_url = _page_source_url(page, metadata)
+                md_file.write_text(page, encoding="utf-8")
+                (lang_dir / f"{md_file.stem}.metadata.json").write_text(
+                    json.dumps({"url": page_url, "title": md_file.stem}), encoding="utf-8"
+                )
+            else:
+                (page_dir / f"{idx + 1:04d}.md").write_text(page, encoding="utf-8")
         for kind in ("images", "pdfs"):
             items = {"images": images, "pdfs": pdfs}.get(kind) or []
             if items:

@@ -27,7 +27,10 @@ RUN playwright install chromium 2>/dev/null || true
 
 COPY . .
 
-RUN mkdir -p /app/data /app/downloads
+# The container runs as UID 1000 (docker-compose `user: ${UID:-1000}`), so the
+# data/downloads dirs must be owned by that UID — otherwise the named volume
+# mounted over them comes up root-owned and writes fail with "Permission denied".
+RUN mkdir -p /app/data /app/downloads && chown -R 1000:1000 /app/data /app/downloads
 
 EXPOSE 8000
 

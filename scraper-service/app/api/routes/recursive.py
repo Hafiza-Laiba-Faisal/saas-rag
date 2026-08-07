@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from core.crawler.recursive_crawler import RecursiveCrawler, CrawlResult, CrawlStats
 from jobs.job_store import default_job_store
 from schemas.base import ApiResponse
+from config.settings import resolve_output_dir
 
 router = APIRouter(prefix="/crawl", tags=["recursive-crawler"])
 
@@ -66,8 +67,7 @@ async def _execute_recursive_crawl(job_id: str, request: RecursiveCrawlRequest):
                 )
 
         # Initialize crawler with output directory
-        from pathlib import Path
-        output_dir = Path("crawl_output") / urlparse(request.url).netloc.replace(".", "_")
+        output_dir = resolve_output_dir("crawl_output", urlparse(request.url).netloc.replace(".", "_").replace("-", "_"))
         crawler = RecursiveCrawler(
             seed_url=request.url,
             max_depth=request.max_depth,

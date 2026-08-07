@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from jobs.job_store import default_job_store
 from schemas.base import ApiResponse
+from config.settings import resolve_output_dir
 
 router = APIRouter(prefix="/crawl", tags=["full-crawl"])
 
@@ -51,7 +52,7 @@ def _run_full_crawl(job_id: str, req: FullCrawlRequest):
         job.message = "Starting full site crawl..."
         persist()
 
-        crawler = SiteCrawler(output_base=str(_output_base))
+        crawler = SiteCrawler(output_base=str(resolve_output_dir(_output_base, "full-crawl")))
         crawler.set_progress_callback(update_job)
         result = await asyncio.wait_for(
             crawler.crawl(

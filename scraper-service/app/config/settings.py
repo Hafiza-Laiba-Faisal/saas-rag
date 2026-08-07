@@ -12,6 +12,7 @@ ROOT_DIR     = Path(__file__).parent.parent.parent   # scraper-service/
 APP_DIR      = ROOT_DIR / "app"
 DOWNLOADS_DIR = ROOT_DIR / "downloads"
 DB_PATH      = APP_DIR / "scraper.db"
+OUTPUT_ROOT = Path(os.getenv("SCRAPER_OUTPUT_ROOT", str(ROOT_DIR / "crawl_output"))).resolve()
 
 # ── Load .env if present ──────────────────────────────────────────────────────
 _env_file = ROOT_DIR / ".env"
@@ -64,3 +65,34 @@ FB_LOGIN_TIMEOUT_SECONDS = 900
 
 # ── Allowed proxy domains (media proxy endpoint) ──────────────────────────────
 PROXY_ALLOWED_DOMAINS = FB_ALLOWED_CDN_DOMAINS
+
+
+def resolve_output_dir(base_path: str | os.PathLike[str] | None = None, site_name: str | None = None) -> Path:
+    """Resolve a writable crawl output directory for deployment environments.
+
+    The scraper should always be able to create its output tree even when the
+    default root is owned by another user (for example, root in containerized
+    deployments). We prefer the configured root, but fall back to the service
+    writable temp directory if the target path cannot be created.
+    """
+
+    root = Path(base_path or OUTPUT_ROOT)
+    if not root.is_absolute():
+        root = (ROOT_DIR / root).resolve()
+
+    if site_name:
+        candidate = root / site_name
+    else:
+        candidate = root
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        if os.access(candidate, os.W_OK):
+            return candidate
+    except OSError:
+        pass
+
+    fallback_root = Path(os.getenv("SCRAPER_OUTPUT_FALLBACK", "/tmp/scraper-output")).resolve()
+    fallback = fallback_root / (site_name or candidate.name)
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback

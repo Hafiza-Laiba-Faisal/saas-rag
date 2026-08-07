@@ -27,6 +27,11 @@ open_term() {
 [ -d "$ROOT/.venv" ] || { echo "Missing: $ROOT/.venv (create it with: python -m venv .venv && .venv/bin/pip install -e .)"; exit 1; }
 [ -d "$ROOT/chic-interface-design" ] || { echo "Missing: $ROOT/chic-interface-design"; exit 1; }
 
+# Bind-mounted crawl output must exist and be user-owned BEFORE the scraper
+# container starts — otherwise Docker creates it as root and the scraper
+# (running as UID 1000) hits "Permission denied" writing crawl results.
+mkdir -p "$ROOT/scraper-service/crawl_output"
+
 # 4. Backend (Python) — new terminal window (skip if a backend is already on :3001)
 if curl -s -o /dev/null -m 1 http://127.0.0.1:3001/api/v1/health; then
   echo "Backend already running on http://localhost:3001 — skipping backend terminal."

@@ -915,21 +915,6 @@ function ConfigTab({ tenant, onDeleted }: { tenant: Tenant; onDeleted?: () => vo
               );
             })()}
           </Field>
-          <Field label="Reranker Type">
-            <select className="input" value={form.rerankerType || "local"} onChange={(e) => upd("rerankerType", e.target.value)}>
-              <option value="local">Local Word-Overlap Reranker</option>
-              <option value="bge_cross_encoder">BGE Cross-Encoder</option>
-            </select>
-          </Field>
-          <Field label="Semantic Chunking">
-            <select className="input" value={(form.chunkingSemantic ?? true) ? "true" : "false"} onChange={(e) => upd("chunkingSemantic", e.target.value === "true")}>
-              <option value="true">Enabled (embedding similarity merge)</option>
-              <option value="false">Disabled (heading-based)</option>
-            </select>
-          </Field>
-          <Field label="Semantic Threshold">
-            <input className="input" type="number" step="0.05" min="0" max="1" value={form.chunkingSemanticThreshold ?? 0.75} onChange={(e) => upd("chunkingSemanticThreshold", Number(e.target.value))} />
-          </Field>
         </div>
       </div>
 
@@ -2675,8 +2660,27 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
   });
 
   useEffect(() => {
-    if (tenantConfig?.systemPrompt) setSystemPrompt(tenantConfig.systemPrompt);
-  }, [tenantConfig]);
+    setSelectedSession(null);
+    setQuery("");
+    setLoading(false);
+    setStreaming(false);
+    setError("");
+    setChatTurns([]);
+    setContexts([]);
+    setDrawerContext(null);
+    setShowPromptSection(false);
+    turnsLoaded.current = false;
+    prevSessionRef.current = null;
+    setSystemPrompt("");
+  }, [tenantId]);
+
+  useEffect(() => {
+    if (tenantConfig?.systemPrompt != null) {
+      setSystemPrompt(tenantConfig.systemPrompt);
+    } else {
+      setSystemPrompt("");
+    }
+  }, [tenantConfig, tenantId]);
 
   useEffect(() => {
     if (selectedSession !== prevSessionRef.current) {
