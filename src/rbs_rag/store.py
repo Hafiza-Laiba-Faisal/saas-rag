@@ -55,7 +55,13 @@ def close_pool() -> None:
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    if column not in cols:
+    if column in cols:
+        return
+
+    if "DEFAULT CURRENT_TIMESTAMP" in ddl:
+        conn.execute(ddl.replace(" DEFAULT CURRENT_TIMESTAMP", ""))
+        conn.execute(f"UPDATE {table} SET {column} = datetime('now') WHERE {column} IS NULL")
+    else:
         conn.execute(ddl)
 
 
@@ -156,6 +162,7 @@ class SQLiteRagStore:
             ("documents", "ingested_at", "ALTER TABLE documents ADD COLUMN ingested_at TEXT DEFAULT CURRENT_TIMESTAMP"),
             ("documents", "tenant_id", "ALTER TABLE documents ADD COLUMN tenant_id TEXT"),
             ("documents", "knowledge_base_id", "ALTER TABLE documents ADD COLUMN knowledge_base_id TEXT"),
+            ("session_turns", "created_at", "ALTER TABLE session_turns ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP"),
             ("user_memory", "updated_at", "ALTER TABLE user_memory ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP"),
         ]
         for table, column, ddl in guards:
@@ -292,7 +299,7 @@ class SQLiteRagStore:
     def add_session_turn(self, tenant_id: str, session_id: str, user_id: str, role: str, content: str) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO session_turns (tenant_id, session_id, user_id, role, content) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO session_turns (tenant_id, session_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
                 (tenant_id, session_id, user_id, role, content),
             )
 

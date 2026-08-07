@@ -64,6 +64,7 @@ function ClientPage() {
     { role: "bot", text: "Hi! I'm connected to your indexed documents. Ask me anything to test retrieval." },
   ]);
   const [input, setInput] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -186,7 +187,7 @@ function ClientPage() {
     return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
   };
 
-   const send = async (e: React.FormEvent) => {
+   const send = async (e: React.FormEvent, systemPrompt?: string) => {
     e.preventDefault();
     const q = input.trim();
     if (!q || !activeApiKey) return;
@@ -457,12 +458,10 @@ function ClientPage() {
                           {m.isStreaming ? (
                             <>
                               {m.text ? renderMarkdown(m.text) : <Loader2 className="h-4 w-4 animate-spin" />}
-                              {m.text && <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse align-middle" />}
+                              {m.text && <span className="inline-block ml-1 w-2 h-4 bg-primary animate-pulse" />}
                             </>
-                          ) : m.text ? (
-                            renderMarkdown(m.text)
                           ) : (
-                            <Loader2 className="h-4 w-4 animate-spin" />
+                            renderMarkdown(m.text)
                           )}
                         </div>
                         {m.sources && m.sources.length > 0 && !m.isStreaming && (
@@ -486,7 +485,16 @@ function ClientPage() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
-               <form onSubmit={(e) => send(e)} className="flex items-center gap-2 border-t border-border px-4 py-3">
+               <form onSubmit={(e) => send(e, systemPrompt)} className="flex items-center gap-2 border-t border-border px-4 py-3">
+                 <div className="flex flex-col sm:flex-row gap-2">
+                   <input
+                     value={systemPrompt || ""}
+                     onChange={(e) => setSystemPrompt(e.target.value)}
+                     className="input flex-1"
+                     placeholder="System prompt (optional)"
+                     disabled={isLoading}
+                   />
+                 </div>
                  <input
                    value={input}
                    onChange={(e) => setInput(e.target.value)}
@@ -514,6 +522,7 @@ function ClientPage() {
                   <button onClick={() => {
                     setMessages([]);
                     setInput("");
+                    setSystemPrompt("");
                     setSelectedSource(null);
                  }} className="rounded-md border border-border bg-panel px-3 py-1.5 text-xs text-muted-foreground hover:bg-elevated hover:text-foreground">
                     Clear
@@ -1064,31 +1073,9 @@ function ClientDocumentsTab({
           )}
           {scrapeResult && (
             <div className="mt-3 rounded-lg border border-border bg-elevated/50 p-3 text-xs">
-              {scrapeResult.status === "completed" || scrapeResult.success === true || (scrapeResult.files_saved != null && scrapeResult.files_saved >= 0 && !scrapeResult.error) ? (
-                <div>
-                  <div className="text-success font-semibold">
-                    ✅ {scrapeResult.data?.title
-                      ? `"${scrapeResult.data.title}" scraped successfully`
-                      : `Scraped ${scrapeResult.files_saved ?? 0} file(s)`}
-                  </div>
-                  {scrapeResult.files_saved != null && (
-                    <div className="text-muted-foreground mt-1">
-                      Files saved: {scrapeResult.files_saved}
-                      {scrapeResult.duplicates?.length > 0 && ` · Duplicates skipped: ${scrapeResult.duplicates.length}`}
-                    </div>
-                  )}
-                  {scrapeResult.data?.elapsed_ms && (
-                    <div className="text-muted-foreground text-[10px] mt-0.5">Time: {scrapeResult.data.elapsed_ms}ms</div>
-                  )}
-                </div>
-              ) : scrapeResult.status === "failed" || scrapeResult.error ? (
-                <div className="text-destructive">❌ {scrapeResult.error || "Scrape failed"}</div>
-              ) : (
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
-                  <span>{scrapeResult.status || "Processing..."}</span>
-                </div>
-              )}
+              {scrapeResult.status === "completed"
+                ? <div className="text-success font-semibold">✅ Scraped {scrapeResult.files_saved} file(s) from {scrapeResult.url}</div>
+                : <div className="text-destructive">❌ {scrapeResult.error || "Scrape failed"}</div>}
             </div>
           )}
         </div>

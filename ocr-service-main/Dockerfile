@@ -66,9 +66,15 @@ USER ocr
 # Expose the API port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+# Health check — generous start-period so first-boot model download / PaddleOCR
+# init (one process) is not torn down mid-start, which would trigger a
+# restart loop on fresh installs.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Default command
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Use a single worker: OCR state (PaddleOCR / onnxruntime models, orchestrator)
+# is a process-local singleton. Multiple workers re-download/init models in
+# parallel, which looks like a hang/"infinite loop" on first boot and wastes
+# memory. Scale via extra containers, not workers.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -5,7 +5,8 @@ Run:
   cd app && ../venv/bin/uvicorn main:app --reload --port 8000
 """
 
-import sys, os, logging
+import sys, os, logging, tempfile
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 _root = os.path.dirname(os.path.dirname(__file__))
 _app  = os.path.dirname(__file__)
@@ -23,19 +24,37 @@ from core.fetcher import client as global_client
 from api.routes import scrape, crawl, recursive, full_crawl, logs as logs_router
 from core.logs import in_memory_handler
 
-_log_dir = os.path.join(_root, ".logs")
-os.makedirs(_log_dir, exist_ok=True)
-_log_file = os.path.join(_log_dir, "scraper.log")
+def build_logging_handlers(log_file: str | None = None) -> list[logging.Handler]:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    candidate = log_file or os.environ.get("SCRAPER_LOG_FILE") or os.path.join(_root, ".logs", "scraper.log")
+    fallback = Path(tempfile.gettempdir()) / "scraper.log"
+    last_error: Exception | None = None
+
+    for path in (Path(candidate).expanduser(), fallback):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not os.access(path.parent, os.W_OK):
+                raise PermissionError(f"{path.parent} is not writable")
+            path.touch(exist_ok=True)
+            if not os.access(path, os.W_OK):
+                raise PermissionError(f"{path} is not writable")
+            handlers.append(RotatingFileHandler(str(path), maxBytes=5 * 1024 * 1024, backupCount=3))
+            return handlers + [in_memory_handler]
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            last_error = exc
+
+    logging.getLogger(__name__).warning(
+        "Falling back to stream logging because the file logger could not be created: %s",
+        last_error,
+    )
+    return handlers + [in_memory_handler]
+
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="[%(asctime)s] %(levelname)-7s [%(name)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(),
-        RotatingFileHandler(_log_file, maxBytes=5 * 1024 * 1024, backupCount=3),
-        in_memory_handler,
-    ],
+    handlers=build_logging_handlers(),
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)

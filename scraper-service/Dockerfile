@@ -31,7 +31,11 @@ RUN mkdir -p /app/data /app/downloads
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD curl -f http://localhost:8000/ || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Single worker: the scraper keeps crawl jobs, rate limits and browser pools
+# in process-local memory. With --workers 2, job/status state is not shared
+# between workers (job_id polls 404) and Playwright/Chromium init runs twice,
+# appearing to "loop" on startup. Scale via extra containers, not workers.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

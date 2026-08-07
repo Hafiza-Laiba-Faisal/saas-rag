@@ -1229,7 +1229,13 @@ async function scrapeUrl() {
             method: 'POST', headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
             body: JSON.stringify({ url, crawl, max_pages: maxPages, max_depth: maxDepth, full_site: document.getElementById('fullSiteToggle').checked })
         });
-        const data = await res.json();
+        const contentType = res.headers.get('content-type') || '';
+        const data = contentType.includes('application/json')
+            ? await res.json()
+            : { status: 'failed', error: await res.text() };
+        if (!res.ok) {
+            throw new Error(data.error || data.detail || `Scrape failed with HTTP ${res.status}`);
+        }
         logDiv.innerHTML += `<div class="log-line info">[Scraper] Job ID: ${data.job_id || '-'}</div>`;
         if (data.status === 'completed') {
             logDiv.innerHTML += `<div class="log-line success">[Scraper] Saved ${data.files_saved} file(s)</div>`;

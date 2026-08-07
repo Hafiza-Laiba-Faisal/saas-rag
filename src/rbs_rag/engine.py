@@ -8,7 +8,7 @@ from .chunking import create_chunker
 from .config import AppConfig, resolve_storage_path
 from .document_loaders import iter_document_files, load_document
 from .embeddings import create_embedding_provider
-from .llm import build_rag_messages, create_llm_client, create_streaming_client
+from .llm import build_rag_messages, create_llm_client, create_streaming_client, _clean_llm_text
 from .models import Answer, Citation, IngestSummary, SearchResult, StreamingChunk
 from .retrieval import HybridRetriever
 from .store import SQLiteRagStore
@@ -188,8 +188,10 @@ class RagEngine:
             full_text += chunk.text
             yield StreamingChunk(text=chunk.text, done=False)
 
+        # Clean the stitched full response before storing (safe to collapse/strip here)
+        cleaned_full = _clean_llm_text(full_text)
         self.store.add_session_turn(self.config.tenant_id, session_id, user_id, "user", query)
-        self.store.add_session_turn(self.config.tenant_id, session_id, user_id, "assistant", full_text)
+        self.store.add_session_turn(self.config.tenant_id, session_id, user_id, "assistant", cleaned_full)
 
         stream_validation = validate_streaming_answer(full_text, results)
         yield StreamingChunk(text="", done=True, citations=citations, error=None)

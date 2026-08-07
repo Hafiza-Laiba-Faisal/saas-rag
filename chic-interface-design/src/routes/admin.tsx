@@ -103,6 +103,8 @@ function AdminPage() {
     setTheme(t => t === "dark" ? "light" : "dark");
   }
 
+  const queryClient = useQueryClient();
+
   const { data: serverTenants, isLoading } = useQuery({
     queryKey: ["tenants"],
     queryFn: async () => {
@@ -2619,7 +2621,11 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
       if (!tenantId) return [];
       const res = await apiFetch(`/tenants/${tenantId}/sessions`);
       const data = await res.json();
-      return data.sessions || [];
+      return (data.sessions || []).map((session: any) => ({
+        ...session,
+        sessionId: session.sessionId || session.session_id || session.id,
+        session_id: session.session_id || session.sessionId || session.id,
+      }));
     },
     enabled: !!tenantId
   });
@@ -2894,13 +2900,13 @@ function PlaygroundTab({ tenantId }: { tenantId?: string }) {
             sessions.map((s: any, i: number) => (
               <div key={s.sessionId || i} className="flex items-center gap-1">
                 <button
-                  className={`flex-1 rounded-md px-3 py-2 text-left text-sm ${selectedSession === s.sessionId ? "bg-primary/15" : "hover:bg-elevated"}`}
-                  onClick={() => setSelectedSession(s.sessionId)}
+                  className={`flex-1 rounded-md px-3 py-2 text-left text-sm ${selectedSession === (s.sessionId || s.session_id) ? "bg-primary/15" : "hover:bg-elevated"}`}
+                  onClick={() => setSelectedSession(s.sessionId || s.session_id)}
                 >
-                  <div className="truncate font-medium">{s.sessionId}</div>
+                  <div className="truncate font-medium">{s.sessionId || s.session_id}</div>
                   <div className="text-[10px] text-muted-foreground">{s.turns || 0} turns</div>
                 </button>
-                <button onClick={() => handleDeleteSession(s.sessionId)} className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete session">
+                <button onClick={() => handleDeleteSession(s.sessionId || s.session_id)} className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" title="Delete session">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>

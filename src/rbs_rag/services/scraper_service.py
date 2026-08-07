@@ -49,6 +49,35 @@ class ScraperService:
         self.deepcrawl_api_key = os.getenv("DEEPCRAWL_API_KEY", "")
         self._http = httpx.Client(timeout=120.0)
         self._jobs: dict[str, ScrapeJob] = {}
+        # Full-site crawl jobs run asynchronously in the scraper microservice.
+        # Their state lives in the microservice's job store, so we track the
+        # job ids here and proxy status/output through HTTP instead of _jobs.
+        self._full_jobs: set[str] = set()
+        self._full_imported: set[str] = set()
+
+    def track_full_job(self, job_id: str) -> None:
+        self._full_jobs.add(job_id)
+
+    def is_full_job(self, job_id: str) -> bool:
+        return job_id in self._full_jobs
+
+    def mark_full_imported(self, job_id: str) -> None:
+        self._full_imported.add(job_id)
+
+    def was_full_imported(self, job_id: str) -> bool:
+        return job_id in self._full_imported
+
+    def download_crawl_file(self, job_id: str, rel_path: str) -> str:
+        """Fetch a crawled content file (e.g. a page's clean_text) from the
+        microservice. Works even in Docker where rag_api has no volume access."""
+        url = f"{self.base_url}/crawl/full/output/{job_id}/{rel_path}"
+        try:
+            r = self._http.get(url)
+            if r.status_code == 200 and isinstance(r.content, bytes):
+                return r.content.decode("utf-8", errors="replace")
+        except Exception as exc:
+            log.warning("download_crawl_file(%s) failed: %s", rel_path, exc)
+        return ""
 
     def _call_api(self, method: str, endpoint: str, payload: dict | None = None) -> dict:
         url = f"{self.base_url}{endpoint}"

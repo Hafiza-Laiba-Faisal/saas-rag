@@ -944,316 +944,6 @@ def get_chat_widget():
     return _spa_response()
 
 
-@app.get("/widget.js")
-def get_widget_js():
-    """Embeddable chat widget script — inject via <script src="/widget.js" ...>"""
-    js = r"""
-(function() {
-  if (window.__RBSWidgetLoaded) return;
-  window.__RBSWidgetLoaded = true;
-
-  var script = document.currentScript ||
-    document.querySelector('script[data-key]') ||
-    document.querySelector('script[src*="widget.js"]');
-
-  var API_URL  = (script && script.getAttribute('data-api-url')) || window.location.origin;
-  var API_KEY  = (script && script.getAttribute('data-key'))     || '';
-  var TENANT   = (script && script.getAttribute('data-tenant'))  || '';
-  var BOT_NAME = (script && script.getAttribute('data-name'))    || 'Assistant';
-
-  // ── Styles ──────────────────────────────────────────────────────────────────
-  var style = document.createElement('style');
-  style.textContent = [
-    '#rbs-widget-btn{position:fixed;bottom:24px;right:24px;z-index:99999;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;cursor:pointer;box-shadow:0 4px 20px rgba(99,102,241,.45);display:flex;align-items:center;justify-content:center;transition:transform .2s,box-shadow .2s}',
-    '#rbs-widget-btn:hover{transform:scale(1.08);box-shadow:0 6px 28px rgba(99,102,241,.55)}',
-    '#rbs-widget-btn svg{width:26px;height:26px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
-    '#rbs-widget-box{position:fixed;bottom:92px;right:24px;z-index:99998;width:380px;max-width:calc(100vw - 32px);height:560px;max-height:calc(100vh - 110px);background:#1a1b2e;border:1px solid rgba(255,255,255,.1);border-radius:16px;box-shadow:0 24px 64px rgba(0,0,0,.5);display:flex;flex-direction:column;overflow:hidden;transition:opacity .2s,transform .2s}',
-    '#rbs-widget-box.rbs-hidden{opacity:0;pointer-events:none;transform:translateY(12px)}',
-    '#rbs-widget-header{padding:14px 16px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}',
-    '#rbs-widget-header span{font-family:system-ui,sans-serif;font-size:14px;font-weight:600;color:#fff}',
-    '#rbs-widget-header button{background:none;border:none;cursor:pointer;color:rgba(255,255,255,.8);font-size:18px;line-height:1;padding:0 2px}',
-    '#rbs-widget-header button:hover{color:#fff}',
-    '#rbs-widget-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;font-family:system-ui,sans-serif}',
-    '#rbs-widget-msgs::-webkit-scrollbar{width:4px}',
-    '#rbs-widget-msgs::-webkit-scrollbar-track{background:transparent}',
-    '#rbs-widget-msgs::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:4px}',
-    '.rbs-msg{max-width:85%;padding:10px 13px;border-radius:14px;font-size:13px;line-height:1.55;word-break:break-word;white-space:pre-wrap}',
-    '.rbs-msg.bot{background:rgba(255,255,255,.07);color:#e2e8f0;border-bottom-left-radius:4px}',
-    '.rbs-msg.user{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;margin-left:auto;border-bottom-right-radius:4px}',
-    '.rbs-msg.bot a{color:#818cf8;text-decoration:underline}',
-    '.rbs-typing{display:inline-flex;gap:4px;padding:4px 2px}',
-    '.rbs-typing span{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.4);animation:rbs-bounce .9s infinite}',
-    '.rbs-typing span:nth-child(2){animation-delay:.18s}',
-    '.rbs-typing span:nth-child(3){animation-delay:.36s}',
-    '@keyframes rbs-bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}',
-    '#rbs-widget-form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.08);flex-shrink:0;background:#1a1b2e}',
-    '#rbs-widget-input{flex:1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:9px 13px;color:#e2e8f0;font-size:13px;font-family:system-ui,sans-serif;outline:none;resize:none}',
-    '#rbs-widget-input::placeholder{color:rgba(255,255,255,.35)}',
-    '#rbs-widget-input:focus{border-color:rgba(99,102,241,.6)}',
-    '#rbs-widget-send{background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;border-radius:10px;width:38px;height:38px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s}',
-    '#rbs-widget-send:disabled{opacity:.45;cursor:default}',
-    '#rbs-widget-send svg{width:17px;height:17px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
-  ].join('');
-  document.head.appendChild(style);
-
-  // ── Button ───────────────────────────────────────────────────────────────────
-  var btn = document.createElement('button');
-  btn.id = 'rbs-widget-btn';
-  btn.setAttribute('aria-label', 'Open chat');
-  btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
-  document.body.appendChild(btn);
-
-  // ── Box ───────────────────────────────────────────────────────────────────────
-  var box = document.createElement('div');
-  box.id = 'rbs-widget-box';
-  box.className = 'rbs-hidden';
-  box.innerHTML = [
-    '<div id="rbs-widget-header">',
-    '  <span>' + BOT_NAME + '</span>',
-    '  <button id="rbs-widget-close" aria-label="Close">&times;</button>',
-    '</div>',
-    '<div id="rbs-widget-msgs"></div>',
-    '<form id="rbs-widget-form" autocomplete="off">',
-    '  <input id="rbs-widget-input" placeholder="Ask a question…" autocomplete="off"/>',
-    '  <button type="submit" id="rbs-widget-send" aria-label="Send">',
-    '    <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
-    '  </button>',
-    '</form>',
-  ].join('');
-  document.body.appendChild(box);
-
-  var msgs   = document.getElementById('rbs-widget-msgs');
-  var input  = document.getElementById('rbs-widget-input');
-  var send   = document.getElementById('rbs-widget-send');
-  var form   = document.getElementById('rbs-widget-form');
-  var close  = document.getElementById('rbs-widget-close');
-
-  // ── Toggle ────────────────────────────────────────────────────────────────────
-  var isOpen = false;
-  function openWidget() {
-    isOpen = true;
-    box.classList.remove('rbs-hidden');
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-    input.focus();
-    if (msgs.children.length === 0) addMsg('bot', 'Hi! How can I help you today?');
-  }
-  function closeWidget() {
-    isOpen = false;
-    box.classList.add('rbs-hidden');
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
-  }
-  btn.addEventListener('click', function() { isOpen ? closeWidget() : openWidget(); });
-  close.addEventListener('click', closeWidget);
-
-  // ── Helpers ────────────────────────────────────────────────────────────────────
-  function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
-  function renderMd(text) {
-    if (!text) return '';
-    var lines = text.replace(/\r\n/g,'\n').split('\n');
-    var html = '';
-    var i = 0;
-    while (i < lines.length) {
-      var line = lines[i];
-      var trimmed = line.trim();
-
-      if (!trimmed) { i++; continue; }
-
-      // Heading
-      var hm = trimmed.match(/^(#{1,4})\s+(.*)/);
-      if (hm) {
-        html += '<p style="font-weight:700;margin:8px 0 2px;color:#e2e8f0">' + inlineMd(hm[2]) + '</p>';
-        i++; continue;
-      }
-
-      // Bullet list item
-      if (/^[-*+]\s+/.test(trimmed)) {
-        html += '<ul style="margin:4px 0 4px 16px;padding:0;list-style:disc">';
-        while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
-          html += '<li style="margin:2px 0">' + inlineMd(lines[i].trim().replace(/^[-*+]\s+/,'')) + '</li>';
-          i++;
-        }
-        html += '</ul>';
-        continue;
-      }
-
-      // Paragraph
-      var paraLines = [];
-      while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|[-*+]\s|\d+\.\s)/.test(lines[i].trim())) {
-        paraLines.push(lines[i].trim());
-        i++;
-      }
-      if (paraLines.length) {
-        html += '<p style="margin:4px 0;line-height:1.6">' + inlineMd(paraLines.join(' ')) + '</p>';
-        continue;
-      }
-      i++;
-    }
-    return html;
-  }
-
-  function inlineMd(text) {
-    var result = '';
-    var i = 0;
-    while (i < text.length) {
-      // Image ![alt](url)
-      if (text[i]==='!' && text[i+1]==='[') {
-        var ca = text.indexOf(']', i+2);
-        if (ca!==-1 && text[ca+1]==='(') {
-          var cu = text.indexOf(')', ca+2);
-          if (cu!==-1) {
-            var alt = text.slice(i+2, ca);
-            var url = text.slice(ca+2, cu).trim();
-            if (/^https?:\/\//i.test(url)) {
-              result += '<img src="'+escHtml(url)+'" alt="'+escHtml(alt)+'" style="max-width:100%;border-radius:8px;margin:4px 0;display:block" loading="lazy" onerror="this.style.display=\'none\'">';
-              i = cu+1; continue;
-            }
-          }
-        }
-      }
-      // Link [text](url)
-      if (text[i]==='[') {
-        var cb = text.indexOf('](', i+1);
-        var ce = cb!==-1 ? text.indexOf(')', cb+2) : -1;
-        if (cb!==-1 && ce!==-1) {
-          var lt = text.slice(i+1, cb);
-          var lu = text.slice(cb+2, ce).trim();
-          result += '<a href="'+escHtml(lu)+'" target="_blank" rel="noopener" style="color:#818cf8;text-decoration:underline">'+escHtml(lt)+'</a>';
-          i = ce+1; continue;
-        }
-      }
-      // Bold **text**
-      if (text[i]==='*' && text[i+1]==='*') {
-        var eb = text.indexOf('**', i+2);
-        if (eb!==-1) {
-          result += '<strong style="color:#f1f5f9">'+escHtml(text.slice(i+2,eb))+'</strong>';
-          i = eb+2; continue;
-        }
-      }
-      // Italic *text*
-      if (text[i]==='*' && text[i+1]!=='*') {
-        var ei = text.indexOf('*', i+1);
-        if (ei!==-1) {
-          result += '<em>'+escHtml(text.slice(i+1,ei))+'</em>';
-          i = ei+1; continue;
-        }
-      }
-      // Citation [1] — style as badge
-      if (text[i]==='[') {
-        var nm = text.slice(i).match(/^\[(\d+)\]/);
-        if (nm) {
-          result += '<sup style="background:rgba(99,102,241,.3);color:#a5b4fc;border-radius:3px;padding:0 3px;font-size:10px;margin:0 1px">'+nm[1]+'</sup>';
-          i += nm[0].length; continue;
-        }
-      }
-      result += escHtml(text[i]);
-      i++;
-    }
-    return result;
-  }
-
-  function addMsg(role, text) {
-    var el = document.createElement('div');
-    el.className = 'rbs-msg ' + role;
-    if (role === 'bot') {
-      el.innerHTML = renderMd(text);
-    } else {
-      el.textContent = text;
-    }
-    msgs.appendChild(el);
-    msgs.scrollTop = msgs.scrollHeight;
-    return el;
-  }
-  function addTyping() {
-    var el = document.createElement('div');
-    el.className = 'rbs-msg bot';
-    el.innerHTML = '<div class="rbs-typing"><span></span><span></span><span></span></div>';
-    msgs.appendChild(el);
-    msgs.scrollTop = msgs.scrollHeight;
-    return el;
-  }
-  function setLoading(on) {
-    input.disabled = on;
-    send.disabled  = on;
-  }
-
-  // ── Chat ───────────────────────────────────────────────────────────────────────
-  var sessionId = 'w-' + Math.random().toString(36).slice(2);
-
-  form.addEventListener('submit', function(e) {
-    e.preventDefault();
-    var q = input.value.trim();
-    if (!q) return;
-    input.value = '';
-    addMsg('user', q);
-    setLoading(true);
-    var typing = addTyping();
-
-    fetch(API_URL + '/api/v1/chat/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
-      body: JSON.stringify({ query: q, session_id: sessionId }),
-    })
-    .then(function(res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      var reader = res.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var botEl = null;
-      var fullText = '';
-
-      function read() {
-        return reader.read().then(function(d) {
-          if (d.done) {
-            typing.remove();
-            if (!botEl) addMsg('bot', fullText || '(no response)');
-            setLoading(false);
-            return;
-          }
-          buffer += decoder.decode(d.value, { stream: true });
-          var lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          lines.forEach(function(line) {
-            if (!line.startsWith('data: ')) return;
-            var dataStr = line.slice(6).trim();
-            if (!dataStr) return;
-            try {
-              var data = JSON.parse(dataStr);
-              if (data.text) {
-                fullText += data.text;
-                if (!botEl) { typing.remove(); botEl = addMsg('bot', ''); }
-                botEl.innerHTML = renderMd(fullText);
-                msgs.scrollTop = msgs.scrollHeight;
-              }
-            } catch(e) {}
-          });
-          return read();
-        });
-      }
-      return read();
-    })
-    .catch(function(err) {
-      typing.remove();
-      addMsg('bot', 'Error: ' + err.message);
-      setLoading(false);
-    });
-  });
-
-  // Enter to send (Shift+Enter = newline)
-  input.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      form.dispatchEvent(new Event('submit'));
-    }
-  });
-})();
-"""
-    from fastapi.responses import Response
-    return Response(content=js, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
-
-
 @app.get("/login", response_class=HTMLResponse)
 def get_login():
     return _spa_response()
@@ -2132,6 +1822,22 @@ async def get_scrape_job(tenant_id: str, job_id: str, _admin=Depends(require_adm
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     scraper = _get_scraper_service()
+
+    # Full-site jobs run asynchronously in the microservice's own job store.
+    if scraper.is_full_job(job_id):
+        m = scraper.get_full_crawl_status(job_id)
+        data = m.get("data", {}) if isinstance(m, dict) else {}
+        status = data.get("status", "running")
+        if status in ("done", "completed"):
+            if not scraper.was_full_imported(job_id):
+                _import_full_crawl_output(tenant_id, job_id, scraper)
+                scraper.mark_full_imported(job_id)
+                admin_store.log_activity(tenant_id=tenant_id, level="INFO", operation="SCRAPE_FULL",
+                                         message=f"Full crawl {job_id} completed and imported.",
+                                         details={"job_id": job_id})
+            return {"success": True, "status": "done", "data": data}
+        return {"success": True, "status": status, "data": data}
+
     job = await scraper.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2231,6 +1937,39 @@ def _save_pages_from_full_crawl(tenant_id: str, result: dict, base_url: str) -> 
     return _save_scraped_pages(tenant_id, pages, base_url)
 
 
+def _import_full_crawl_output(tenant_id: str, job_id: str, scraper) -> list[dict]:
+    """Once a microservice full-crawl job reports done, fetch its output manifest
+    over HTTP (works even when rag_api has no volume access) and import every
+    page into the tenant's documents dir. Duplicate URLs are handled by
+    _save_scraped_pages (re-scans land in .pending for user resolution)."""
+    out = scraper.get_full_crawl_output(job_id)
+    if not out or not out.get("success"):
+        return []
+    data = out.get("data", {}) if isinstance(out.get("data"), dict) else {}
+    site = data.get("site") or data.get("source_url") or ""
+    pages: list[dict] = []
+    for p in data.get("pages") or []:
+        if not isinstance(p, dict):
+            continue
+        rel = p.get("clean_text_path") or p.get("file")
+        if not rel:
+            continue
+        text = scraper.download_crawl_file(job_id, rel)
+        if not text:
+            continue
+        pages.append({"text": text, "metadata": {"url": p.get("url") or site, "title": p.get("title") or "Untitled"}})
+    if not pages:
+        return []
+    saved, duplicates = _save_scraped_pages(tenant_id, pages, site)
+    if saved:
+        _save_crawl_output(
+            site=_crawl_site_slug(site or "crawl"),
+            metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": site},
+            pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved],
+        )
+    return saved
+
+
 
 
 @app.post("/api/v1/scrape/full")
@@ -2248,6 +1987,19 @@ async def full_scrape(req: FullScrapeRequest, tenant=Depends(_resolve_client_ten
             workers=req.workers,
             respect_robots=req.respect_robots,
         )
+        job_id = (result.get("data") or {}).get("job_id") or result.get("job_id")
+        if job_id:
+            scraper.track_full_job(job_id)
+        if job_id and scraper.is_full_job(job_id):
+            # Async crawl just started in the microservice — return the job so the
+            # client can poll for progress. Output is imported on completion.
+            return {
+                "success": True,
+                "status": "running",
+                "job_id": job_id,
+                "data": {"job_id": job_id, "status": "running", "url": req.url, "files_saved": 0, "files": [], "duplicates": []},
+                "files_saved": 0, "files": [], "duplicates": [],
+            }
         saved_files, duplicates = _save_pages_from_full_crawl(tenant_id, result, req.url)
         if saved_files:
             _save_crawl_output(
@@ -2255,7 +2007,6 @@ async def full_scrape(req: FullScrapeRequest, tenant=Depends(_resolve_client_ten
                 metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": req.url},
                 pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved_files],
             )
-        # Auto-queue documents from the crawler output folder back into this tenant.
         if tenant_id:
             _sync_site_to_tenant(tenant_id, req.url)
         admin_store.log_activity(
@@ -2265,10 +2016,9 @@ async def full_scrape(req: FullScrapeRequest, tenant=Depends(_resolve_client_ten
             message=f"Full site scrape {req.url}: {len(saved_files)} page(s), {len(duplicates)} duplicate(s)",
             details={"url": req.url, "files": saved_files, "duplicates": duplicates},
         )
-        job_id = result.get("data", {}).get("job_id") or result.get("job_id")
         return {
             "success": True,
-            "status": "completed" if saved_files else "running",
+            "status": "completed" if saved_files else "failed",
             "data": {"job_id": job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files},
             "files_saved": len(saved_files),
             "files": saved_files,
@@ -2296,6 +2046,18 @@ async def tenant_full_scrape(tenant_id: str, req: FullScrapeRequest, _admin=Depe
             workers=req.workers,
             respect_robots=req.respect_robots,
         )
+        job_id = (result.get("data") or {}).get("job_id") or result.get("job_id")
+        if job_id:
+            scraper.track_full_job(job_id)
+            # Async microservice crawl just started — admin polls
+            # /scrape/jobs/{job_id}, which proxies status and imports on done.
+            return {
+                "success": True,
+                "status": "processing",
+                "job_id": job_id,
+                "data": {"job_id": job_id, "status": "running", "url": req.url, "files_saved": 0, "files": [], "duplicates": []},
+                "files_saved": 0, "files": [], "duplicates": [],
+            }
         saved_files, duplicates = _save_pages_from_full_crawl(tenant_id, result, req.url)
         if saved_files:
             _save_crawl_output(
@@ -2303,7 +2065,6 @@ async def tenant_full_scrape(tenant_id: str, req: FullScrapeRequest, _admin=Depe
                 metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": req.url},
                 pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved_files],
             )
-        # Auto-queue documents from the crawler output folder back into this tenant.
         _sync_site_to_tenant(tenant_id, req.url)
         admin_store.log_activity(
             tenant_id=tenant_id,
@@ -2312,10 +2073,10 @@ async def tenant_full_scrape(tenant_id: str, req: FullScrapeRequest, _admin=Depe
             message=f"Full site scrape {req.url}: {len(saved_files)} page(s), {len(duplicates)} duplicate(s)",
             details={"url": req.url, "files": saved_files, "duplicates": duplicates},
         )
-        job_id = result.get("data", {}).get("job_id") or result.get("job_id")
         return {
             "success": True,
             "status": "completed" if saved_files else "running",
+            "job_id": job_id,
             "data": {"job_id": job_id, "url": req.url, "files_saved": len(saved_files), "files": saved_files},
             "files_saved": len(saved_files),
             "files": saved_files,

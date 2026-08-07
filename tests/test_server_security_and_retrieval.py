@@ -1,9 +1,11 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from rbs_rag.retrieval import HybridRetriever
+from rbs_rag.store import SQLiteRagStore
 import importlib.util
 
 spec = importlib.util.spec_from_file_location("server_module", Path(__file__).resolve().parents[1] / "src/rbs_rag/web/server.py")
@@ -79,6 +81,29 @@ class ServerSecurityAndRetrievalTests(unittest.TestCase):
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["source"], "scrape")
             self.assertEqual(items[0]["source_url"], "https://example.com")
+
+    def test_store_migrates_session_turns_table_for_existing_databases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "rag.db"
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    "CREATE TABLE session_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL)"
+                )
+                conn.execute(
+                    "INSERT INTO session_turns (tenant_id, session_id, user_id, role, content) VALUES (?, ?, ?, ?, ?)",
+                    ("tenant-a", "session-1", "user-1", "user", "hello"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            store = SQLiteRagStore(db_path)
+            sessions = store.list_sessions("tenant-a")
+
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0]["session_id"], "session-1")
+            self.assertEqual(store.get_session_turns("tenant-a", "session-1")[0]["content"], "hello")
 
 
 if __name__ == "__main__":

@@ -24,9 +24,29 @@ def _clean_llm_text(text: str) -> str:
     text = _HTML_TAG_RE.sub('', text)
     text = _BROKEN_TAG_RE.sub('', text)
     text = _OPEN_BROKEN_TAG_RE.sub(' ', text)
-    text = re.sub(r'\s+', ' ', text)
+    # Never merge newlines and never strip indentation or trailing spaces —
+    # markdown relies on them for line breaks, lists, headings and code blocks.
+    # Only collapse clearly-excessive horizontal whitespace and blank-line runs.
+    text = re.sub(r'[ \t]{3,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _clean_llm_stream_chunk(text: str) -> str:
+    """Sanitize a streamed chunk WITHOUT destroying whitespace.
+
+    Streaming splits text mid-line, so cleaning each chunk independently with
+    .strip() / \s+ collapse glues words together ("stay at" + "Grand" -> "stayatGrand").
+    Here we only normalize unicode and strip HTML/broken tags, plus collapse
+    excessive blank-line runs, preserving all spacing/newlines so the assembled
+    response keeps correct structure.
+    """
+    text = unicodedata.normalize('NFKC', text)
+    text = _HTML_TAG_RE.sub('', text)
+    text = _BROKEN_TAG_RE.sub('', text)
+    text = _OPEN_BROKEN_TAG_RE.sub(' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text
 
 
 @dataclass(slots=True)
@@ -158,7 +178,7 @@ class OpenAICompatibleClient:
                             content = delta.get("content", "")
                             if content:
                                 raw = content
-                                cleaned = _clean_llm_text(content)
+                                cleaned = _clean_llm_stream_chunk(content)
                                 if raw != cleaned or "strong" in raw.lower() or "<" in raw:
                                     log.info("=== RAW LLM CHUNK === %r", raw)
                                 yield StreamingChunk(text=cleaned, done=False)
@@ -231,7 +251,7 @@ class GeminiClient:
                                     text = part.get("text", "")
                                     if text:
                                         raw = text
-                                        cleaned = _clean_llm_text(text)
+                                        cleaned = _clean_llm_stream_chunk(text)
                                         if raw != cleaned or "strong" in raw.lower() or "<" in raw:
                                             log.info("=== RAW GEMINI CHUNK === %r", raw)
                                         yield StreamingChunk(text=cleaned, done=False)
