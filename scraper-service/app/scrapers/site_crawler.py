@@ -27,6 +27,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from core.fetcher.escalating_fetcher import EscalatingFetcher
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -175,9 +177,10 @@ class SiteCrawler:
     Plug-in replacement for AutoCrawler — same progress callback API.
     """
 
-    def __init__(self, output_base: str = "crawl_output"):
+    def __init__(self, output_base: str = "crawl_output", use_fetcher: bool = True):
         self.output_base = Path(output_base)
         self._progress_cb: Optional[Callable[[int, str], None]] = None
+        self._fetcher = EscalatingFetcher(user_agent=DEFAULT_HEADERS["User-Agent"]) if use_fetcher else None
 
     def set_progress_callback(self, cb: Callable[[int, str], None]):
         self._progress_cb = cb
@@ -262,12 +265,18 @@ class SiteCrawler:
                 visited.add(url)
                 async with sem:
                     try:
-                        resp = await client.get(url, timeout=config.timeout)
-                        if resp.status_code != 200:
-                            failed.append(url)
-                            return
-
-                        html = resp.text
+                        if self._fetcher is not None:
+                            resp = await self._fetcher.get(url, headers=DEFAULT_HEADERS, timeout=config.timeout)
+                            if resp.status_code != 200:
+                                failed.append(url)
+                                return
+                            html = resp.text
+                        else:
+                            resp = await client.get(url, timeout=config.timeout)
+                            if resp.status_code != 200:
+                                failed.append(url)
+                                return
+                            html = resp.text
                         soup = BeautifulSoup(html, "html.parser")
 
                         title = self._extract_title(soup)

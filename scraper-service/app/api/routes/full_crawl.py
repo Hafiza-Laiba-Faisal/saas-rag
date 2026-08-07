@@ -225,6 +225,14 @@ async def get_crawl_output(job_id: str):
     
     # Build page manifest with detailed info
     pages = []
+    # SiteCrawler does not write page_id/"file" into index.json, but job.result.content_files
+    # holds the real per-page paths (e.g. pages/it/Homepage - Hotel de la Ville.md).
+    # Build a URL -> file map so clean_text_path is always populated for RAG import.
+    content_files = (job.result or {}).get("content_files") or []
+    file_by_url: dict[str, str] = {}
+    for cf in content_files:
+        if isinstance(cf, dict) and cf.get("url"):
+            file_by_url.setdefault(cf.get("url"), cf.get("file") or "")
     # Support both new format (pages[]) and old format (pages_flat[])
     page_entries = index_data.get("pages", []) or index_data.get("pages_flat", [])
     for page_entry in page_entries:
@@ -234,6 +242,10 @@ async def get_crawl_output(job_id: str):
         section = page_entry.get("section", "General")
         changed = page_entry.get("changed", True)
 
+        rel = page_entry.get("clean_text", "") or page_entry.get("file", "")
+        if not rel:
+            rel = file_by_url.get(url, "")
+
         pages.append({
             "page_id": page_id,
             "url": url,
@@ -241,7 +253,7 @@ async def get_crawl_output(job_id: str):
             "language": language,
             "section": section,
             "changed": changed,
-            "clean_text_path": page_entry.get("clean_text", f"clean_text/{page_id}.md") if page_id else page_entry.get("file", ""),
+            "clean_text_path": rel,
             "metadata_path": page_entry.get("metadata", f"metadata/{page_id}.metadata.json") if page_id else "",
             "raw_html_path": page_entry.get("raw_html", f"raw_html/{page_id}.html") if page_id else "",
             "word_count": page_entry.get("word_count", 0),

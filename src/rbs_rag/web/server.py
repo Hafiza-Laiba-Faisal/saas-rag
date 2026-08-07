@@ -308,6 +308,11 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
             site_url_map = _load_site_url_map(site_dir)
             for md_file in pages_dir.rglob("*.md"):
                 try:
+                    # Skip catalog stub files (0001.md, 0002.md...) written by
+                    # _save_crawl_output — they live directly under pages/ with
+                    # no language subfolder and carry no real page content.
+                    if md_file.parent == pages_dir or re.match(r"^\d{4}$", md_file.stem):
+                        continue
                     text = md_file.read_text(encoding="utf-8", errors="ignore")
                     if not text.strip():
                         continue
@@ -1953,7 +1958,12 @@ def _import_full_crawl_output(tenant_id: str, job_id: str, scraper) -> list[dict
             continue
         rel = p.get("clean_text_path") or p.get("file")
         if not rel:
-            continue
+            # Fallback: derive path from language + title the same way SiteCrawler
+            # builds filenames (_save_page): pages/<lang>/<sanitized-title>.md
+            lang = p.get("language") or ""
+            title = (p.get("title") or "").strip()[:60] or "page"
+            safe = re.sub(r"[^a-zA-Z0-9 _-]", "", title).strip() or "page"
+            rel = f"pages/{lang}/{safe}.md"
         text = scraper.download_crawl_file(job_id, rel)
         if not text:
             continue
@@ -1967,6 +1977,27 @@ def _import_full_crawl_output(tenant_id: str, job_id: str, scraper) -> list[dict
             metadata={"strategy": "full", "is_wordpress": False, "languages_found": [], "source_url": site},
             pages=[f"# {f['title']}\n\nSource: {f['url']}" for f in saved],
         )
+
+    # Auto-ingest: move imported pages into the documents queue + vector store
+    # so they show up under Documents without a manual "Ingest" click.
+    if saved and tenant_id is not None and tenant_id != "":
+        if (tenant_id not in ingestion_status
+                or ingestion_status[tenant_id]["status"] != "running"):
+            ingestion_status[tenant_id] = {
+                "status": "running",
+                "logs": [f"[Full Crawl Import] Ingesting {len(saved)} page(s) from {site}..."],
+                "progress": 0,
+                "summary": None,
+            }
+            _sync_ingestion_to_redis(tenant_id)
+            _tenant = admin_store.get_tenant(tenant_id)
+            if _tenant is not None:
+                import threading
+                threading.Thread(
+                    target=_run_ingestion_background,
+                    args=(tenant_id, _tenant),
+                    daemon=True,
+                ).start()
     return saved
 
 
