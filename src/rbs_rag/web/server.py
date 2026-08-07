@@ -362,17 +362,9 @@ def _sync_crawl_outputs_to_tenant(tenant_id: str, site_url: str | None = None, s
                     except Exception:
                         pass
 
-            # Also sync JSON catalog files from the crawl (original extension).
-            for json_file in site_dir.glob("*.json"):
-                try:
-                    if f"file:{json_file.name}" in deleted_urls:
-                        continue
-                    target_json = docs_dir / json_file.name
-                    if not target_json.exists():
-                        shutil.copy(json_file, target_json)
-                        saved_files.append({"url": json_file.name, "file": json_file.name, "title": json_file.stem})
-                except Exception:
-                    pass
+            # Note: scraper catalog JSON files (images.json, pdfs.json,
+            # metadata.json, etc.) are NOT real documents — skip them so they
+            # don't pollute the tenant's documents folder.
 
     return saved_files
 
