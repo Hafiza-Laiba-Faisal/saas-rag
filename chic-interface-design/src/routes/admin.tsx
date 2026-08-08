@@ -527,8 +527,6 @@ function AddTenantModal({ onClose }: { onClose: () => void }) {
                   }
                 }}>
                   <option value="hash">Local Deterministic Hash (384d)</option>
-                  <option value="bge">BGE Small (384d)</option>
-                  <option value="bge_m3">BGE-M3 (1024d)</option>
                   <option value="openai">OpenAI (1536d)</option>
                   <option value="gemini">Gemini (768d)</option>
                   <option value="openai_compatible">OpenAI-Compatible Custom</option>
@@ -762,9 +760,6 @@ function ConfigTab({ tenant, onDeleted }: { tenant: Tenant; onDeleted?: () => vo
           llm_model: form.llmModel,
           llm_api_key: form.llmApiKey === "***" ? "***" : form.llmApiKey,
           llm_base_url: form.llmBaseUrl || null,
-          reranker_type: form.rerankerType,
-          chunking_semantic: form.chunkingSemantic,
-          chunking_semantic_threshold: form.chunkingSemanticThreshold,
           embedding_provider: form.embeddingProvider,
           embedding_model: form.embeddingModel,
           embedding_dimensions: Number(form.embeddingDimensions),
@@ -938,8 +933,6 @@ function ConfigTab({ tenant, onDeleted }: { tenant: Tenant; onDeleted?: () => vo
               }}
             >
               <option value="hash">Local Deterministic Hash (384d) — Free</option>
-              <option value="bge">BGE Small (384d) — Free, Local</option>
-              <option value="bge_m3">BGE-M3 (1024d) — Free, Local</option>
               <option value="openai">OpenAI Embeddings (1536d) — Paid</option>
               <option value="gemini">Gemini Embeddings (768d) — Paid</option>
               <option value="openai_compatible">OpenAI-Compatible / Ollama — Custom</option>
