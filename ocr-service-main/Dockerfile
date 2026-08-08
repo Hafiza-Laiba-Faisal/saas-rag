@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir --prefix=/install \
     "mistralai>=1.0.0"
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 

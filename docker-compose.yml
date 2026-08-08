@@ -162,8 +162,8 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
       rag_api:
-        condition: service_healthy
+        condition: service_started
       ocr_service:
-        condition: service_healthy
+        condition: service_started
       scraper_service:
-        condition: service_healthy
+        condition: service_started
