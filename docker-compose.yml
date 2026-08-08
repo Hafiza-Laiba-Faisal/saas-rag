@@ -83,6 +83,12 @@ services:
       - RAG_TERMINAL_ENABLED=${RAG_TERMINAL_ENABLED:-true}
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - RAG_SPA_DIR=/app/chic-interface-design/dist-spa
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       qdrant:
         condition: service_healthy
@@ -155,6 +161,9 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
-      - rag_api
-      - ocr_service
-      - scraper_service
+      rag_api:
+        condition: service_healthy
+      ocr_service:
+        condition: service_healthy
+      scraper_service:
+        condition: service_healthy

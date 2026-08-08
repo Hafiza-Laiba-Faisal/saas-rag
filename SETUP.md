@@ -33,21 +33,18 @@ cp .env.example .env
 
 ### 2.2 Generate the required secrets
 
-Edit `.env` and set, **at minimum**:
+Create or edit `.env` before the first start. Do not paste shell substitutions like `$(...)` directly into `.env`; generate the values first and then copy the final strings into the file.
 
 ```bash
+# Example values for .env — replace with your own secrets
 # ── REQUIRED ────────────────────────────────────────────────────────────
 # Fernet key that encrypts tenants' stored API keys at rest.
-# Generate one with:
-RAG_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-# (If you don't have cryptography installed locally, copy the output of:
-#  docker run --rm python:3.11-slim python -c
-#     "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+RAG_ENCRYPTION_KEY=<paste-generated-fernet-key-here>
 
 # ── Admin dashboard authentication ──────────────────────────────────────
-# Setting RAG_ADMIN_JWT_SECRET ENABLES login protection on the admin UI.
+# Setting RAG_ADMIN_JWT_SECRET enables login protection on the admin UI.
 # Leave it empty to keep the admin open (not recommended for production).
-RAG_ADMIN_JWT_SECRET=$(python -c "import secrets; print(secrets.token_hex(32))")
+RAG_ADMIN_JWT_SECRET=<paste-random-secret-here>
 RAG_ADMIN_PASSWORD=change-me-strong-password
 RAG_ADMIN_AUTH_ENABLED=true
 
@@ -55,16 +52,32 @@ RAG_ADMIN_AUTH_ENABLED=true
 #    each tenant its own key when creating it) ───────────────────────────
 RAG_LLM_PROVIDER=gemini
 RAG_LLM_MODEL=gemini-2.5-flash-lite
-RAG_LLM_API_KEY=your-gemini-api-key
+RAG_LLM_API_KEY=
 ```
 
-> **Important:** `RAG_LLM_API_KEY` is **not required** to start the platform. In a multi-tenant deployment each tenant supplies its own LLM/embedding keys through the admin dashboard. You only need the two `RAG_` secrets above to boot.
+Generate the secret values locally:
+
+```bash
+python3 - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+
+python3 - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
+```
+
+> **Important:** `RAG_LLM_API_KEY` is **not required** to start the platform. In a multi-tenant deployment each tenant supplies its own LLM/embedding keys through the admin dashboard. The minimum values needed to boot are the encryption key and the admin auth values.
 
 ### 2.3 Build & run
 
 ```bash
 docker compose up --build -d
 ```
+
+> Verified on this repository: the stack comes up with `qdrant`, `redis`, `rag_api`, `ocr_service`, `scraper_service`, and `nginx` using the Docker workflow above.
 
 ### 2.4 Verify the stack
 
