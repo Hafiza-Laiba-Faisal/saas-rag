@@ -27,6 +27,7 @@ from core.extractor.asset_extractor import AssetExtractor
 from core.content.readability_extractor import ReadabilityExtractor
 from core.content.detector import ContentDetector, ContentType
 from core.crawler.sitemap_parser import SitemapParser
+from config.settings import resolve_output_dir
 from .scheduler import URLScheduler
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class RecursiveCrawler:
         # Initialize PageStore and ChangeStore
         from core.crawler.page_store import PageStore
         from core.crawler.change_store import init_change_store
-from config.settings import resolve_output_dir
+        self.page_store = PageStore(self.output_dir)
         domain = urlparse(seed_url).netloc.replace(".", "_")
         self.change_store = init_change_store(domain, self.output_dir)
 
