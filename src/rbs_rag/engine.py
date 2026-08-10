@@ -124,6 +124,72 @@ class RagEngine:
             except Exception as exc:
                 log.warning("Qdrant delete failed: %s", exc)
 
+    async def reindex_all(self, docs_dir: Path, kb: str | None = None, progress_cb=None) -> IngestSummary:
+        """Rebuild the tenant's entire index from disk using the CURRENT config.
+
+        Every existing document is removed (SQLite + Qdrant) and re-chunked /
+        re-embedded with the tenant's latest chunking + embedding settings, so
+        config changes (chunk size, overlap, embedding model, boilerplate
+        filters) actually apply to already-ingested content.
+        """
+        knowledge_base_id = kb or self.config.default_kb
+        summary = IngestSummary()
+
+        # Rebuild chunker + embedding provider from the CURRENT config — the
+        # cached ones were built with the engine's original settings, so an
+        # admin config change must take effect here, not just on new docs.
+        self.chunker = create_chunker(self.config.chunking)
+        emb_api_key = self.config.embeddings.api_key or self.config.llm.api_key
+        self.embedding_provider = create_embedding_provider(
+            self.config.embeddings.provider, self.config.embeddings.dimensions, self.config.embeddings.model,
+            api_key=emb_api_key, base_url=self.config.embeddings.base_url,
+        )
+
+        # 0. DATA-SAFETY: list source files FIRST and refuse to wipe the index
+        #    if there is nothing to re-ingest. Deleting first would turn an
+        #    empty/misconfigured docs dir into permanent data loss.
+        try:
+            files = sorted(f for f in docs_dir.iterdir() if f.is_file())
+        except FileNotFoundError:
+            files = []
+        if not files:
+            summary.errors.append("No document files found in docs dir — re-index aborted, existing index untouched")
+            return summary
+
+        # 1. Honor embedding dimension changes (shared collection is never
+        #    deleted here — see ensure_collection_dimensions).
+        try:
+            await self.vector_store.ensure_collection_dimensions("rag_chunks", self.config.embeddings.dimensions)
+        except Exception as exc:
+            log.warning("Vector store dimension check failed: %s", exc)
+
+        # 2. Drop every existing document (SQLite + tenant-scoped Qdrant purge).
+        existing = self.store.list_documents(self.config.tenant_id, knowledge_base_id)
+        for doc in existing:
+            try:
+                self.store.delete_document(doc["document_id"])
+            except Exception as exc:
+                log.warning("SQLite delete failed for %s: %s", doc.get("document_id"), exc)
+        if self.vector_store.is_initialized:
+            try:
+                await self.vector_store.delete_tenant_chunks("rag_chunks", self.config.tenant_id)
+            except Exception as exc:
+                log.warning("Qdrant tenant purge failed: %s", exc)
+
+        # 3. Re-ingest every file on disk with the current config.
+        for idx, file_path in enumerate(files, start=1):
+            if progress_cb:
+                progress_cb(idx, len(files), file_path.name)
+            try:
+                file_summary = await self.ingest_file(file_path, kb=kb)
+                summary.documents += file_summary.documents
+                summary.chunks += file_summary.chunks
+                summary.skipped += file_summary.skipped
+                summary.errors.extend(file_summary.errors)
+            except Exception as exc:
+                summary.errors.append(f"{file_path.name}: {exc}")
+        return summary
+
     def search(self, query: str, kb: str | None = None, filters: dict[str, str] | None = None) -> list[SearchResult]:
         retriever = self._build_retriever()
         return retriever.search(query, kb or self.config.default_kb, filters=filters)

@@ -2979,7 +2979,7 @@ function pct(n: any, digits = 0) {
 
 function EvaluationTab({ tenantId }: { tenantId: string }) {
   const queryClient = useQueryClient();
-  const [subview, setSubview] = useState<"overview" | "questions" | "runs" | "quality">("overview");
+  const [subview, setSubview] = useState<"overview" | "suggestions" | "questions" | "runs" | "quality">("overview");
   const [selectedRun, setSelectedRun] = useState<any>(null);
   const [showAddCase, setShowAddCase] = useState(false);
   const [showGenerate, setShowGenerate] = useState(false);
@@ -3094,6 +3094,7 @@ function EvaluationTab({ tenantId }: { tenantId: string }) {
         <div className="flex gap-1 rounded-lg border border-border bg-panel p-1">
           {([
             ["overview", "Overview", Gauge],
+            ["suggestions", "Suggestions", Sparkles],
             ["questions", "Question Bank", ClipboardList],
             ["runs", "Run History", History],
             ["quality", "KB Quality", Layers],
@@ -3245,6 +3246,10 @@ function EvaluationTab({ tenantId }: { tenantId: string }) {
             </div>
           )}
         </>
+      )}
+
+      {subview === "suggestions" && (
+        <SuggestionsPanel tenantId={tenantId} />
       )}
 
       {subview === "questions" && (
@@ -3594,6 +3599,178 @@ function AddEvalCaseModal({ tenantId, onClose }: { tenantId: string; onClose: ()
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SuggestionsPanel({ tenantId }: { tenantId: string }) {
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["eval-suggestions", tenantId],
+    queryFn: async () => {
+      const res = await apiFetch(`/tenants/${tenantId}/evaluation/suggestions`);
+      return res.json();
+    },
+    refetchInterval: 8000,
+  });
+
+  const suggestions = data?.suggestions || [];
+  const metrics = data?.metrics || {};
+  const quality = data?.quality || {};
+  const latest = data?.latest_run || null;
+
+  // Poll re-index status while a suggestion's apply is running.
+  const { data: rstatus } = useQuery({
+    queryKey: ["reindex-status", tenantId],
+    queryFn: async () => {
+      const res = await apiFetch(`/tenants/${tenantId}/reindex/status`);
+      return res.json();
+    },
+    refetchInterval: busy ? 2000 : 8000,
+  });
+  const ri = rstatus?.status === "running" ? rstatus : null;
+
+  async function applySuggestion(s: any) {
+    setBusy(s.id);
+    setNotice("");
+    try {
+      const res = await apiFetch(`/tenants/${tenantId}/evaluation/apply-suggestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          suggestion_id: s.id,
+          fields: s.config_change?.fields || {},
+          reindex: !!s.config_change?.reindex,
+          run_eval: true,
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || "Apply failed");
+      }
+      setNotice("Applied. Re-index + evaluation running — scores will refresh when done.");
+      setTimeout(() => setNotice(""), 8000);
+      queryClient.invalidateQueries({ queryKey: ["eval-suggestions", tenantId] });
+      queryClient.invalidateQueries({ queryKey: ["eval-summary", tenantId] });
+      queryClient.invalidateQueries({ queryKey: ["eval-runs", tenantId] });
+    } catch (e: any) {
+      setNotice("Error: " + e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="panel p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Auto Suggestions</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {latest
+                ? `Based on the latest run (${latest.run_id}) and KB quality. Apply one-click — the system re-indexes and re-tests automatically.`
+                : "Run an evaluation first — suggestions are derived from your scores and knowledge-base quality."}
+            </div>
+          </div>
+          {ri?.status === "running" && (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" /> Re-indexing… {ri.progress || 0}%
+            </span>
+          )}
+        </div>
+
+        {notice && <div className="mt-3 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary">{notice}</div>}
+
+        {/* Latest run metrics summary */}
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-lg border border-border bg-elevated/40 p-3">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">RAG Score</div>
+            <div className="mt-0.5 text-lg font-bold">{latest ? Math.round((latest.overall_score || 0) * 100) + "%" : "—"}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-elevated/40 p-3">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Hit@5</div>
+            <div className="mt-0.5 text-lg font-bold">{latest ? Math.round((latest.retrieval_hit_rate || 0) * 100) + "%" : "—"}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-elevated/40 p-3">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">KB Quality</div>
+            <div className="mt-0.5 text-lg font-bold">{quality.quality_score != null ? quality.quality_score + "/100" : "—"}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-elevated/40 p-3">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Chunks</div>
+            <div className="mt-0.5 text-lg font-bold">{quality.chunks != null ? quality.chunks.toLocaleString() : "—"}</div>
+          </div>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="panel flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Analyzing…
+        </div>
+      ) : suggestions.length === 0 ? (
+        <div className="panel flex flex-col items-center gap-3 p-10 text-center">
+          <Sparkles className="h-10 w-10 text-muted-foreground/40" />
+          <div className="text-sm font-medium">No actionable suggestions right now</div>
+          <div className="max-w-md text-xs text-muted-foreground">
+            Your scores and knowledge base look healthy. Run more evaluations after changes to keep the loop going.
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {suggestions.map((s: any) => (
+            <div key={s.id} className="panel overflow-hidden">
+              <div className="flex flex-wrap items-start justify-between gap-3 p-5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                      Priority {s.priority}
+                    </span>
+                    <div className="text-sm font-semibold">{s.title}</div>
+                  </div>
+                  <div className="mt-1.5 text-xs text-muted-foreground">{s.detail}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className="text-muted-foreground">Fix:</span>
+                    <span className="text-primary/90">{s.action}</span>
+                    {s.config_change?.reindex && (
+                      <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-300">includes re-index</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => applySuggestion(s)}
+                  disabled={busy === s.id || ri?.status === "running"}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-3 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition"
+                >
+                  {busy === s.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                  Apply & Re-test
+                </button>
+              </div>
+              {s.config_change?.fields && Object.keys(s.config_change.fields).length > 0 && (
+                <div className="flex flex-wrap gap-2 border-t border-border bg-elevated/30 px-5 py-3">
+                  {Object.entries(s.config_change.fields).map(([k, v]) => (
+                    <span key={k} className="rounded-md border border-border bg-panel px-2 py-1 font-mono text-[10px]">
+                      {k.replace(/_/g, " ")} → <span className="text-primary">{String(v)}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {ri?.status === "running" && (
+        <div className="panel p-4">
+          <div className="mb-2 text-xs font-semibold text-muted-foreground">Re-index live log</div>
+          <div className="max-h-48 space-y-1 overflow-y-auto rounded-md bg-elevated/40 p-3 font-mono text-[10px] text-muted-foreground">
+            {(ri.logs || []).slice(-30).map((l: string, i: number) => (
+              <div key={i}>{l}</div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

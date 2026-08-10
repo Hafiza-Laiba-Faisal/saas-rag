@@ -261,6 +261,32 @@ class EvaluationStore:
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
 
+_RETRYABLE_HTTP_CODES = (429, 500, 502, 503, 504)
+
+
+def _is_rate_limited(error: Exception) -> bool:
+    """True if the error looks like an HTTP rate-limit / transient server error."""
+    msg = str(error).lower()
+    return any(f"http {code}" in msg or f"status {code}" in msg for code in _RETRYABLE_HTTP_CODES) or "rate limit" in msg or "too many requests" in msg
+
+
+def _generate_with_retry(client, messages: list[dict[str, str]], attempts: int = 4, base_delay: float = 1.5) -> str:
+    """Call client.generate with exponential backoff on 429/5xx so evaluation
+    runs don't silently drop questions when the LLM provider is throttling."""
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return client.generate(messages)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_rate_limited(exc) or attempt == attempts - 1:
+                raise
+            delay = base_delay * (2**attempt)
+            log.warning("LLM rate-limited (%s), retrying in %.1fs (attempt %d/%d)", exc, delay, attempt + 1, attempts)
+            time.sleep(delay)
+    raise last_exc or RuntimeError("LLM generate failed")
+
+
 def _extract_json(text: str) -> Any:
     """Best-effort parse of a JSON object/array possibly wrapped in fences."""
     text = text.strip()
@@ -314,7 +340,7 @@ def _judge_answer(client, question: str, answer: str, contexts: list[dict], expe
         + (f"\n\nExpected answer (reference): {expected_answer}" if expected_answer else "")
     )
     try:
-        raw = client.generate([{"role": "system", "content": _JUDGE_SYSTEM}, {"role": "user", "content": user}])
+        raw = _generate_with_retry(client, [{"role": "system", "content": _JUDGE_SYSTEM}, {"role": "user", "content": user}])
         data = _extract_json(raw)
         if isinstance(data, dict):
             faithfulness = float(data.get("faithfulness", 0.0))
@@ -565,7 +591,7 @@ def generate_cases(
             f"Mix factual, paraphrased, and unanswerable questions. Keep questions self-contained.\n\n{block}"
         )
         try:
-            raw = client.generate([{"role": "system", "content": _GEN_SYSTEM}, {"role": "user", "content": user}])
+            raw = _generate_with_retry(client, [{"role": "system", "content": _GEN_SYSTEM}, {"role": "user", "content": user}])
             data = _extract_json(raw)
             items = data if isinstance(data, list) else []
             for item in items:
@@ -604,6 +630,122 @@ def generate_cases(
         )
         created.append(case)
     return created
+
+
+# ── Improvement suggestions ───────────────────────────────────────────────────
+
+_SUGGESTION_HELP = {
+    "kb_junk": {
+        "title": "Knowledge base is polluted with junk chunks",
+        "action": "Re-index this tenant so boilerplate filtering + duplicate dedup apply to existing documents.",
+        "config_change": {"reindex": True, "fields": {}},
+    },
+    "semantic_retrieval": {
+        "title": "Retrieval relies on a weak embedding model",
+        "action": "Switch to a real semantic embedding provider (e.g. OpenAI text-embedding-3-small, Gemini, Mistral) then re-index.",
+        "config_change": {"reindex": True, "fields": {"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimensions": 1536}},
+    },
+    "chunk_too_small": {
+        "title": "Chunks may be too small for full-context answers",
+        "action": "Increase chunk size (e.g. 320 → 640 tokens) and re-index so answers have richer context.",
+        "config_change": {"reindex": True, "fields": {"chunking_max_tokens": 640, "chunking_overlap_tokens": 96}},
+    },
+    "chunk_too_big": {
+        "title": "Chunks may be too large for precise retrieval",
+        "action": "Decrease chunk size (e.g. 320 → 200 tokens) and re-index for finer-grained matches.",
+        "config_change": {"reindex": True, "fields": {"chunking_max_tokens": 200, "chunking_overlap_tokens": 30}},
+    },
+    "top_k_low": {
+        "title": "Retrieval context may be too narrow (top-k too small)",
+        "action": "Increase top-k (e.g. 20 → 30) so the answer generator sees more candidate chunks.",
+        "config_change": {"reindex": False, "fields": {"retrieval_top_k": 30, "retrieval_rerank_top_k": 10}},
+    },
+    "rate_limited": {
+        "title": "Evaluation answers were lost to LLM rate limits",
+        "action": "Retry the evaluation run now that automatic retry/backoff is enabled.",
+        "config_change": {"reindex": False, "fields": {}},
+    },
+}
+
+
+def suggest_improvements(engine, tenant_id: str, store: EvaluationStore, runs: list[dict] | None = None) -> dict:
+    """Analyze the latest evaluation run + KB quality and produce actionable,
+    prioritized improvement suggestions with a ready-to-apply config change."""
+    quality = kb_quality(engine, tenant_id)
+    if runs is None:
+        runs = store.list_runs(tenant_id)
+    latest = runs[0] if runs else None
+
+    suggestions: list[dict] = []
+    metrics: dict = {"retrieval_fail": 0, "generation_fail": 0, "error_fail": 0, "passed": 0, "total": 0}
+
+    if latest:
+        results = store.get_run_results(latest["run_id"])
+        for r in results:
+            metrics["total"] += 1
+            ft = r.get("failure_type")
+            if ft == "retrieval":
+                metrics["retrieval_fail"] += 1
+            elif ft == "generation":
+                metrics["generation_fail"] += 1
+            elif ft == "error":
+                metrics["error_fail"] += 1
+            else:
+                metrics["passed"] += 1
+
+    def _add(sid: str, priority: int, detail: str):
+        spec = _SUGGESTION_HELP[sid]
+        suggestions.append(
+            {
+                "id": sid,
+                "priority": priority,
+                "title": spec["title"],
+                "detail": detail,
+                "action": spec["action"],
+                "config_change": dict(spec["config_change"]),
+            }
+        )
+
+    # 1. KB junk is the most impactful — it directly pollutes top-k slots.
+    if quality["duplicate_pct"] >= 5 or quality["boilerplate_pct"] >= 5 or quality["tiny_pct"] >= 5:
+        _add(
+            "kb_junk",
+            1,
+            f"{quality['duplicate_pct']}% duplicate, {quality['boilerplate_pct']}% boilerplate, {quality['tiny_pct']}% tiny chunks "
+            f"({quality['chunks_per_doc']} chunks/doc). These steal retrieval slots from real content.",
+        )
+
+    # 2. Embedding model — hash embeddings can't capture semantics.
+    if latest and metrics["total"] and metrics["retrieval_fail"] / metrics["total"] >= 0.3:
+        if engine.config.embeddings.provider == "hash":
+            _add("semantic_retrieval", 2, f"{metrics['retrieval_fail']}/{metrics['total']} questions failed retrieval with deterministic hash embeddings.")
+
+    # 3. Chunking — too-small chunks hurt answer grounding.
+    if latest and metrics["total"] and metrics["generation_fail"] / metrics["total"] >= 0.2:
+        if engine.config.chunking.max_tokens <= 320:
+            _add("chunk_too_small", 3, f"{metrics['generation_fail']}/{metrics['total']} answers were poorly grounded; chunks are {engine.config.chunking.max_tokens} tokens.")
+
+    # 4. Generation failures with large chunks → maybe too big.
+    if latest and metrics["total"] and metrics["generation_fail"] / metrics["total"] >= 0.3 and engine.config.chunking.max_tokens > 640:
+        _add("chunk_too_big", 3, f"{metrics['generation_fail']}/{metrics['total']} answers failed; chunks are {engine.config.chunking.max_tokens} tokens.")
+
+    # 5. Rate limits — retry now that backoff exists.
+    if metrics["error_fail"] > 0:
+        _add("rate_limited", 4, f"{metrics['error_fail']} question(s) errored during evaluation (likely provider rate limits).")
+
+    # 6. Only suggest top-k if retrieval succeeds but answers are weak AND no
+    #    stronger signal above applies — keep it simple: skip if nothing else.
+    if not suggestions and latest and metrics["total"] and latest.get("retrieval_hit_rate") is not None and latest["retrieval_hit_rate"] < 0.7:
+        _add("top_k_low", 5, f"Retrieval Hit@5 is {latest['retrieval_hit_rate']}; more candidate context may help.")
+
+    suggestions.sort(key=lambda s: s["priority"])
+    return {
+        "tenant_id": tenant_id,
+        "quality": quality,
+        "metrics": metrics,
+        "latest_run": latest,
+        "suggestions": suggestions,
+    }
 
 
 # ── Knowledge-base quality ────────────────────────────────────────────────────

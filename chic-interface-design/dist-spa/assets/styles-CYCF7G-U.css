@@ -2209,6 +2209,16 @@
     }
   }
 
+  .bg-amber-500\/10 {
+    background-color: #f99c001a;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-amber-500\/10 {
+      background-color: color-mix(in oklab, var(--color-amber-500) 10%, transparent);
+    }
+  }
+
   .bg-amber-500\/15 {
     background-color: #f99c0026;
   }
@@ -3207,6 +3217,16 @@
   @supports (color: color-mix(in lab, red, red)) {
     .text-primary\/80 {
       color: color-mix(in oklab, var(--primary) 80%, transparent);
+    }
+  }
+
+  .text-primary\/90 {
+    color: var(--primary);
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .text-primary\/90 {
+      color: color-mix(in oklab, var(--primary) 90%, transparent);
     }
   }
 
@@ -4569,6 +4589,10 @@
 
     .sm\:grid-cols-2 {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .sm\:grid-cols-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
     .sm\:flex-row {

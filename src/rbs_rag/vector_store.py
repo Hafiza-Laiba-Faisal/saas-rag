@@ -73,6 +73,55 @@ class QdrantVectorStore:
             await asyncio.to_thread(create)
             log.info("Created Qdrant collection '%s'", collection)
 
+    async def ensure_collection_dimensions(self, collection: str, vector_size: int = 384):
+        """Check the collection's vector size matches the current config.
+
+        IMPORTANT: the collection is SHARED across tenants, so it is NEVER
+        deleted here — that would destroy every tenant's vectors. If a dimension
+        mismatch is detected (embedding model change), we log loudly and leave
+        the collection untouched; the tenant's own vectors are removed by
+        ``delete_tenant_chunks`` and any subsequent upsert that Qdrant rejects
+        falls back to the SQLite index automatically."""
+        if not self._client:
+            return
+        try:
+            info = await asyncio.to_thread(self._client.get_collection, collection)
+            params = info.config.params
+            vectors = getattr(params, "vectors", None)
+            current = None
+            if vectors is not None:
+                if hasattr(vectors, "size"):
+                    current = vectors.size
+                elif isinstance(vectors, dict):
+                    sizes = {getattr(v, "size", None) for v in vectors.values()}
+                    sizes.discard(None)
+                    if len(sizes) == 1:
+                        current = next(iter(sizes))
+            if current is not None and current != vector_size:
+                log.warning(
+                    "Qdrant collection '%s' has %s dims but config wants %s — shared collection left untouched; "
+                    "this tenant will fall back to the SQLite index until re-created with matching dimensions",
+                    collection, current, vector_size,
+                )
+        except Exception as exc:
+            log.warning("Dimension check failed for collection '%s': %s", collection, exc)
+        await self.ensure_collection(collection, vector_size)
+
+    async def delete_tenant_chunks(self, collection: str, tenant_id: str):
+        """Remove all of ONE tenant's points from a shared collection. This is
+        the only safe way to purge a tenant's vectors — never delete the whole
+        collection, it belongs to every tenant."""
+        if not self._client:
+            return
+        delete = functools.partial(
+            self._client.delete,
+            collection,
+            points_selector=m.Filter(
+                must=[m.FieldCondition(key="tenant_id", match=m.MatchValue(value=tenant_id))]
+            ),
+        )
+        await asyncio.to_thread(delete)
+
     async def upsert_chunks(self, collection: str, chunks: list[Chunk], batch_size: int = 64):
         if not self._client:
             return

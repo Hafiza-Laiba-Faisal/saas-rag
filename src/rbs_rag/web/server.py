@@ -33,7 +33,7 @@ from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
 from rbs_rag.metrics import MetricsMiddleware, metrics_export, DOCUMENTS_INGESTED, CHUNKS_CREATED, CHUNKS_RETRIEVED, LLM_REQUESTS, LLM_DURATION, PROMPT_INJECTIONS_BLOCKED, ACTIVE_TENANTS, ENGINE_UPTIME
 from rbs_rag.web.admin_db import AdminStore
 from rbs_rag.provisioning import provision_tenant
-from rbs_rag.evaluation import EvaluationStore, generate_cases, kb_quality, run_evaluation
+from rbs_rag.evaluation import EvaluationStore, generate_cases, kb_quality, run_evaluation, suggest_improvements
 from rbs_rag.ocr.service import get_ocr_service, init_ocr_service
 from rbs_rag.services.scraper_service import ScraperService
 from rbs_rag.models import StreamingChunk
@@ -917,6 +917,113 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
         ingestion_status[tenant_id]["summary"] = {"error": str(exc)}
         _sync_ingestion_to_redis(tenant_id)
         admin_store.log_activity(tenant_id=tenant_id, level="ERROR", operation="INGESTION", message=f"Fatal ingestion error: {exc}", traceback=trace)
+
+
+_reindex_status: dict[str, dict[str, Any]] = {}
+
+
+def _set_reindex_status(tenant_id: str, status: dict) -> None:
+    _reindex_status[tenant_id] = status
+    try:
+        redis_client.sset_json(f"reindex:{tenant_id}", status, ttl=3600)
+    except Exception:
+        pass
+
+
+def _run_reindex_background(tenant_id: str, tenant_data: dict, reindex: bool = True, run_eval_after: bool = False, eval_case_ids: list[str] | None = None):
+    """Rebuild a tenant's entire index from disk with the CURRENT config, and/or
+    run an evaluation so the admin sees before/after scores."""
+    try:
+        _set_reindex_status(tenant_id, {"status": "running", "logs": [], "progress": 0, "phase": "reindex" if reindex else "eval"})
+        config = _get_tenant_config(tenant_data)
+        engine = _get_engine(tenant_data)
+
+        summary: dict = {"documents": 0, "chunks": 0, "skipped": 0, "errors": []}
+        if reindex:
+            docs_dir = TENANTS_DIR / tenant_id / "documents"
+
+            async def _reindex():
+                # The engine must be initialized first or Qdrant sync silently
+                # no-ops (vector_store._initialized stays False in this worker).
+                try:
+                    await engine.initialize()
+                except Exception as exc:
+                    log.warning("Engine init failed during re-index (%s); SQLite fallback active", exc)
+
+                def _progress(current: int, total: int, filename: str):
+                    _set_reindex_status(tenant_id, {
+                        **_reindex_status[tenant_id],
+                        "progress": int(10 + (current / max(1, total)) * 70),
+                        "logs": [*_reindex_status[tenant_id].get("logs", []), f"[{current}/{total}] {filename}"],
+                    })
+
+                return await engine.reindex_all(docs_dir, progress_cb=_progress)
+
+            s = asyncio.run(_reindex())
+            summary = {"documents": s.documents, "chunks": s.chunks, "skipped": s.skipped, "errors": s.errors}
+            _set_reindex_status(tenant_id, {
+                **_reindex_status[tenant_id],
+                "progress": 85,
+                "logs": [*_reindex_status[tenant_id].get("logs", []), f"Re-index finished: {s.documents} docs, {s.chunks} chunks, {s.skipped} skipped."],
+            })
+            if s.errors:
+                _set_reindex_status(tenant_id, {
+                    **_reindex_status[tenant_id],
+                    "logs": [*_reindex_status[tenant_id].get("logs", []), f"Errors: {len(s.errors)} — first: {s.errors[0]}"],
+                })
+
+        retest_run_id: str | None = None
+        if run_eval_after:
+            store = _get_eval_store(engine)
+            cases = store.list_cases(tenant_id)
+            if eval_case_ids:
+                wanted = set(eval_case_ids)
+                cases = [c for c in cases if c["case_id"] in wanted]
+            if cases:
+                run_id = store.create_run(tenant_id, {})
+
+                def _progress(current: int, total: int):
+                    _set_reindex_status(tenant_id, {
+                        **_reindex_status[tenant_id],
+                        "progress": int(85 + (current / max(1, total)) * 15),
+                        "phase": "eval",
+                    })
+
+                result = run_evaluation(engine, tenant_id, store, run_id, case_ids=eval_case_ids, progress_cb=_progress)
+                retest_run_id = run_id
+                _set_reindex_status(tenant_id, {
+                    **_reindex_status[tenant_id],
+                    "logs": [*_reindex_status[tenant_id].get("logs", []), f"Evaluation: RAG score {result.get('overall_score')}, Hit@5 {result.get('retrieval_hit_rate')}."],
+                })
+
+        _set_reindex_status(tenant_id, {
+            **_reindex_status[tenant_id],
+            "progress": 100,
+            "status": "completed",
+            "summary": {
+                **summary,
+                "retest_run_id": retest_run_id,
+            },
+        })
+        admin_store.log_activity(tenant_id=tenant_id, level="INFO", operation="REINDEX",
+                                message=f"Re-index completed: {summary.documents} docs, {summary.chunks} chunks.",
+                                details={"documents": summary.documents, "chunks": summary.chunks, "skipped": summary.skipped})
+    except Exception as exc:
+        trace = traceback.format_exc()
+        _set_reindex_status(tenant_id, {"status": "error", "logs": [f"{exc}", trace], "progress": 100, "summary": {"error": str(exc)}})
+        admin_store.log_activity(tenant_id=tenant_id, level="ERROR", operation="REINDEX", message=f"Re-index failed: {exc}", traceback=trace)
+
+
+def _tenant_reindex_status(tenant_id: str) -> dict:
+    status = _reindex_status.get(tenant_id)
+    if not status and redis_client.enabled:
+        raw = redis_client.sget_json(f"reindex:{tenant_id}")
+        if raw:
+            _reindex_status[tenant_id] = raw
+            status = raw
+    if not status:
+        return {"status": "idle", "logs": [], "progress": 0}
+    return status
 
 
 # --- SPA serving ---
@@ -2822,6 +2929,87 @@ def evaluation_kb_quality(tenant_id: str, _admin=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Tenant not found")
     engine = _get_engine(tenant)
     return kb_quality(engine, tenant_id)
+
+
+@app.get("/api/v1/tenants/{tenant_id}/evaluation/suggestions")
+def evaluation_suggestions(tenant_id: str, _admin=Depends(require_admin)):
+    """Actionable, prioritized improvement suggestions derived from the latest
+    run + KB quality, each with a ready-to-apply config change."""
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    return suggest_improvements(engine, tenant_id, store)
+
+
+class EvalApplyRequest(BaseModel):
+    """Apply a suggested config change (+ optional re-index) and re-test."""
+    suggestion_id: str
+    fields: dict[str, Any] = {}
+    reindex: bool = False
+    run_eval: bool = True
+    case_ids: list[str] | None = None
+
+
+@app.post("/api/v1/tenants/{tenant_id}/evaluation/apply-suggestion")
+def apply_eval_suggestion(tenant_id: str, req: EvalApplyRequest, background_tasks: BackgroundTasks, _admin=Depends(require_admin)):
+    """Apply a suggestion's config change to the tenant, re-index if requested,
+    and optionally run an evaluation to measure before/after."""
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if _reindex_status.get(tenant_id, {}).get("status") == "running":
+        raise HTTPException(status_code=409, detail="A re-index is already running for this tenant.")
+
+    updated = dict(tenant)
+    changed: list[str] = []
+    for field, value in (req.fields or {}).items():
+        if field in updated and value is not None:
+            updated[field] = value
+            changed.append(field)
+    if changed:
+        admin_store.upsert_tenant(updated)
+        _engine_cache.pop(tenant_id, None)  # rebuild engine with the new config
+
+    if req.reindex or req.run_eval:
+        background_tasks.add_task(
+            _run_reindex_background,
+            tenant_id,
+            updated,
+            reindex=req.reindex,
+            run_eval_after=req.run_eval,
+            eval_case_ids=req.case_ids,
+        )
+
+    return {
+        "status": "started" if (req.reindex or req.run_eval) else "applied",
+        "suggestion_id": req.suggestion_id,
+        "changed_fields": changed,
+        "reindex": req.reindex,
+        "run_eval": req.run_eval,
+    }
+
+
+@app.get("/api/v1/tenants/{tenant_id}/reindex/status")
+def reindex_status(tenant_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return _tenant_reindex_status(tenant_id)
+
+
+@app.post("/api/v1/tenants/{tenant_id}/reindex")
+def trigger_reindex(tenant_id: str, background_tasks: BackgroundTasks, run_eval: bool = Query(default=False), _admin=Depends(require_admin)):
+    """Rebuild the tenant's index with current config (chunking + embeddings).
+    Optionally run an evaluation afterwards (?run_eval=true)."""
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if _reindex_status.get(tenant_id, {}).get("status") == "running":
+        return {"status": "already_running"}
+    background_tasks.add_task(_run_reindex_background, tenant_id, tenant, reindex=True, run_eval_after=run_eval)
+    return {"status": "started", "reindex": True, "run_eval": run_eval}
 
 
 # --- SYSTEM LOGS ---
