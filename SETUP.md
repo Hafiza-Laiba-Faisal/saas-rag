@@ -56,9 +56,9 @@ RAG_LLM_API_KEY=
 
 # ── LLM rate-limit protection (optional) ─────────────────────────────────
 # Minimum seconds between outbound LLM requests (per host). Prevents HTTP 429
-# from rate-limited providers (e.g. Mistral free tier = 1 req/s) during
-# evaluation runs. 0 disables throttling; fast paid providers are never
-# throttled by default.
+# from rate-limited providers (e.g. Mistral free tier = 1 req/s) during batch
+# LLM calls. 0 disables throttling; fast paid providers are never throttled
+# by default.
 RAG_LLM_MIN_INTERVAL=1.5
 ```
 

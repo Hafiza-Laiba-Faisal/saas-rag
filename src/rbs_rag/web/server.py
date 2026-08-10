@@ -33,7 +33,7 @@ from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
 from rbs_rag.metrics import MetricsMiddleware, metrics_export, DOCUMENTS_INGESTED, CHUNKS_CREATED, CHUNKS_RETRIEVED, LLM_REQUESTS, LLM_DURATION, PROMPT_INJECTIONS_BLOCKED, ACTIVE_TENANTS, ENGINE_UPTIME
 from rbs_rag.web.admin_db import AdminStore
 from rbs_rag.provisioning import provision_tenant
-from rbs_rag.evaluation import EvaluationStore, generate_cases, kb_quality, run_evaluation, suggest_improvements
+
 from rbs_rag.ocr.service import get_ocr_service, init_ocr_service
 from rbs_rag.services.scraper_service import ScraperService
 from rbs_rag.models import StreamingChunk
@@ -964,11 +964,10 @@ def _set_reindex_status(tenant_id: str, status: dict) -> None:
         pass
 
 
-def _run_reindex_background(tenant_id: str, tenant_data: dict, reindex: bool = True, run_eval_after: bool = False, eval_case_ids: list[str] | None = None):
-    """Rebuild a tenant's entire index from disk with the CURRENT config, and/or
-    run an evaluation so the admin sees before/after scores."""
+def _run_reindex_background(tenant_id: str, tenant_data: dict, reindex: bool = True):
+    """Rebuild a tenant's entire index from disk with the CURRENT config."""
     try:
-        _set_reindex_status(tenant_id, {"status": "running", "logs": [], "progress": 0, "phase": "reindex" if reindex else "eval"})
+        _set_reindex_status(tenant_id, {"status": "running", "logs": [], "progress": 0, "phase": "reindex"})
         config = _get_tenant_config(tenant_data)
         engine = _get_engine(tenant_data)
 
@@ -1006,38 +1005,11 @@ def _run_reindex_background(tenant_id: str, tenant_data: dict, reindex: bool = T
                     "logs": [*_reindex_status[tenant_id].get("logs", []), f"Errors: {len(s.errors)} — first: {s.errors[0]}"],
                 })
 
-        retest_run_id: str | None = None
-        if run_eval_after:
-            store = _get_eval_store(engine)
-            cases = store.list_cases(tenant_id)
-            if eval_case_ids:
-                wanted = set(eval_case_ids)
-                cases = [c for c in cases if c["case_id"] in wanted]
-            if cases:
-                run_id = store.create_run(tenant_id, {})
-
-                def _progress(current: int, total: int):
-                    _set_reindex_status(tenant_id, {
-                        **_reindex_status[tenant_id],
-                        "progress": int(85 + (current / max(1, total)) * 15),
-                        "phase": "eval",
-                    })
-
-                result = run_evaluation(engine, tenant_id, store, run_id, case_ids=eval_case_ids, progress_cb=_progress)
-                retest_run_id = run_id
-                _set_reindex_status(tenant_id, {
-                    **_reindex_status[tenant_id],
-                    "logs": [*_reindex_status[tenant_id].get("logs", []), f"Evaluation: RAG score {result.get('overall_score')}, Hit@5 {result.get('retrieval_hit_rate')}."],
-                })
-
         _set_reindex_status(tenant_id, {
             **_reindex_status[tenant_id],
             "progress": 100,
             "status": "completed",
-            "summary": {
-                **summary,
-                "retest_run_id": retest_run_id,
-            },
+            "summary": {**summary},
         })
         admin_store.log_activity(tenant_id=tenant_id, level="INFO", operation="REINDEX",
                                 message=f"Re-index completed: {summary.documents} docs, {summary.chunks} chunks.",
@@ -2758,273 +2730,6 @@ def purge_chat_sessions(tenant_id: str, _admin=Depends(require_admin)):
     return {"status": "success", "purged_turns": purged_count, "retention_days": retention_days}
 
 
-# --- RAG EVALUATION ---
-
-_eval_stores: dict[str, EvaluationStore] = {}
-_eval_run_progress: dict[str, dict] = {}
-
-
-def _get_eval_store(engine) -> EvaluationStore:
-    key = str(engine.store.path)
-    if key not in _eval_stores:
-        _eval_stores[key] = EvaluationStore(engine.store.path)
-    return _eval_stores[key]
-
-
-class EvalCaseRequest(BaseModel):
-    question: str = Field(..., min_length=3)
-    expected_answer: str | None = None
-    expected_document: str | None = None
-    source: str = "manual"
-
-
-class EvalCaseUpdateRequest(BaseModel):
-    question: str | None = None
-    expected_answer: str | None = None
-    expected_document: str | None = None
-
-
-class EvalGenerateRequest(BaseModel):
-    count: int = 20
-
-
-class EvalRunRequest(BaseModel):
-    case_ids: list[str] | None = None
-
-
-@app.get("/api/v1/tenants/{tenant_id}/evaluation/summary")
-def evaluation_summary(tenant_id: str, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    cases = store.list_cases(tenant_id)
-    runs = store.list_runs(tenant_id)
-    latest = runs[0] if runs else None
-    if latest and latest.get("config_snapshot"):
-        try:
-            latest["config_snapshot"] = json.loads(latest["config_snapshot"])
-        except Exception:
-            pass
-    return {
-        "tenant_id": tenant_id,
-        "case_count": len(cases),
-        "sources": {s: sum(1 for c in cases if c.get("source") == s) for s in {"manual", "auto", "playground"}},
-        "run_count": len(runs),
-        "latest_run": latest,
-        "run_progress": _eval_run_progress.get(runs[0]["run_id"]) if runs else None,
-    }
-
-
-@app.get("/api/v1/tenants/{tenant_id}/evaluation/cases")
-def list_eval_cases(tenant_id: str, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    return {"cases": _get_eval_store(engine).list_cases(tenant_id)}
-
-
-@app.post("/api/v1/tenants/{tenant_id}/evaluation/cases")
-def create_eval_case(tenant_id: str, req: EvalCaseRequest, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    case = store.add_case(
-        tenant_id,
-        req.question.strip(),
-        expected_answer=req.expected_answer,
-        expected_document=req.expected_document,
-        source=req.source,
-    )
-    return {"status": "success", "case": case}
-
-
-@app.put("/api/v1/tenants/{tenant_id}/evaluation/cases/{case_id}")
-def update_eval_case(tenant_id: str, case_id: str, req: EvalCaseUpdateRequest, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    fields = {k: v for k, v in req.model_dump().items() if v is not None}
-    case = store.update_case(case_id, fields)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    return {"status": "success", "case": case}
-
-
-@app.delete("/api/v1/tenants/{tenant_id}/evaluation/cases/{case_id}")
-def delete_eval_case(tenant_id: str, case_id: str, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    _get_eval_store(engine).delete_case(case_id)
-    return {"status": "success"}
-
-
-@app.post("/api/v1/tenants/{tenant_id}/evaluation/generate")
-def generate_eval_cases(tenant_id: str, req: EvalGenerateRequest, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    count = max(1, min(100, req.count))
-    created = generate_cases(engine, tenant_id, store, count=count)
-    return {"status": "success", "created": len(created), "cases": created}
-
-
-@app.post("/api/v1/tenants/{tenant_id}/evaluation/runs")
-def start_evaluation_run(tenant_id: str, req: EvalRunRequest, background_tasks: BackgroundTasks, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    cases = store.list_cases(tenant_id)
-    if req.case_ids:
-        wanted = set(req.case_ids)
-        cases = [c for c in cases if c["case_id"] in wanted]
-    if not cases:
-        raise HTTPException(status_code=400, detail="No evaluation cases to run. Add or generate questions first.")
-    run_id = store.create_run(tenant_id, {})
-
-    def _progress(current: int, total: int):
-        _eval_run_progress[run_id] = {"current": current, "total": total, "status": "running"}
-
-    def _worker():
-        try:
-            run_evaluation(engine, tenant_id, store, run_id, case_ids=req.case_ids, progress_cb=_progress)
-        except Exception as exc:
-            log.exception("Evaluation run %s failed", run_id)
-            try:
-                store.update_run(run_id, {"status": "failed", "completed_at": _utcnow()})
-            except Exception:
-                pass
-        finally:
-            _eval_run_progress[run_id]["status"] = "completed"
-
-    _eval_run_progress[run_id] = {"current": 0, "total": len(cases), "status": "running"}
-    background_tasks.add_task(_worker)
-    return {"status": "started", "run_id": run_id, "total_cases": len(cases)}
-
-
-@app.get("/api/v1/tenants/{tenant_id}/evaluation/runs")
-def list_eval_runs(tenant_id: str, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    runs = store.list_runs(tenant_id)
-    for r in runs:
-        if r.get("config_snapshot"):
-            try:
-                r["config_snapshot"] = json.loads(r["config_snapshot"])
-            except Exception:
-                pass
-    return {"runs": runs, "progress": _eval_run_progress}
-
-
-@app.get("/api/v1/tenants/{tenant_id}/evaluation/runs/{run_id}")
-def get_eval_run(tenant_id: str, run_id: str, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    run = store.get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if run.get("config_snapshot"):
-        try:
-            run["config_snapshot"] = json.loads(run["config_snapshot"])
-        except Exception:
-            pass
-    results = store.get_run_results(run_id)
-    failed = [r for r in results if r.get("failure_type") not in (None, "none")]
-    return {
-        "run": run,
-        "results": results,
-        "failed_queries": failed,
-        "progress": _eval_run_progress.get(run_id),
-    }
-
-
-@app.get("/api/v1/tenants/{tenant_id}/evaluation/quality")
-def evaluation_kb_quality(tenant_id: str, _admin=Depends(require_admin)):
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    return kb_quality(engine, tenant_id)
-
-
-@app.get("/api/v1/tenants/{tenant_id}/evaluation/suggestions")
-def evaluation_suggestions(tenant_id: str, _admin=Depends(require_admin)):
-    """Actionable, prioritized improvement suggestions derived from the latest
-    run + KB quality, each with a ready-to-apply config change."""
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    engine = _get_engine(tenant)
-    store = _get_eval_store(engine)
-    return suggest_improvements(engine, tenant_id, store)
-
-
-class EvalApplyRequest(BaseModel):
-    """Apply a suggested config change (+ optional re-index) and re-test."""
-    suggestion_id: str
-    fields: dict[str, Any] = {}
-    reindex: bool = False
-    run_eval: bool = True
-    case_ids: list[str] | None = None
-
-
-@app.post("/api/v1/tenants/{tenant_id}/evaluation/apply-suggestion")
-def apply_eval_suggestion(tenant_id: str, req: EvalApplyRequest, background_tasks: BackgroundTasks, _admin=Depends(require_admin)):
-    """Apply a suggestion's config change to the tenant, re-index if requested,
-    and optionally run an evaluation to measure before/after."""
-    tenant = admin_store.get_tenant(tenant_id)
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    if _reindex_status.get(tenant_id, {}).get("status") == "running":
-        raise HTTPException(status_code=409, detail="A re-index is already running for this tenant.")
-
-    updated = dict(tenant)
-    changed: list[str] = []
-    for field, value in (req.fields or {}).items():
-        if field in updated and value is not None:
-            updated[field] = value
-            changed.append(field)
-    if changed:
-        admin_store.upsert_tenant(updated)
-        _engine_cache.pop(tenant_id, None)  # rebuild engine with the new config
-
-    if req.reindex or req.run_eval:
-        background_tasks.add_task(
-            _run_reindex_background,
-            tenant_id,
-            updated,
-            reindex=req.reindex,
-            run_eval_after=req.run_eval,
-            eval_case_ids=req.case_ids,
-        )
-
-    return {
-        "status": "started" if (req.reindex or req.run_eval) else "applied",
-        "suggestion_id": req.suggestion_id,
-        "changed_fields": changed,
-        "reindex": req.reindex,
-        "run_eval": req.run_eval,
-    }
-
-
 @app.get("/api/v1/tenants/{tenant_id}/reindex/status")
 def reindex_status(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
@@ -3034,16 +2739,15 @@ def reindex_status(tenant_id: str, _admin=Depends(require_admin)):
 
 
 @app.post("/api/v1/tenants/{tenant_id}/reindex")
-def trigger_reindex(tenant_id: str, background_tasks: BackgroundTasks, run_eval: bool = Query(default=False), _admin=Depends(require_admin)):
-    """Rebuild the tenant's index with current config (chunking + embeddings).
-    Optionally run an evaluation afterwards (?run_eval=true)."""
+def trigger_reindex(tenant_id: str, background_tasks: BackgroundTasks, _admin=Depends(require_admin)):
+    """Rebuild the tenant's index with current config (chunking + embeddings)."""
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     if _reindex_status.get(tenant_id, {}).get("status") == "running":
         return {"status": "already_running"}
-    background_tasks.add_task(_run_reindex_background, tenant_id, tenant, reindex=True, run_eval_after=run_eval)
-    return {"status": "started", "reindex": True, "run_eval": run_eval}
+    background_tasks.add_task(_run_reindex_background, tenant_id, tenant, reindex=True)
+    return {"status": "started", "reindex": True}
 
 
 # --- SYSTEM LOGS ---

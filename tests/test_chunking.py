@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 
 from rbs_rag.chunking import HierarchicalChunker, _boilerplate_reason
-from rbs_rag.evaluation import EvaluationStore
 from rbs_rag.models import Chunk, LoadedDocument
 from rbs_rag.store import SQLiteRagStore
 
@@ -158,11 +157,10 @@ class StoreDedupTests(unittest.TestCase):
             self.assertEqual(len(kept), 2)
             self.assertEqual(store.count_chunks("t1", "default"), 2)
 
-    def test_dedup_survives_eval_store_tables(self):
-        # Ensure the dedup scan works alongside evaluation tables in the same DB.
+    def test_duplicate_chunks_across_documents_are_deduped(self):
+        # The same chunk text must not be indexed twice, even across documents.
         with tempfile.TemporaryDirectory() as temp_dir:
             db = Path(temp_dir) / "rag.db"
-            EvaluationStore(db)  # creates eval tables in the same file
             store = SQLiteRagStore(db)
             text = "Free cancellation up to 48 hours before arrival."
             self._upsert_doc(store, "d1")
