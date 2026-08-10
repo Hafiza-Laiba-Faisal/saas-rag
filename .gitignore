@@ -43,3 +43,6 @@ Thumbs.db
 
 # Scraped test pages (large binaries, not project code)
 data/test-pages/
+
+# dev launcher backend log
+.tmp-backend-dev.log

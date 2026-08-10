@@ -147,6 +147,32 @@ class ServerSecurityAndRetrievalTests(unittest.TestCase):
             self.assertEqual(sessions[0]["session_id"], "session-1")
             self.assertEqual(store.get_session_turns("tenant-a", "session-1")[0]["content"], "hello")
 
+    def test_tenant_connection_context_manager_closes_connection(self):
+        # Regression: `with sqlite3.connect(...) as conn:` commits but NEVER
+        # closes the connection — under load the process exhausts file
+        # descriptors and every DB call fails with "unable to open database".
+        # The context manager must close the connection on exit.
+        from unittest.mock import MagicMock, patch
+
+        conn = MagicMock()
+        with patch.object(server_module.sqlite3, "connect", return_value=conn) as mock_connect:
+            with server_module._tenant_connection(Path("/tmp/fake-tenant/rag.db")) as cm_conn:
+                self.assertIs(cm_conn, conn)
+            mock_connect.assert_called_once()
+            conn.close.assert_called_once()
+
+        # Same guarantee for the admin DB connection.
+        from rbs_rag.web import admin_db
+        from rbs_rag.web.admin_db import AdminStore
+
+        admin = AdminStore(Path(tempfile.mkdtemp()) / "admin.db")
+        conn2 = MagicMock()
+        with patch.object(admin_db.sqlite3, "connect", return_value=conn2) as mock_connect2:
+            with admin._connect() as cm_conn2:
+                self.assertIs(cm_conn2, conn2)
+            mock_connect2.assert_called_once()
+            conn2.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

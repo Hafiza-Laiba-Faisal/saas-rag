@@ -49,7 +49,14 @@ def _release_connection(path: Path, conn: sqlite3.Connection) -> None:
     with _pool_lock:
         _pool[key] = conn
         while len(_pool) > _POOL_MAX:
-            _pool.popitem(last=False)
+            _, evicted = _pool.popitem(last=False)
+            # Evicted connections must be closed explicitly — sqlite connections
+            # aren't reliably collected by GC, so dropping the reference alone
+            # leaks file descriptors under load.
+            try:
+                evicted.close()
+            except Exception:
+                pass
 
 
 def close_pool() -> None:

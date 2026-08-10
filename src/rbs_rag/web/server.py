@@ -11,7 +11,7 @@ import sqlite3
 import time
 import traceback
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -66,14 +66,29 @@ def _tenant_db_path(tenant_id: str, tenant: dict | None = None) -> Path:
     return TENANTS_DIR / tenant_id / "rag.db"
 
 
+@contextmanager
 def _tenant_connection(db_path: Path):
-    """Open a raw per-tenant SQLite connection with the standard PRAGMAs."""
+    """Open a per-tenant SQLite connection with the standard PRAGMAs.
+
+    Context manager so the connection is always closed on exit. Using a plain
+    ``with sqlite3.connect(...) as conn:`` pattern only commits/rolls back but
+    NEVER closes the connection — under load the process exhausts its file
+    descriptors and every subsequent DB call fails with
+    ``sqlite3.OperationalError: unable to open database file``.
+    """
     conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _normalize_title(title: str) -> str:

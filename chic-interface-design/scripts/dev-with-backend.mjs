@@ -52,7 +52,7 @@ export REDIS_PORT=6379
 export REDIS_ENABLED=true
 export SCRAPER_SERVICE_URL=http://localhost:8002
 . .venv/bin/activate
-.venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload > "${backendLogPath}" 2>&1
+.venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload --reload-dir "${repoRoot}/src" > "${backendLogPath}" 2>&1
 `;
 
   const child = spawn('bash', ['-lc', startCommand], {

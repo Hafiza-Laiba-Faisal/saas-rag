@@ -48,7 +48,7 @@ else
     RAG_LLM_MIN_INTERVAL="${RAG_LLM_MIN_INTERVAL:-1.2}" \
     SCRAPER_SERVICE_URL=http://localhost:8002 \
     PYTHONPATH='$ROOT/src' \
-    .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload"
+    .venv/bin/uvicorn rbs_rag.web.server:app --host 127.0.0.1 --port 3001 --reload --reload-dir '$ROOT/src'"
 fi
 
 # 5. Frontend — new terminal window (skip if a dev server is already on :5173)
