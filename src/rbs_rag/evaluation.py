@@ -83,8 +83,41 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.strip().lower())
 
 
-def _document_hit(chunk_metadata: dict, expected_document: str | None, expected_chunk_id: str | None) -> bool:
-    """True if a retrieved chunk matches the case's expected document/chunk."""
+_CONTENT_HIT_THRESHOLD = 0.4
+
+
+def _token_set(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]{3,}", (text or "").lower()))
+
+
+def _content_overlap(expected_text: str | None, chunk_text: str | None) -> float:
+    """Fraction of the expected document's tokens present in the chunk.
+
+    Used as a fallback so the same page stored under a different filename
+    (multi-language versions, re-crawled copies) still counts as a retrieval
+    hit. Boilerplate-heavy overlap is bounded by the threshold.
+    """
+    expected_tokens = _token_set(expected_text)
+    if not expected_tokens:
+        return 0.0
+    chunk_tokens = _token_set(chunk_text)
+    if not chunk_tokens:
+        return 0.0
+    return len(expected_tokens & chunk_tokens) / len(expected_tokens)
+
+
+def _document_hit(
+    chunk_metadata: dict,
+    expected_document: str | None,
+    expected_chunk_id: str | None,
+    expected_text: str | None = None,
+    chunk_text: str | None = None,
+) -> bool:
+    """True if a retrieved chunk matches the case's expected document/chunk.
+
+    Name/chunk-id matching first; content-overlap fallback catches the same
+    page re-imported under a different filename (language versions, re-crawls).
+    """
     if expected_chunk_id and chunk_metadata.get("chunk_id") == expected_chunk_id:
         return True
     if expected_document:
@@ -96,6 +129,8 @@ def _document_hit(chunk_metadata: dict, expected_document: str | None, expected_
         act = _normalize(doc_name)
         if exp and act and (exp in act or act in exp):
             return True
+    if expected_text and chunk_text and _content_overlap(expected_text, chunk_text) >= _CONTENT_HIT_THRESHOLD:
+        return True
     return False
 
 
@@ -300,6 +335,40 @@ def _generate_with_retry(client, messages: list[dict[str, str]], attempts: int =
     raise last_exc or RuntimeError("LLM generate failed")
 
 
+def _ask_with_retry(
+    engine,
+    question: str,
+    session_id: str = "default",
+    system_prompt: str | None = None,
+    attempts: int = 4,
+    base_delay: float = 1.5,
+) -> str:
+    """engine.ask() wrapped with rate-limit retry/backoff.
+
+    engine.ask() raises straight through on 429, so without this an evaluation
+    run drops questions every time the provider throttles. The retry sleeps
+    are additive with the global inter-request throttle in llm.py.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return engine.ask(
+                question,
+                kb="default",
+                session_id=session_id,
+                user_id="__evaluator__",
+                system_prompt=system_prompt,
+            ).text
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_rate_limited(exc) or attempt == attempts - 1:
+                raise
+            delay = base_delay * (2**attempt)
+            log.warning("Answer generation rate-limited (%s), retrying in %.1fs (attempt %d/%d)", exc, delay, attempt + 1, attempts)
+            time.sleep(delay)
+    raise last_exc or RuntimeError("answer generation failed")
+
+
 def _extract_json(text: str) -> Any:
     """Best-effort parse of a JSON object/array possibly wrapped in fences."""
     text = text.strip()
@@ -422,6 +491,17 @@ def run_evaluation(
     relevancy_total = 0.0
     passed = 0
 
+    # Pre-load expected-document texts so content-overlap matching (same page
+    # under a different filename, e.g. multi-language versions) can be checked.
+    expected_doc_texts: dict[str, str] = {}
+    try:
+        for doc in engine.store.list_documents(tenant_id, "default"):
+            name = doc.get("name") or doc.get("document_name") or ""
+            if name:
+                expected_doc_texts[name] = doc.get("text") or ""
+    except Exception as exc:
+        log.warning("Could not pre-load documents for content matching: %s", exc)
+
     for idx, case in enumerate(cases, start=1):
         if progress_cb:
             progress_cb(idx, len(cases))
@@ -435,6 +515,7 @@ def run_evaluation(
                     "document_name": r.chunk.metadata.get("document_name", "unknown"),
                     "section": r.chunk.metadata.get("section"),
                     "text": r.chunk.text[:800],
+                    "full_text": r.chunk.text,
                     "score": round(r.score, 4),
                 }
                 for r in results[:5]
@@ -442,11 +523,14 @@ def run_evaluation(
             expected_doc = case.get("expected_document")
             expected_chunk = case.get("expected_chunk_id")
             gradeable = bool(expected_doc or expected_chunk)
+            expected_text = expected_doc_texts.get(expected_doc or "") if expected_doc else None
             hit = any(
                 _document_hit(
                     {"chunk_id": c["chunk_id"], "document_name": c["document_name"]},
                     expected_doc,
                     expected_chunk,
+                    expected_text=expected_text,
+                    chunk_text=c.get("full_text"),
                 )
                 for c in contexts
             )
@@ -460,13 +544,12 @@ def run_evaluation(
                 answer = ""
                 judged = {"faithfulness": 0.0, "relevancy": 0.0, "reason": "LLM unavailable; retrieval-only run"}
             else:
-                answer = engine.ask(
+                answer = _ask_with_retry(
+                    engine,
                     case["question"],
-                    kb="default",
                     session_id=session_id,
-                    user_id="__evaluator__",
                     system_prompt=engine.config.system_prompt,
-                ).text
+                )
                 judged = _judge_answer(client, case["question"], answer, contexts, case.get("expected_answer"))
 
             # Failure analysis
@@ -487,7 +570,9 @@ def run_evaluation(
                 "question": case["question"],
                 "expected_document": case.get("expected_document"),
                 "retrieval_hit": hit,
-                "retrieved_chunks": contexts,
+                "retrieved_chunks": [
+                    {k: v for k, v in c.items() if k != "full_text"} for c in contexts
+                ],
                 "generated_answer": answer,
                 "faithfulness_score": judged["faithfulness"],
                 "relevancy_score": judged["relevancy"],

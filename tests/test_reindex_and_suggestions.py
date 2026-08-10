@@ -8,6 +8,9 @@ from rbs_rag.config import AppConfig, ChunkingConfig, EmbeddingConfig, Retrieval
 from rbs_rag.engine import RagEngine
 from rbs_rag.evaluation import (
     EvaluationStore,
+    _ask_with_retry,
+    _content_overlap,
+    _document_hit,
     _generate_with_retry,
     _is_rate_limited,
     run_evaluation,
@@ -30,6 +33,93 @@ def _make_config(root: Path, tenant_id: str = "t1", max_tokens: int = 320) -> Ap
         system_prompt=None,
         llm=LLMSettings(provider="openai_compatible", api_key="", model="x"),
     )
+
+
+class DocumentHitContentMatchingTests(unittest.TestCase):
+    def test_name_match_still_works(self):
+        self.assertTrue(
+            _document_hit(
+                {"chunk_id": "c1", "document_name": "Suite King - Hotel de la Ville.md"},
+                "Suite King - Hotel de la Ville.md",
+                None,
+            )
+        )
+
+    def test_same_content_different_filename_counts_as_hit(self):
+        # Re-crawled copy: different filename, same page content in the same language.
+        expected_text = (
+            "The Suite King room offers a minibar and a whirlpool bath in the main bathroom. "
+            "Guests enjoy a separate shower cabin, premium amenities, hairdryer, slippers "
+            "and bathrobes. Air conditioning and heating are available throughout."
+        )
+        chunk_text = (
+            "The Suite King features a minibar and whirlpool bath in the main bathroom. "
+            "The suite provides a separate shower cabin and premium amenities. Guests find "
+            "a hairdryer, slippers and bathrobes. Air conditioning and heating throughout."
+        )
+        self.assertGreaterEqual(_content_overlap(expected_text, chunk_text), 0.4)
+        self.assertTrue(
+            _document_hit(
+                {"chunk_id": "c1", "document_name": "Suite King - Hotel de la Ville_1566.md"},
+                "Suite King - Hotel de la Ville.md",
+                None,
+                expected_text=expected_text,
+                chunk_text=chunk_text,
+            )
+        )
+
+    def test_translation_does_not_count_as_hit(self):
+        # Different language versions are NOT the same content for eval purposes.
+        expected_text = "The Suite King offers a minibar and a whirlpool bath in the main bathroom."
+        chunk_text = (
+            "La Suite King offre un minibar e una vasca idromassaggio nel bagno principale, "
+            "cabina doccia separata e servizi premium per gli ospiti."
+        )
+        self.assertLess(_content_overlap(expected_text, chunk_text), 0.4)
+        self.assertFalse(
+            _document_hit(
+                {"chunk_id": "c1", "document_name": "Suite King - Hotel de la Ville_1566.md"},
+                "Suite King - Hotel de la Ville.md",
+                None,
+                expected_text=expected_text,
+                chunk_text=chunk_text,
+            )
+        )
+
+    def test_unrelated_content_does_not_match(self):
+        expected_text = "The rooftop bar serves cocktails every evening until midnight."
+        chunk_text = "Breakfast is served from 7 AM to 10:30 AM in the garden restaurant."
+        self.assertLess(_content_overlap(expected_text, chunk_text), 0.4)
+        self.assertFalse(
+            _document_hit(
+                {"chunk_id": "c1", "document_name": "Breakfast.md"},
+                "Rooftop Bar.md",
+                None,
+                expected_text=expected_text,
+                chunk_text=chunk_text,
+            )
+        )
+
+    def test_boilerplate_only_overlap_does_not_match(self):
+        # Shared footer/nav tokens (hotel name, phone) must NOT trigger a hit.
+        expected_text = (
+            "Rooftop Bar - Hotel de la Ville. Opening hours, cocktail menu, and reservations. "
+            "The bar is located on the top floor with city views."
+        )
+        chunk_text = (
+            "Hotel de la Ville. Phone +39 0521 0304. Address Largo Piero Calamandrei 11. "
+            "Hotel de la Ville offers rooms, suites, a bar, a restaurant, and a fitness area."
+        )
+        self.assertLess(_content_overlap(expected_text, chunk_text), 0.4)
+        self.assertFalse(
+            _document_hit(
+                {"chunk_id": "c1", "document_name": "Home - Hotel de la Ville.md"},
+                "Rooftop Bar - Hotel de la Ville.md",
+                None,
+                expected_text=expected_text,
+                chunk_text=chunk_text,
+            )
+        )
 
 
 class RateLimitHelpersTests(unittest.TestCase):
@@ -68,6 +158,36 @@ class RateLimitHelpersTests(unittest.TestCase):
         with patch("time.sleep", return_value=None):
             with self.assertRaises(RuntimeError):
                 _generate_with_retry(MagicMock(generate=fail), [])
+
+    def test_ask_with_retry_retries_429_then_succeeds(self):
+        calls = {"n": 0}
+
+        def flaky_engine(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError("LLM API request failed with HTTP 429: Rate limit exceeded")
+            return MagicMock(text="ok answer")
+
+        engine = MagicMock()
+        engine.ask.side_effect = flaky_engine
+        with patch("time.sleep", return_value=None):
+            result = _ask_with_retry(engine, "Q?")
+        self.assertEqual(result, "ok answer")
+        self.assertEqual(calls["n"], 3)
+        # The eval engine.ask signature must be used (kb/session/user/system_prompt).
+        _, kwargs = engine.ask.call_args
+        self.assertEqual(kwargs["kb"], "default")
+        self.assertEqual(kwargs["user_id"], "__evaluator__")
+
+    def test_ask_with_retry_gives_up_on_persistent_429(self):
+        def always_fail(*args, **kwargs):
+            raise RuntimeError("HTTP 429 Too Many Requests")
+
+        engine = MagicMock()
+        engine.ask.side_effect = always_fail
+        with patch("time.sleep", return_value=None):
+            with self.assertRaises(RuntimeError):
+                _ask_with_retry(engine, "Q?", attempts=3)
 
 
 class ReindexTests(unittest.TestCase):

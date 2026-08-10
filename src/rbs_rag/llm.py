@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 # - Set RAG_LLM_MIN_INTERVAL (seconds, 0 to disable) to force a global interval
 #   for every provider regardless of the defaults below.
 _HOST_MIN_INTERVAL = {
-    "api.mistral.ai": 1.2,
+    "api.mistral.ai": 1.5,
     "openrouter.ai": 1.0,
     "generativelanguage.googleapis.com": 1.0,
 }
