@@ -557,7 +557,6 @@ LLM_PROVIDERS = [
 
 EMBEDDING_PROVIDERS = [
     {"id": "hash", "name": "Local Deterministic Hash (384d)", "defaultBaseUrl": None, "models": ["hash-384"], "defaultDimensions": 384},
-    {"id": "bge", "name": "BGE Small (Local)", "defaultBaseUrl": None, "models": ["BAAI/bge-small-en-v1.5", "BAAI/bge-base-en-v1.5", "BAAI/bge-large-en-v1.5"], "defaultDimensions": 384},
     {"id": "openai", "name": "OpenAI Embeddings", "defaultBaseUrl": "https://api.openai.com/v1", "models": ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"], "defaultDimensions": 1536},
     {"id": "gemini", "name": "Google Gemini Embeddings", "defaultBaseUrl": "https://generativelanguage.googleapis.com/v1beta", "models": ["text-embedding-004", "embedding-001"], "defaultDimensions": 768},
     {"id": "mistral", "name": "Mistral Embeddings", "defaultBaseUrl": "https://api.mistral.ai/v1", "models": ["mistral-embed"], "defaultDimensions": 1024},
@@ -657,11 +656,6 @@ class ScrapeRequest(BaseModel):
     max_pages: int = 10
     max_depth: int = 2
     full_site: bool = False
-
-
-class TerminalExecRequest(BaseModel):
-    command: str
-    tenant_id: str | None = None
 
 
 # --- Helpers ---
@@ -2601,95 +2595,6 @@ def purge_chat_sessions(tenant_id: str, _admin=Depends(require_admin)):
 @app.get("/api/v1/system/logs")
 def list_system_logs(tenant_id: str | None = None, level: str | None = None, limit: int = 100, _admin=Depends(require_admin)):
     return {"logs": admin_store.get_activity_logs(tenant_id=tenant_id, level=level, limit=limit)}
-
-
-# --- TERMINAL ---
-
-@app.post("/api/v1/terminal/exec")
-def execute_terminal_command(req: TerminalExecRequest, _admin=Depends(require_admin)):
-    terminal_enabled = os.getenv("RAG_TERMINAL_ENABLED", "true").lower() == "true"
-    if not terminal_enabled:
-        return {"output": "Terminal is disabled.", "type": "error"}
-    raw_cmd = req.command.strip()
-    if not raw_cmd:
-        return {"output": "", "type": "empty"}
-    cmd_parts = raw_cmd.split()
-    cmd = cmd_parts[0].lower().lstrip("/")
-    args = cmd_parts[1:]
-
-    COMMAND_HELP = {
-        "help": {"summary": "Display command catalog", "usage": "help [command]", "description": "Lists all interactive console commands."},
-        "isolation": {"summary": "Run multi-tenant isolation audit", "usage": "isolation", "description": "Performs cross-database security audit."},
-        "clients": {"summary": "List all tenants", "usage": "clients", "description": "Displays all onboarded clients."},
-        "sync": {"summary": "Sync cloud documents", "usage": "sync <provider> <url> [token]", "description": "Downloads cloud documents."},
-        "ingest": {"summary": "Trigger ingestion", "usage": "ingest [tenant_id]", "description": "Starts background ingestion pipeline."},
-        "query": {"summary": "Run RAG query", "usage": "query <question>", "description": "Executes hybrid retrieval and LLM generation."},
-        "chunks": {"summary": "Inspect document chunks", "usage": "chunks [filename]", "description": "Fetches chunks for a file."},
-        "theme": {"summary": "Switch UI theme", "usage": "theme <name>", "description": "Dynamically switches theme."},
-        "status": {"summary": "System health", "usage": "status", "description": "Returns runtime metrics."},
-        "clear": {"summary": "Clear screen", "usage": "clear", "description": "Wipes terminal output."},
-    }
-
-    if cmd in {"help", "?"}:
-        if args:
-            sub = args[0].lower().lstrip("/")
-            if sub in COMMAND_HELP:
-                info = COMMAND_HELP[sub]
-                return {"output": f"COMMAND: /{sub.upper()}\nSummary: {info['summary']}\nUsage: {info['usage']}\n\n{info['description']}", "type": "help_detail"}
-            return {"output": f"Unknown '{sub}'", "type": "error"}
-        lines = ["COMMAND CATALOG:"] + [f"  /{c:<12} - {m['summary']}" for c, m in COMMAND_HELP.items()]
-        return {"output": "\n".join(lines), "type": "help_catalog"}
-
-    if cmd in {"isolation", "audit"}:
-        check = _run_isolation_check()
-        lines = [f"ISOLATION AUDIT: Status={check['status']}, Score={check['score_percent']:.1f}%, Tenants={check['total_tenants']}, Isolated={check['verified_isolated']}"]
-        for item in check["details"]:
-            lines.append(f"  {item['tenant_id']}: isolated={item['isolated']}, docs={item['doc_count']}, chunks={item['chunk_count']}")
-        return {"output": "\n".join(lines), "type": "isolation_report", "raw": check}
-
-    if cmd in {"clients", "tenants"}:
-        tenants = admin_store.list_tenants()
-        if not tenants:
-            return {"output": "No tenants found.", "type": "info"}
-        lines = ["TENANTS:"] + [f"  [{t['tenant_id']}] {t['name']} ({t.get('subscription_tier', 'basic').upper()}) - {t.get('llm_provider', '?')}/{t.get('llm_model', '?')}" for t in tenants]
-        return {"output": "\n".join(lines), "type": "clients_list"}
-
-    if cmd in {"status"}:
-        return {"output": f"SYSTEM STATUS: Operational. Root: {ROOT_DIR.resolve()}. Admin DB: {ADMIN_DB_PATH}. Tenants: {len(admin_store.list_tenants())}.", "type": "status"}
-
-    if cmd in {"clear"}:
-        return {"output": "", "type": "clear"}
-
-    if cmd in {"theme"}:
-        if args:
-            return {"output": f"Theme set to '{args[0]}'", "type": "theme", "theme": args[0]}
-        return {"output": "Usage: /theme <name>", "type": "info"}
-
-    if cmd in {"ingest"}:
-        tid = req.tenant_id
-        if not tid:
-            return {"output": "Error: No tenant selected.", "type": "error"}
-        tenant = admin_store.get_tenant(tid)
-        if not tenant:
-            return {"output": f"Error: Tenant '{tid}' not found.", "type": "error"}
-        trigger_ingestion(tid, BackgroundTasks())
-        return {"output": f"Ingestion started for '{tid}'.", "type": "success"}
-
-    if cmd in {"query", "ask"}:
-        tid = req.tenant_id
-        if not tid:
-            return {"output": "Error: No tenant selected.", "type": "error"}
-        qtext = " ".join(args)
-        if not qtext:
-            return {"output": "Usage: /query <question>", "type": "info"}
-        tenant = admin_store.get_tenant(tid)
-        if not tenant:
-            return {"output": f"Error: Tenant '{tid}' not found.", "type": "error"}
-        engine = _get_engine(tenant)
-        ans = engine.ask(query=qtext, session_id="terminal-tester")
-        return {"output": f"Q: {qtext}\nA: {ans.text}\nConfidence: {ans.validation.confidence.upper()}", "type": "query_res"}
-
-    return {"output": f"Unknown command '{cmd}'. Type '/help' for commands.", "type": "error"}
 
 
 # ── SPA fallback: serve index.html for unmatched browser routes ──────────

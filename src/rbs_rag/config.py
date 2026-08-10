@@ -75,7 +75,6 @@ class SecurityConfig:
     admin_jwt_secret: str = ""
     cors_origins: list[str] = field(default_factory=lambda: ["*"])
     prompt_injection_detection: bool = False
-    terminal_enabled: bool = True
 
 
 @dataclass(slots=True)

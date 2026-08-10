@@ -215,21 +215,6 @@ class RagEngine:
         memory = self.get_user_memory(user_id)
         return "\n".join(f"{key}: {value}" for key, value in memory.items())
 
-    def get_health(self):
-        from .models import HealthStatus
-        qdrant_status = "connected" if (self.vector_store.client and self.vector_store.is_initialized) else "disconnected"
-        llm_status = "configured" if self.config.llm.api_key else "not_configured"
-        return HealthStatus(
-            status="ok",
-            db="connected",
-            qdrant=qdrant_status,
-            llm=llm_status,
-            embeddings=self.config.embeddings.provider,
-            uptime_seconds=round(time.time() - self._start_time, 2),
-            total_documents=self.store.count_documents(self.config.tenant_id, self.config.default_kb),
-            total_chunks=self.store.count_chunks(self.config.tenant_id, self.config.default_kb),
-        )
-
     def get_profile_llm(self):
         return {"provider": self.config.llm.provider, "model": self.config.llm.model}
 

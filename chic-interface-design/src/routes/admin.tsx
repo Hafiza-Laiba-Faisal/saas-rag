@@ -602,26 +602,6 @@ const embeddingProviderMeta: Record<string, {
     models: [{ name: "hash-384", dims: 384, note: "No external API — fast, deterministic" }],
     docsUrl: "",
   },
-  bge: {
-    label: "BGE Small (Local)",
-    defaultModel: "BAAI/bge-small-en-v1.5",
-    defaultDimensions: 384,
-    paid: false,
-    models: [
-      { name: "BAAI/bge-small-en-v1.5", dims: 384 },
-      { name: "BAAI/bge-base-en-v1.5",  dims: 768 },
-      { name: "BAAI/bge-large-en-v1.5", dims: 1024, note: "Best quality, slower" },
-    ],
-    docsUrl: "https://huggingface.co/BAAI/bge-small-en-v1.5",
-  },
-  bge_m3: {
-    label: "BGE-M3 (Local)",
-    defaultModel: "BAAI/bge-m3",
-    defaultDimensions: 1024,
-    paid: false,
-    models: [{ name: "BAAI/bge-m3", dims: 1024, note: "Multilingual, high quality" }],
-    docsUrl: "https://huggingface.co/BAAI/bge-m3",
-  },
   openai: {
     label: "OpenAI Embeddings",
     defaultModel: "text-embedding-3-small",
@@ -1112,10 +1092,10 @@ function Field({ label, children, className }: { label: string; children: React.
 function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [source, setSource] = useState<"files" | "web" | "cloud" | "crawl">(() => {
+  const [source, setSource] = useState<"files" | "web" | "cloud">(() => {
     try {
       const s = localStorage.getItem(`rag_doc_source_${tenantId}`);
-      return (s === "files" || s === "web" || s === "cloud" || s === "crawl") ? s : "files";
+      return (s === "files" || s === "web" || s === "cloud") ? s : "files";
     } catch { return "files"; }
   });
   const [uploading, setUploading] = useState(false);
@@ -1169,7 +1149,6 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [cloudProvider, setCloudProvider] = useState<string | null>(null);
-  const [selectedCrawlSite, setSelectedCrawlSite] = useState<string | null>(null);
 
   // ── Duplicate-resolution dialog ──
   type DupItem = { url: string; title: string; existing_file: string; new_file: string; action: "replace" | "keep_both" | "skip" };
@@ -1181,29 +1160,6 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
   const [renamingFile, setRenamingFile] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
-
-  const { data: crawlSites } = useQuery({
-    queryKey: ["crawl-sites"],
-    queryFn: async () => {
-      try {
-        const res = await apiFetch("/crawl-output");
-        return res.json();
-      } catch { return { sites: [] }; }
-    },
-    enabled: source === "crawl",
-  });
-
-  const { data: selectedCrawlSiteData, refetch: refetchCrawlSiteData } = useQuery({
-    queryKey: ["crawl-site-data", selectedCrawlSite],
-    queryFn: async () => {
-      if (!selectedCrawlSite) return null;
-      try {
-        const res = await apiFetch(`/crawl-output/${selectedCrawlSite}`);
-        return res.json();
-      } catch { return null; }
-    },
-    enabled: !!selectedCrawlSite && source === "crawl",
-  });
 
   const { data: scraperHealth } = useQuery({
     queryKey: ["scraper-health"],
@@ -1580,26 +1536,6 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   }
 
-  async function handleImportCrawlOutput(site: string) {
-    if (!tenantId) return;
-    try {
-      const res = await apiFetch(`/crawl-output/${site}/import`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantId }),
-      });
-      const result = await res.json();
-      if (result.success) {
-        alert(`Imported ${result.imported_count} files from ${site}`);
-        refetchDocs();
-      } else {
-        alert("Import failed: " + (result.error || "Unknown error"));
-      }
-    } catch (e: any) {
-      alert("Import failed: " + e.message);
-    }
-  }
-
   function ScrapeHistory({ tenantId }: { tenantId?: string }) {
     const { data: logs = [] } = useQuery({
       queryKey: ["scrape-history", tenantId],
@@ -1643,8 +1579,7 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
       <div className="grid gap-3 md:grid-cols-4 flex-shrink-0">
         <SourceCard active={source === "files"} onClick={() => setSource("files")} accent="amber" icon={Upload} title="File upload" desc="PDF, DOCX, MD, TXT, CSV, HTML" />
         <SourceCard active={source === "web"} onClick={() => setSource("web")} accent="sky" icon={Globe} title="Web scraping" desc="Crawl a URL. Auto-clean, chunk & index." />
-        <SourceCard active={source === "cloud"} onClick={() => setSource("cloud")} accent="emerald" icon={Cloud} title="Cloud sync" desc="Google Drive, Notion, Confluence, S3" />
-        <SourceCard active={source === "crawl"} onClick={() => setSource("crawl")} accent="violet" icon={Database} title="Crawl output" desc="Browse scraped sites and import content" />
+        <SourceCard active={source === "cloud"} onClick={() => setSource("cloud")} accent="emerald" icon={Cloud} title="Cloud sync" desc="Google Drive, OneDrive, Confluence, S3" />
       </div>
 
       {source === "files" && (
@@ -2109,129 +2044,6 @@ function DocumentsTab({ tenantId }: { tenantId?: string }) {
                     </span>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {source === "crawl" && (
-        <div className="panel p-4 flex-shrink-0 max-h-96 overflow-y-auto">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Crawl Output</h3>
-          <p className="mt-2 text-xs text-muted-foreground">Browse scraped sites from the scraper service and import content to tenant documents.</p>
-
-          {!selectedCrawlSite ? (
-            <div className="mt-4 space-y-3">
-              {crawlSites?.sites && crawlSites.sites.length > 0 ? (
-                <div className="grid gap-2">
-                  {crawlSites.sites.map((site: any) => (
-                    <button
-                      key={site.site}
-                      onClick={() => setSelectedCrawlSite(site.site)}
-                      className="flex items-center justify-between rounded-lg border border-border bg-elevated/50 px-4 py-3 text-sm hover:border-primary/50 hover:bg-elevated"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Globe className="h-4 w-4 text-primary" />
-                        <div className="text-left">
-                          <div className="font-medium">{site.site}</div>
-                          <div className="text-[10px] text-muted-foreground">
-                            {site.metadata?.site || "Unknown site"}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                        {site.hasImages && <span className="rounded bg-elevated px-1.5 py-0.5">Images</span>}
-                        {site.hasPdfs && <span className="rounded bg-elevated px-1.5 py-0.5">PDFs</span>}
-                        {site.hasPages && <span className="rounded bg-elevated px-1.5 py-0.5">Pages</span>}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="py-8 text-center text-xs text-muted-foreground">
-                  No crawl output found. Run a crawl first to generate content.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="mt-4 space-y-4">
-              <button
-                onClick={() => setSelectedCrawlSite(null)}
-                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <ArrowLeft className="h-3 w-3" />
-                Back to sites
-              </button>
-
-              {selectedCrawlSiteData && (
-                <>
-                  <div className="panel p-4">
-                    <div className="flex items-center gap-3 mb-3">
-                      <Globe className="h-5 w-5 text-primary" />
-                      <div>
-                        <div className="font-semibold text-sm">{selectedCrawlSiteData.site}</div>
-                        <div className="text-[10px] text-muted-foreground">
-                          {selectedCrawlSiteData.metadata?.site || "Unknown site"}
-                        </div>
-                      </div>
-                    </div>
-                    {selectedCrawlSiteData.metadata && (
-                      <div className="grid gap-2 text-[10px] text-muted-foreground">
-                        <div>Strategy: {selectedCrawlSiteData.metadata.strategy}</div>
-                        <div>WordPress: {selectedCrawlSiteData.metadata.is_wordpress ? "Yes" : "No"}</div>
-                        <div>Languages: {selectedCrawlSiteData.metadata.languages_found?.join(", ") || "—"}</div>
-                        <div>Crawled: {selectedCrawlSiteData.metadata.crawled_at}</div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <div className="panel p-4">
-                      <div className="text-xs font-semibold mb-2">Pages ({selectedCrawlSiteData.files?.pages?.length || 0})</div>
-                      <div className="max-h-32 overflow-y-auto space-y-1">
-                        {selectedCrawlSiteData.files?.pages?.map((page: string, i: number) => (
-                          <div key={i} className="text-[10px] text-muted-foreground truncate font-mono">
-                            {page}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="panel p-4">
-                      <div className="text-xs font-semibold mb-2">Images ({selectedCrawlSiteData.files?.images?.length || 0})</div>
-                      <div className="max-h-32 overflow-y-auto space-y-1">
-                        {selectedCrawlSiteData.files?.images?.slice(0, 10).map((img: string, i: number) => (
-                          <div key={i} className="text-[10px] text-muted-foreground truncate font-mono">
-                            {img}
-                          </div>
-                        ))}
-                        {selectedCrawlSiteData.files?.images?.length > 10 && (
-                          <div className="text-[10px] text-muted-foreground">
-                            +{selectedCrawlSiteData.files.images.length - 10} more
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="panel p-4">
-                      <div className="text-xs font-semibold mb-2">PDFs ({selectedCrawlSiteData.files?.pdfs?.length || 0})</div>
-                      <div className="max-h-32 overflow-y-auto space-y-1">
-                        {selectedCrawlSiteData.files?.pdfs?.map((pdf: string, i: number) => (
-                          <div key={i} className="text-[10px] text-muted-foreground truncate font-mono">
-                            {pdf}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => handleImportCrawlOutput(selectedCrawlSite)}
-                    disabled={!tenantId}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-[image:var(--gradient-primary)] px-4 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
-                  >
-                    <Upload className="h-3.5 w-3.5" />
-                    Import all content to tenant documents
-                  </button>
-                </>
               )}
             </div>
           )}
@@ -3145,20 +2957,16 @@ function HealthTab() {
         <div className="border-b border-border px-5 py-3 text-sm font-semibold">Core services</div>
         <div className="divide-y divide-border text-sm">
           {[
-            { name: "API Gateway", status: health?.status === "ok" ? "operational" : "down", latency: "—" },
-            { name: "Database (SQLite)", status: health?.db === "connected" ? "operational" : "down", latency: "—" },
-            { name: "Vector Store (Qdrant)", status: health?.qdrant === "connected" ? "operational" : "down", latency: "—" },
-            { name: "Document Storage", status: "operational", latency: "—" },
-          ].map((s, i) => (
+            { name: "API Gateway", status: health?.status === "ok" ? "operational" : "down" },
+            { name: "Database (SQLite)", status: health?.db === "connected" ? "operational" : "down" },
+            { name: "Vector Store (Qdrant)", status: health?.qdrant === "connected" ? "operational" : "down" },
+          ].map((s) => (
             <div key={s.name} className="flex items-center justify-between px-5 py-3">
               <div className="flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${s.status === "operational" ? "bg-success" : "bg-destructive"}`} />
                 {s.name}
               </div>
-              <div className="flex items-center gap-6 text-xs text-muted-foreground">
-                <span className="font-mono">{s.latency}</span>
-                <span className="capitalize">{s.status}</span>
-              </div>
+              <span className="text-xs text-muted-foreground capitalize">{s.status}</span>
             </div>
           ))}
         </div>

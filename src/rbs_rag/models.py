@@ -110,9 +110,5 @@ class HealthStatus:
     status: str = "ok"
     db: str = "connected"
     qdrant: str = "disconnected"
-    llm: str = "unknown"
-    embeddings: str = "unknown"
     version: str = "1.0.0"
     uptime_seconds: float = 0.0
-    total_documents: int = 0
-    total_chunks: int = 0

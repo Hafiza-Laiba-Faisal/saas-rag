@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
 
 from .text import l2_normalize, tokenize
-
-log = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(Protocol):
@@ -53,40 +50,6 @@ class FastEmbedProvider:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [embedding.tolist() for embedding in self._model.embed(texts)]
-
-
-class BGEProvider:
-    def __init__(self, model: str = "BAAI/bge-small-en-v1.5", dimensions: int = 384):
-        try:
-            from fastembed import TextEmbedding
-        except ImportError as exc:
-            raise RuntimeError("FastEmbed requires 'fastembed'. Install with: pip install -e .[local-ml]") from exc
-        self._model = TextEmbedding(model_name=model, cache_dir=".fastembed_cache")
-        self.dimensions = dimensions
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return [embedding.tolist() for embedding in self._model.embed(texts)]
-
-
-class BGEM3Provider:
-    def __init__(self, model: str = "BAAI/bge-m3", dimensions: int = 1024):
-        try:
-            from fastembed import TextEmbedding
-        except ImportError as exc:
-            raise RuntimeError("FastEmbed requires 'fastembed'. Install with: pip install -e .[local-ml]") from exc
-        self._model = TextEmbedding(model_name=model, cache_dir=".fastembed_cache")
-        self.dimensions = dimensions
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        return [embedding.tolist() for embedding in self._model.embed(texts)]
-
-    def embed_sparse(self, texts: list[str]) -> list[list[float]]:
-        try:
-            embeddings = list(self._model.embed(texts))
-            return [e.tolist() for e in embeddings]
-        except Exception:
-            log.warning("Sparse embedding not supported by this fastembed model, returning dense vectors")
-            return self.embed(texts)
 
 
 class OpenAIEmbeddingProvider:
@@ -169,10 +132,6 @@ def create_embedding_provider(
         return HashEmbeddingProvider(dimensions=dimensions)
     if provider == "fastembed":
         return FastEmbedProvider(model=model, dimensions=dimensions)
-    if provider in ("bge", "bge_small"):
-        return BGEProvider(model=model or "BAAI/bge-small-en-v1.5", dimensions=dimensions)
-    if provider in ("bge_m3", "bge-m3"):
-        return BGEM3Provider(model=model or "BAAI/bge-m3", dimensions=dimensions or 1024)
     if provider in {"openai", "openai_compatible", "custom"}:
         return OpenAICompatibleEmbeddingProvider(api_key=api_key or "", base_url=base_url, model=model, dimensions=dimensions)
     if provider == "gemini":
@@ -185,6 +144,4 @@ def create_sparse_provider(
     dimensions: int,
     model: str,
 ) -> SparseEmbeddingProvider | None:
-    if provider in ("bge_m3", "bge-m3"):
-        return BGEM3Provider(model=model or "BAAI/bge-m3", dimensions=dimensions or 1024)
     return None

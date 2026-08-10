@@ -80,7 +80,6 @@ services:
       - RAG_ENCRYPTION_KEY=${RAG_ENCRYPTION_KEY:-}
       - RAG_ADMIN_JWT_SECRET=${RAG_ADMIN_JWT_SECRET:-}
       - RAG_ADMIN_PASSWORD=${RAG_ADMIN_PASSWORD:-admin}
-      - RAG_TERMINAL_ENABLED=${RAG_TERMINAL_ENABLED:-true}
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - RAG_SPA_DIR=/app/chic-interface-design/dist-spa
     healthcheck:

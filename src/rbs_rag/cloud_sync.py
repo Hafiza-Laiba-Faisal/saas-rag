@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html.parser
 import json
 import re
 import traceback
@@ -27,6 +28,7 @@ CLOUD_PROVIDER_PREFIXES = {
     "drive": "cloud_gdrive_",
     "onedrive": "cloud_onedrive_",
     "1drive": "cloud_onedrive_",
+    "confluence": "cloud_confluence_",
     "s3": "cloud_s3_",
     "url": "cloud_url_",
     "direct": "cloud_url_",
@@ -62,10 +64,12 @@ def sync_cloud_documents(
         downloaded_files, errors = download_from_google_drive(cloud_url_or_id, tenant_docs_dir, api_key_or_token, file_prefix=file_prefix)
     elif raw_provider in {"onedrive", "1drive"}:
         downloaded_files, errors = download_from_onedrive(cloud_url_or_id, tenant_docs_dir, api_key_or_token, file_prefix=file_prefix)
+    elif raw_provider == "confluence":
+        downloaded_files, errors = download_from_confluence(cloud_url_or_id, tenant_docs_dir, api_key_or_token, file_prefix=file_prefix)
     elif raw_provider in {"url", "s3", "direct", "http"}:
         downloaded_files, errors = download_from_direct_url(cloud_url_or_id, tenant_docs_dir, custom_filename, file_prefix=file_prefix)
     else:
-        errors.append(f"Unsupported cloud provider: '{provider}'. Supported: google_drive, onedrive, url/direct.")
+        errors.append(f"Unsupported cloud provider: '{provider}'. Supported: google_drive, onedrive, confluence, url/direct.")
 
     file_names = [f.name for f in downloaded_files]
     return {
@@ -407,6 +411,96 @@ def download_from_onedrive(
         errors.append(
             "Invalid OneDrive URL. Must be a sharepoint.com, 1drv.ms, or onedrive.live.com share link."
         )
+
+    return downloaded, errors
+
+
+class _HTMLTextExtractor(html.parser.HTMLParser):
+    """Minimal HTML→text extractor (stdlib only, no bs4 dependency)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("script", "style"):
+            self._skip += 1
+        if tag in ("p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "tr"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style") and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self.parts.append(data)
+
+
+def _html_to_text(html_text: str) -> str:
+    parser = _HTMLTextExtractor()
+    parser.feed(html_text)
+    raw = "".join(parser.parts)
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in raw.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def download_from_confluence(
+    url_or_id: str, dest_dir: Path, access_token: str | None = None, file_prefix: str = ""
+) -> tuple[list[Path], list[str]]:
+    """Download a Confluence Cloud page as markdown via the REST API.
+
+    ``url_or_id`` must be a full page URL, e.g.
+    ``https://<instance>.atlassian.net/wiki/spaces/SPACE/pages/123456`` — the page ID
+    is extracted from the URL and ``access_token`` is used as a Personal Access Token
+    (``Authorization: Bearer <token>``).
+    """
+    downloaded: list[Path] = []
+    errors: list[str] = []
+
+    text = (url_or_id or "").strip()
+    if not (text.startswith("http://") or text.startswith("https://")):
+        errors.append(
+            "Confluence sync requires a full page URL "
+            "(e.g. https://<instance>.atlassian.net/wiki/spaces/SPACE/pages/123456)."
+        )
+        return downloaded, errors
+
+    try:
+        parsed = urllib.parse.urlparse(text)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        id_match = re.search(r"/pages/(\d+)", parsed.path) or re.search(r"/page/(\d+)", parsed.path)
+        if not id_match:
+            errors.append(f"Could not find a Confluence page ID in URL '{url_or_id}'.")
+            return downloaded, errors
+        page_id = id_match.group(1)
+
+        headers = {
+            "User-Agent": "TenBit-RAG-CloudSync/1.0",
+            "Accept": "application/json",
+        }
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+
+        api_url = f"{origin}/rest/api/content/{page_id}?expand=body.storage"
+        req = urllib.request.Request(api_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        title = data.get("title") or f"confluence_{page_id}"
+        body_html = ((data.get("body") or {}).get("storage") or {}).get("value", "")
+        text_content = _html_to_text(body_html)
+        if not text_content.strip():
+            errors.append(f"Confluence page '{title}' returned no content (check token permissions).")
+            return downloaded, errors
+
+        safe = re.sub(r'[\\/*?:"<>|]', "_", title).strip() or f"confluence_{page_id}"
+        dest_path = _sanitize_dest_path(dest_dir, f"{file_prefix}{safe}.md")
+        dest_path.write_text(f"# {title}\n\n{text_content}\n", encoding="utf-8")
+        downloaded.append(dest_path)
+    except Exception as exc:
+        errors.append(f"Confluence download error ({url_or_id}): {exc}")
 
     return downloaded, errors
 

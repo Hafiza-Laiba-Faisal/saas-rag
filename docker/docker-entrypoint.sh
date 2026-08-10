@@ -57,7 +57,6 @@ ADMIN_AUTH_ENABLED="${RAG_ADMIN_AUTH_ENABLED:-false}"
 CORS_ORIGINS="${RAG_CORS_ORIGINS:-[\"*\"]}"
 ADMIN_JWT_SECRET="${RAG_ADMIN_JWT_SECRET:-}"
 ADMIN_PASSWORD="${RAG_ADMIN_PASSWORD:-admin}"
-TERMINAL_ENABLED="${RAG_TERMINAL_ENABLED:-true}"
 ENCRYPTION_KEY="${RAG_ENCRYPTION_KEY:-}"
 
 cat > "$CONFIG_FILE" << CONFIGEOF
@@ -127,8 +126,7 @@ cat > "$CONFIG_FILE" << CONFIGEOF
     "admin_auth_enabled": $ADMIN_AUTH_ENABLED,
     "admin_jwt_secret": "$ADMIN_JWT_SECRET",
     "cors_origins": $CORS_ORIGINS,
-    "prompt_injection_detection": true,
-    "terminal_enabled": $TERMINAL_ENABLED
+    "prompt_injection_detection": true
   },
   "observability": {
     "health_endpoint": true,
@@ -175,7 +173,6 @@ echo "   Qdrant:    ${QDRANT_HOST}:${QDRANT_PORT}"
 echo "   Redis:     ${REDIS_HOST}:${REDIS_PORT}"
 echo "   Encryption: ${ENCRYPTION_KEY:+enabled}${ENCRYPTION_KEY:-disabled}"
 echo "   Admin Auth: ${ADMIN_JWT_SECRET:+enabled}${ADMIN_JWT_SECRET:-disabled}"
-echo "   Terminal:  ${TERMINAL_ENABLED}"
 echo "=============================================================="
 echo ""
 
