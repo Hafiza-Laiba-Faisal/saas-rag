@@ -221,6 +221,21 @@ docker compose restart scraper_service
 docker compose build ocr_service && docker compose up -d ocr_service
 ```
 
+### 4.1 Deploy the latest code (recommended update flow)
+
+Pull the latest changes and rebuild only the backend API container (the other
+services stay running and keep their data):
+
+```bash
+git pull && docker compose up -d --build rag_api
+```
+
+If the frontend/SPA or other images also changed, rebuild everything instead:
+
+```bash
+git pull && docker compose up --build -d
+```
+
 Prefer `docker compose` over raw `docker start/stop tenbit-*` — it manages the shared network, volumes and health order.
 
 ---
