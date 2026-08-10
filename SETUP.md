@@ -53,6 +53,13 @@ RAG_ADMIN_AUTH_ENABLED=true
 RAG_LLM_PROVIDER=gemini
 RAG_LLM_MODEL=gemini-2.5-flash-lite
 RAG_LLM_API_KEY=
+
+# ── LLM rate-limit protection (optional) ─────────────────────────────────
+# Minimum seconds between outbound LLM requests (per host). Prevents HTTP 429
+# from rate-limited providers (e.g. Mistral free tier = 1 req/s) during
+# evaluation runs. 0 disables throttling; fast paid providers are never
+# throttled by default.
+RAG_LLM_MIN_INTERVAL=1.2
 ```
 
 Generate the secret values locally:
@@ -268,6 +275,7 @@ cd chic-interface-design && npm install && npm run dev   # → http://localhost:
 | `RAG_ADMIN_PASSWORD` | `admin` | Admin login password |
 | `RAG_ADMIN_AUTH_ENABLED` | `false` | Enables admin auth guard |
 | `RAG_LLM_API_KEY` / `PROVIDER` / `MODEL` | — / `gemini` / `gemini-2.5-flash-lite` | Global LLM fallback (optional) |
+| `RAG_LLM_MIN_INTERVAL` | `1.2` | Min seconds between outbound LLM requests (per host) — prevents HTTP 429 from rate-limited providers (e.g. Mistral free tier, 1 req/s). `0` disables throttling. Fast paid providers (OpenAI/Anthropic) are never throttled by default |
 | `RAG_EMBEDDING_PROVIDER` | `hash` | `hash`, `bge`, `bge_m3`, `openai`, `gemini` |
 | `RAG_QDRANT_HOST` / `PORT` | `qdrant` / `6333` | Vector DB |
 | `RAG_REDIS_HOST` / `PORT` / `PASSWORD` | `redis` / `6379` / — | Cache + jobs |
