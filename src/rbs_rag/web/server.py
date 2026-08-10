@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query, Response, Body
 from datetime import datetime, timezone
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -942,6 +942,15 @@ def get_chat_widget():
     return _spa_response()
 
 
+@app.get("/widget.js", response_class=Response)
+def get_chat_widget_script():
+    """Serve the embeddable chat widget script (chat bubble) that /widget tests."""
+    widget_path = Path(__file__).parent / "static" / "widget.js"
+    if widget_path.exists():
+        return Response(content=widget_path.read_bytes(), media_type="application/javascript")
+    return Response(content="console.error('RBS widget.js not found');", media_type="application/javascript")
+
+
 @app.get("/login", response_class=HTMLResponse)
 def get_login():
     return _spa_response()
@@ -1488,6 +1497,8 @@ async def chat_integration_stream(req: ChatRequest, x_api_key: str = Header(...,
             data = {"text": chunk.text, "done": chunk.done}
             if chunk.error:
                 data["error"] = chunk.error
+            if chunk.citations:
+                data["citations"] = [{"index": c.index, "document_name": c.document_name, "section": c.section, "chunk_id": c.chunk_id} for c in chunk.citations]
             yield f"data: {json.dumps(data)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

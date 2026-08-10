@@ -3073,9 +3073,11 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
   const totalChunks = (docs as any[]).reduce((sum: number, d: any) => sum + (d.chunks || 0), 0);
 
   const snippet = `<script
-  src="${baseUrl.replace('/api/v1', '')}/widget"
+  src="${window.location.origin}/widget.js"
   data-tenant="${tenantId}"
-  data-key="${apiKey}">
+  data-key="${apiKey}"
+  data-api-url="${window.location.origin}"
+  data-name="Assistant">
 </script>`;
   const apiCall = `curl ${baseUrl}/chat \\
   -H "X-API-Key: ${apiKey}" \\
