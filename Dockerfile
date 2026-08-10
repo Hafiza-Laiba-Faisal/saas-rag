@@ -3,10 +3,15 @@ FROM node:22-slim AS frontend-builder
 
 WORKDIR /build
 COPY chic-interface-design/package.json chic-interface-design/package-lock.json* ./
-RUN npm ci --omit=dev --ignore-scripts 2>/dev/null || npm install --omit=dev
+# Full install (NOT --omit=dev): vite/typescript are devDependencies, without them
+# `npm run build:spa` fails and the image silently ships the stale committed
+# dist-spa instead of a fresh build. Build errors must fail the image build.
+RUN npm ci --ignore-scripts
 
 COPY chic-interface-design/ .
-RUN npm run build:spa 2>/dev/null; mkdir -p /build/dist-spa
+# Fail fast: no 2>/dev/null, no `; mkdir -p` fallback. If the SPA build fails or
+# produces no index.html the image build stops instead of deploying old UI.
+RUN npm run build:spa && test -f dist-spa/index.html
 
 # ── Stage 2: Python dependencies ─────────────────────────────────────────────
 FROM python:3.11-slim AS builder
@@ -40,7 +45,7 @@ COPY src/ src/
 COPY docker/ docker/
 COPY .env.example .env
 
-# Copy React SPA build (fallback to old static if not built)
+# Copy the freshly-built React SPA (never the stale committed dist-spa)
 COPY --from=frontend-builder /build/dist-spa /app/chic-interface-design/dist-spa
 
 ENV PYTHONPATH=/app/src
