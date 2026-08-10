@@ -1,8 +1,60 @@
+import time
 import unittest
 from unittest.mock import patch
 
-from rbs_rag.llm import GeminiClient, LLMSettings, build_rag_messages, detect_llm_provider
+import rbs_rag.llm as llm
+from rbs_rag.llm import GeminiClient, LLMSettings, build_rag_messages, detect_llm_provider, _throttle_llm_request
 from rbs_rag.models import Chunk, SearchResult
+
+
+class LLMThrottleTests(unittest.TestCase):
+    MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
+
+    def test_consecutive_requests_are_spaced_by_min_interval(self):
+        original_interval = llm._LLM_MIN_INTERVAL
+        try:
+            llm._LLM_MIN_INTERVAL = 0.2
+            llm._llm_last_request_at = {}
+            start = time.monotonic()
+            _throttle_llm_request(self.MISTRAL_URL)
+            _throttle_llm_request(self.MISTRAL_URL)
+            elapsed = time.monotonic() - start
+        finally:
+            llm._LLM_MIN_INTERVAL = original_interval
+            llm._llm_last_request_at = {}
+        self.assertGreaterEqual(elapsed, 0.18)
+
+    def test_throttle_disabled_when_interval_zero(self):
+        original_interval = llm._LLM_MIN_INTERVAL
+        try:
+            llm._LLM_MIN_INTERVAL = 0
+            llm._llm_last_request_at = {}
+            start = time.monotonic()
+            _throttle_llm_request(self.MISTRAL_URL)
+            _throttle_llm_request(self.MISTRAL_URL)
+            elapsed = time.monotonic() - start
+        finally:
+            llm._LLM_MIN_INTERVAL = original_interval
+            llm._llm_last_request_at = {}
+        self.assertLess(elapsed, 0.15)
+
+    def test_fast_providers_not_throttled_by_default(self):
+        original_interval = llm._LLM_MIN_INTERVAL
+        try:
+            llm._LLM_MIN_INTERVAL = None
+            self.assertEqual(llm._interval_for_url("https://api.openai.com/v1/chat/completions"), 0.0)
+            self.assertEqual(llm._interval_for_url("https://api.anthropic.com/v1/messages"), 0.0)
+        finally:
+            llm._LLM_MIN_INTERVAL = original_interval
+
+    def test_rate_limited_hosts_have_default_interval(self):
+        original_interval = llm._LLM_MIN_INTERVAL
+        try:
+            llm._LLM_MIN_INTERVAL = None
+            self.assertGreater(llm._interval_for_url(self.MISTRAL_URL), 0.0)
+            self.assertGreater(llm._interval_for_url("https://openrouter.ai/api/v1/chat/completions"), 0.0)
+        finally:
+            llm._LLM_MIN_INTERVAL = original_interval
 
 
 class LLMTests(unittest.TestCase):

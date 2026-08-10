@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Protocol, runtime_checkable
 
@@ -13,6 +16,58 @@ import unicodedata
 from .models import StreamingChunk
 
 log = logging.getLogger(__name__)
+
+# ── Inter-request throttle ────────────────────────────────────────────────────
+# Providers like Mistral's free tier enforce a low requests-per-second limit
+# (1 req/s). When evaluation runs fire one question after another the provider
+# replies HTTP 429, which pollutes the run with "error" results. We space
+# outbound LLM requests to the same host by at least the host's minimum interval
+# so bursts never happen in the first place.
+#
+# - Per-host defaults below only throttle hosts known to run restrictive free
+#   tiers; paid/fast providers (OpenAI, Anthropic, ...) are NOT delayed.
+# - Set RAG_LLM_MIN_INTERVAL (seconds, 0 to disable) to force a global interval
+#   for every provider regardless of the defaults below.
+_HOST_MIN_INTERVAL = {
+    "api.mistral.ai": 1.2,
+    "openrouter.ai": 1.0,
+    "generativelanguage.googleapis.com": 1.0,
+}
+
+_LLM_MIN_INTERVAL: float | None = None
+_env_interval_raw = os.getenv("RAG_LLM_MIN_INTERVAL", "")
+if _env_interval_raw.strip():
+    try:
+        _LLM_MIN_INTERVAL = float(_env_interval_raw)
+    except ValueError:
+        log.warning("RAG_LLM_MIN_INTERVAL=%r is not a number; ignoring", _env_interval_raw)
+
+_llm_throttle_lock = threading.Lock()
+_llm_last_request_at: dict[str, float] = {}
+
+
+def _interval_for_url(url: str) -> float:
+    """Global env override wins; otherwise per-host default (0 = no throttle)."""
+    if _LLM_MIN_INTERVAL is not None:
+        return _LLM_MIN_INTERVAL
+    host = re.sub(r"^https?://", "", url).split("/", 1)[0].split(":", 1)[0].lower()
+    return _HOST_MIN_INTERVAL.get(host, 0.0)
+
+
+def _throttle_llm_request(url: str) -> None:
+    """Block until the host's minimum interval has passed since the last request
+    to that host. Thread-safe, per-host, so concurrent tenants stay within the
+    provider rate limit instead of tripping HTTP 429."""
+    interval = _interval_for_url(url)
+    if interval <= 0:
+        return
+    host = re.sub(r"^https?://", "", url).split("/", 1)[0].split(":", 1)[0].lower()
+    with _llm_throttle_lock:
+        now = time.monotonic()
+        wait = interval - (now - _llm_last_request_at.get(host, 0.0))
+        if wait > 0:
+            time.sleep(wait)
+        _llm_last_request_at[host] = time.monotonic()
 
 # Strip HTML tags and broken tags like strong>text (missing <)
 _HTML_TAG_RE = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*[^>]*>')
@@ -333,6 +388,7 @@ def _get_client() -> httpx.Client:
 
 
 def _post_json(url: str, payload: dict, headers: dict[str, str], timeout: int) -> dict:
+    _throttle_llm_request(url)
     client = _get_client()
     try:
         resp = client.post(url, json=payload, headers=headers, timeout=timeout)
