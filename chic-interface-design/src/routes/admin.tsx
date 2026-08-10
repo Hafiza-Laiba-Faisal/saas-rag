@@ -4,7 +4,6 @@ import {
   Activity,
   AlertTriangle,
   ArrowLeft,
-  BookOpen,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -41,7 +40,6 @@ import {
   TrendingUp,
   Upload,
   Wand2,
-  Webhook,
   X,
   XCircle,
   Zap,
@@ -78,7 +76,6 @@ const tabs = [
   { id: "evaluation", label: "Evaluation", icon: Target },
   { id: "health", label: "Health", icon: Activity },
   { id: "integration", label: "Integration API", icon: Code2 },
-  { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
@@ -341,7 +338,6 @@ function AdminPage() {
               {tab === "evaluation" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><EvaluationTab tenantId={active.id} /></div>}
               {tab === "health" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><HealthTab /></div>}
               {tab === "integration" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><IntegrationTab tenantId={active.id} /></div>}
-              {tab === "settings" && <div className="h-full overflow-y-auto px-4 sm:px-8 py-6"><SettingsTab /></div>}
             </div>
           </>
         ) : (
@@ -3888,8 +3884,6 @@ const endpoints = [
   { method: "GET",  path: "/v1/usage",              desc: "Query & token usage" },
 ];
 
-const hooks: { url: string; event: string; status: string }[] = [];
-
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -4041,45 +4035,6 @@ function IntegrationTab({ tenantId }: { tenantId: string }) {
         </pre>
       </div>
 
-      <div className="panel overflow-hidden">
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <div className="text-sm font-semibold flex items-center gap-2"><Webhook className="h-4 w-4 text-[color:var(--accent-emerald)]" /> Webhooks</div>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-1.5 text-xs font-medium hover:bg-elevated">
-            <Plus className="h-3.5 w-3.5" /> Add endpoint
-          </button>
-        </div>
-        <div className="divide-y divide-border text-sm">
-          {hooks.map((h, index) => (
-            <div key={h.url ? `${h.url}-${h.event}-${index}` : `hook-${index}`} className="flex items-center justify-between px-5 py-3">
-              <div className="min-w-0">
-                <div className="truncate font-mono text-xs">{h.url}</div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">event: <span className="font-mono">{h.event}</span></div>
-              </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span className="inline-flex items-center gap-1.5 text-[color:var(--accent-emerald)]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--accent-emerald)]" /> {h.status}
-                </span>
-                <button className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="panel flex flex-wrap items-center justify-between gap-3 p-5">
-        <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-lg bg-[color:var(--accent-violet)]/15 text-[color:var(--accent-violet)]">
-            <BookOpen className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold">Full API reference</div>
-            <div className="text-xs text-muted-foreground">OpenAPI 3.1 spec · Postman collection · SDK guides</div>
-          </div>
-        </div>
-        <button className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-3 py-2 text-xs font-medium hover:bg-elevated">
-          Open docs <ChevronRight className="h-3.5 w-3.5" />
-        </button>
-      </div>
     </div>
   );
 }
