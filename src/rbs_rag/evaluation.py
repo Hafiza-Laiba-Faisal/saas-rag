@@ -590,12 +590,20 @@ def generate_cases(
         sampled.extend(doc_chunks[::step][:3])
     sampled = sampled[: max_documents * 3]
 
-    client = create_llm_client(engine.config.llm)
+    # The LLM is optional: tenants without an API key must still get a usable
+    # question bank, so fall back to the deterministic extractor below.
+    try:
+        client = create_llm_client(engine.config.llm)
+    except Exception as exc:
+        log.warning("Question generation falling back to deterministic extractor (LLM unavailable: %s)", exc)
+        client = None
     created: list[dict] = []
     per_batch = 3
     batches = [sampled[i : i + per_batch] for i in range(0, len(sampled), per_batch)]
 
     for batch in batches:
+        if client is None:
+            break
         block = "\n\n".join(
             f"### DOC: {c.metadata.get('document_name', 'unknown')}\n{(c.text or '')[:1200]}" for c in batch
         )

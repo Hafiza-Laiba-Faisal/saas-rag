@@ -746,6 +746,25 @@ def _get_scraper_service() -> ScraperService:
     return _scraper_service
 
 
+def _resolve_llm_key(tenant: dict) -> str | None:
+    """Tenant's own LLM key wins; otherwise fall back to a global key from the
+    environment (MISTRAL_API_KEY for Mistral tenants, RAG_LLM_API_KEY as the
+    generic fallback) so tenants created without a key still get working
+    generation instead of a 500 on every eval/chat call."""
+    key = tenant.get("llm_api_key") or ""
+    if key.strip():
+        return key
+    provider = (tenant.get("llm_provider") or "").lower()
+    env_key = ""
+    if "mistral" in provider:
+        env_key = os.getenv("MISTRAL_API_KEY", "") or os.getenv("RAG_LLM_API_KEY", "")
+    elif "gemini" in provider:
+        env_key = os.getenv("RAG_LLM_API_KEY", "")
+    else:
+        env_key = os.getenv("RAG_LLM_API_KEY", "") or os.getenv("MISTRAL_API_KEY", "")
+    return env_key or None
+
+
 def _get_tenant_config(tenant: dict) -> AppConfig:
     return AppConfig(
         tenant_id=tenant["tenant_id"],
@@ -771,7 +790,7 @@ def _get_tenant_config(tenant: dict) -> AppConfig:
         ),
         system_prompt=tenant.get("system_prompt"),
         llm=LLMSettings(
-            provider=tenant["llm_provider"], api_key=tenant["llm_api_key"],
+            provider=tenant["llm_provider"], api_key=_resolve_llm_key(tenant),
             model=tenant["llm_model"], base_url=tenant["llm_base_url"],
         ),
         qdrant=QdrantConfig(
