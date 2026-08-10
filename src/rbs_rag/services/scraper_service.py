@@ -321,11 +321,11 @@ word_count: {scraped_meta['word_count']}
         c.embedding = embeddings[i]
 
     store.upsert_document(doc, tenant_id, knowledge_base_id, source="scrape", source_url=url)
-    store.upsert_chunks(chunks)
+    kept_chunks = store.upsert_chunks(chunks)
 
     if engine.vector_store and engine.vector_store.is_initialized:
         try:
-            engine.vector_store.upsert_chunks("rag_chunks", chunks)
+            engine.vector_store.upsert_chunks("rag_chunks", kept_chunks)
         except Exception:
             pass
 
@@ -334,6 +334,7 @@ word_count: {scraped_meta['word_count']}
         "document": filename,
         "title": title,
         "word_count": len(text.split()),
-        "chunks": len(chunks),
+        "chunks": len(kept_chunks),
+        "deduped": len(chunks) - len(kept_chunks),
         "metadata": scraped_meta,
     }

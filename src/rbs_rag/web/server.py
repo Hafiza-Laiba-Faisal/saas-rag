@@ -877,10 +877,21 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
                 source_url = document.metadata.get("source_url") if hasattr(document, "metadata") else None
                 document.metadata["tenant_id"] = engine.config.tenant_id
                 engine.store.upsert_document(document, engine.config.tenant_id, "default", source=source, source_url=source_url)
-                engine.store.upsert_chunks(chunks)
-
+                kept_chunks = engine.store.upsert_chunks(chunks)
+                # Note: Qdrant is synced separately via the async ingestion path;
+                # this legacy background path relies on the SQLite fallback in
+                # retrieval when Qdrant is missing a document.
+                if not kept_chunks:
+                    # Fully deduped — every chunk already indexed from other docs.
+                    # The document row is kept so future runs skip it, but it must
+                    # NOT count as a new document / new chunks.
+                    _log_to_ingestion(tenant_id, f"  [Dedup] {file_path.name}: all {len(chunks)} chunk(s) were duplicates — nothing new indexed.", progress_pct)
+                    skipped_docs += 1
+                    continue
                 total_docs += 1
-                total_chunks += len(chunks)
+                total_chunks += len(kept_chunks)
+                if len(kept_chunks) < len(chunks):
+                    _log_to_ingestion(tenant_id, f"  [Dedup] {file_path.name}: filtered {len(chunks) - len(kept_chunks)} duplicate chunk(s).", progress_pct)
             except Exception as e:
                 tb = traceback.format_exc()
                 err_msg = f"{file_path.name}: {e}"

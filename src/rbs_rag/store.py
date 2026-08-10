@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from collections import OrderedDict
@@ -12,6 +13,14 @@ from typing import Iterable
 from .models import Chunk, LoadedDocument
 
 log = logging.getLogger(__name__)
+
+
+_TEXT_SIGNATURE_RE = re.compile(r"[\W_]+")
+
+
+def _text_signature(text: str) -> str:
+    """Canonical signature used to detect cross-document duplicate chunks."""
+    return _TEXT_SIGNATURE_RE.sub("", text.lower())
 
 # ── In-process LRU connection pool (per-tenant SQLite files) ──────────────────
 # Keeping a bounded number of connections open avoids file-descriptor pressure
@@ -243,9 +252,44 @@ class SQLiteRagStore:
 
     # ── Chunks ─────────────────────────────────────────────────────────────────
 
-    def upsert_chunks(self, chunks: Iterable[Chunk]) -> None:
+    def upsert_chunks(self, chunks: Iterable[Chunk], dedupe_existing: bool = True) -> list[Chunk]:
+        """Insert chunks, skipping near-duplicates of already-indexed content.
+
+        Returns the chunks that were actually written (after dedup). When
+        ``dedupe_existing`` is set, chunks whose normalized text already exists in
+        the tenant's index (e.g. the same page scraped twice, or cookie/legal
+        boilerplate repeated on every page) are dropped before write — this keeps
+        junk from flooding retrieval top-k slots. Callers MUST sync exactly the
+        returned list to the vector store so SQLite and Qdrant stay consistent.
+        """
+        chunk_list = list(chunks)
+        if not chunk_list:
+            return []
+
+        tenant_id = chunk_list[0].metadata.get("tenant_id")
+        kb = chunk_list[0].metadata.get("knowledge_base_id", "default")
+
+        existing: set[str] = set()
+        if dedupe_existing and tenant_id:
+            try:
+                with self._connect() as connection:
+                    rows = connection.execute(
+                        "SELECT text FROM chunks WHERE tenant_id = ? AND knowledge_base_id = ?",
+                        (tenant_id, kb),
+                    ).fetchall()
+                existing = {_text_signature(r[0]) for r in rows if r[0]}
+            except Exception as exc:
+                log.warning("Duplicate scan failed, skipping dedup: %s", exc)
+                existing = set()
+
         rows = []
-        for chunk in chunks:
+        kept: list[Chunk] = []
+        for chunk in chunk_list:
+            sig = _text_signature(chunk.text)
+            if sig and sig in existing:
+                continue
+            existing.add(sig)
+            kept.append(chunk)
             rows.append(
                 (
                     chunk.chunk_id,
@@ -258,6 +302,9 @@ class SQLiteRagStore:
                     json.dumps(chunk.embedding),
                 )
             )
+        dropped = len(chunk_list) - len(kept)
+        if dropped:
+            log.info("Deduped %d duplicate chunk(s) for tenant %s (kb=%s)", dropped, tenant_id, kb)
         with self._connect() as connection:
             connection.executemany(
                 """
@@ -267,6 +314,7 @@ class SQLiteRagStore:
                 """,
                 rows,
             )
+        return kept
 
     def delete_chunks(self, chunk_ids: list[str]) -> None:
         if not chunk_ids:

@@ -78,20 +78,40 @@ class RagEngine:
             chunk.embedding = embedding
         try:
             self.store.upsert_document(document, self.config.tenant_id, knowledge_base_id)
-            self.store.upsert_chunks(chunks)
+            kept_chunks = self.store.upsert_chunks(chunks)
         except Exception as exc:
             log.error("SQLite upsert failed: %s", exc)
             raise
 
-        # Also sync to Qdrant
+        # Keep Qdrant consistent in EVERY path: purge this doc's old vectors so a
+        # fully-deduped re-ingest doesn't leave stale vectors pointing at a doc_id
+        # that now has 0 chunks in SQLite.
         if self.vector_store.is_initialized:
             try:
                 await self.vector_store.delete_document_chunks("rag_chunks", document.document_id)
-                await self.vector_store.upsert_chunks("rag_chunks", chunks)
+            except Exception as exc:
+                log.warning("Qdrant delete failed: %s", exc)
+
+        # A fully-deduped document (every chunk already indexed from other docs)
+        # adds nothing new. The document row is kept so re-ingestion skips it,
+        # but it must NOT count as a new document / new chunks.
+        if not kept_chunks:
+            log.info(
+                "All %d chunk(s) of %s were duplicates — nothing new indexed",
+                len(chunks), document.name,
+            )
+            return IngestSummary(documents=0, chunks=0, skipped=1)
+
+        # Sync the deduped chunks to Qdrant (only the kept ones, so both stores
+        # stay in sync).
+        if self.vector_store.is_initialized:
+            try:
+                await self.vector_store.upsert_chunks("rag_chunks", kept_chunks)
             except Exception as exc:
                 log.warning("Qdrant upsert failed, SQLite fallback active: %s", exc)
 
-        return IngestSummary(documents=1, chunks=len(chunks))
+        skipped = len(chunks) - len(kept_chunks)
+        return IngestSummary(documents=1, chunks=len(kept_chunks), skipped=skipped)
 
     async def delete_document(self, document_id: str):
         doc = self.store.get_document(document_id)
