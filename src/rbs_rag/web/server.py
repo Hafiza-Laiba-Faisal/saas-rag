@@ -33,6 +33,7 @@ from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
 from rbs_rag.metrics import MetricsMiddleware, metrics_export, DOCUMENTS_INGESTED, CHUNKS_CREATED, CHUNKS_RETRIEVED, LLM_REQUESTS, LLM_DURATION, PROMPT_INJECTIONS_BLOCKED, ACTIVE_TENANTS, ENGINE_UPTIME
 from rbs_rag.web.admin_db import AdminStore
 from rbs_rag.provisioning import provision_tenant
+from rbs_rag.evaluation import EvaluationStore, generate_cases, kb_quality, run_evaluation
 from rbs_rag.ocr.service import get_ocr_service, init_ocr_service
 from rbs_rag.services.scraper_service import ScraperService
 from rbs_rag.models import StreamingChunk
@@ -101,6 +102,10 @@ def _make_relevant_filename(title: str = "", url: str = "", docs_dir: Path | Non
     if docs_dir and (docs_dir / candidate).exists():
         candidate = f"{prefix}_{slug}_{uuid.uuid4().hex[:4]}.txt"
     return candidate
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _ts_to_epoch(value) -> float:
@@ -2599,6 +2604,213 @@ def purge_chat_sessions(tenant_id: str, _admin=Depends(require_admin)):
     retention_days = tenant.get("chat_retention_days", 30)
     purged_count = engine.store.purge_expired_sessions(tenant_id, retention_days)
     return {"status": "success", "purged_turns": purged_count, "retention_days": retention_days}
+
+
+# --- RAG EVALUATION ---
+
+_eval_stores: dict[str, EvaluationStore] = {}
+_eval_run_progress: dict[str, dict] = {}
+
+
+def _get_eval_store(engine) -> EvaluationStore:
+    key = str(engine.store.path)
+    if key not in _eval_stores:
+        _eval_stores[key] = EvaluationStore(engine.store.path)
+    return _eval_stores[key]
+
+
+class EvalCaseRequest(BaseModel):
+    question: str = Field(..., min_length=3)
+    expected_answer: str | None = None
+    expected_document: str | None = None
+    source: str = "manual"
+
+
+class EvalCaseUpdateRequest(BaseModel):
+    question: str | None = None
+    expected_answer: str | None = None
+    expected_document: str | None = None
+
+
+class EvalGenerateRequest(BaseModel):
+    count: int = 20
+
+
+class EvalRunRequest(BaseModel):
+    case_ids: list[str] | None = None
+
+
+@app.get("/api/v1/tenants/{tenant_id}/evaluation/summary")
+def evaluation_summary(tenant_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    cases = store.list_cases(tenant_id)
+    runs = store.list_runs(tenant_id)
+    latest = runs[0] if runs else None
+    if latest and latest.get("config_snapshot"):
+        try:
+            latest["config_snapshot"] = json.loads(latest["config_snapshot"])
+        except Exception:
+            pass
+    return {
+        "tenant_id": tenant_id,
+        "case_count": len(cases),
+        "sources": {s: sum(1 for c in cases if c.get("source") == s) for s in {"manual", "auto", "playground"}},
+        "run_count": len(runs),
+        "latest_run": latest,
+        "run_progress": _eval_run_progress.get(runs[0]["run_id"]) if runs else None,
+    }
+
+
+@app.get("/api/v1/tenants/{tenant_id}/evaluation/cases")
+def list_eval_cases(tenant_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    return {"cases": _get_eval_store(engine).list_cases(tenant_id)}
+
+
+@app.post("/api/v1/tenants/{tenant_id}/evaluation/cases")
+def create_eval_case(tenant_id: str, req: EvalCaseRequest, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    case = store.add_case(
+        tenant_id,
+        req.question.strip(),
+        expected_answer=req.expected_answer,
+        expected_document=req.expected_document,
+        source=req.source,
+    )
+    return {"status": "success", "case": case}
+
+
+@app.put("/api/v1/tenants/{tenant_id}/evaluation/cases/{case_id}")
+def update_eval_case(tenant_id: str, case_id: str, req: EvalCaseUpdateRequest, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    case = store.update_case(case_id, fields)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"status": "success", "case": case}
+
+
+@app.delete("/api/v1/tenants/{tenant_id}/evaluation/cases/{case_id}")
+def delete_eval_case(tenant_id: str, case_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    _get_eval_store(engine).delete_case(case_id)
+    return {"status": "success"}
+
+
+@app.post("/api/v1/tenants/{tenant_id}/evaluation/generate")
+def generate_eval_cases(tenant_id: str, req: EvalGenerateRequest, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    count = max(1, min(100, req.count))
+    created = generate_cases(engine, tenant_id, store, count=count)
+    return {"status": "success", "created": len(created), "cases": created}
+
+
+@app.post("/api/v1/tenants/{tenant_id}/evaluation/runs")
+def start_evaluation_run(tenant_id: str, req: EvalRunRequest, background_tasks: BackgroundTasks, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    cases = store.list_cases(tenant_id)
+    if req.case_ids:
+        wanted = set(req.case_ids)
+        cases = [c for c in cases if c["case_id"] in wanted]
+    if not cases:
+        raise HTTPException(status_code=400, detail="No evaluation cases to run. Add or generate questions first.")
+    run_id = store.create_run(tenant_id, {})
+
+    def _progress(current: int, total: int):
+        _eval_run_progress[run_id] = {"current": current, "total": total, "status": "running"}
+
+    def _worker():
+        try:
+            run_evaluation(engine, tenant_id, store, run_id, case_ids=req.case_ids, progress_cb=_progress)
+        except Exception as exc:
+            log.exception("Evaluation run %s failed", run_id)
+            try:
+                store.update_run(run_id, {"status": "failed", "completed_at": _utcnow()})
+            except Exception:
+                pass
+        finally:
+            _eval_run_progress[run_id]["status"] = "completed"
+
+    _eval_run_progress[run_id] = {"current": 0, "total": len(cases), "status": "running"}
+    background_tasks.add_task(_worker)
+    return {"status": "started", "run_id": run_id, "total_cases": len(cases)}
+
+
+@app.get("/api/v1/tenants/{tenant_id}/evaluation/runs")
+def list_eval_runs(tenant_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    runs = store.list_runs(tenant_id)
+    for r in runs:
+        if r.get("config_snapshot"):
+            try:
+                r["config_snapshot"] = json.loads(r["config_snapshot"])
+            except Exception:
+                pass
+    return {"runs": runs, "progress": _eval_run_progress}
+
+
+@app.get("/api/v1/tenants/{tenant_id}/evaluation/runs/{run_id}")
+def get_eval_run(tenant_id: str, run_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    store = _get_eval_store(engine)
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.get("config_snapshot"):
+        try:
+            run["config_snapshot"] = json.loads(run["config_snapshot"])
+        except Exception:
+            pass
+    results = store.get_run_results(run_id)
+    failed = [r for r in results if r.get("failure_type") not in (None, "none")]
+    return {
+        "run": run,
+        "results": results,
+        "failed_queries": failed,
+        "progress": _eval_run_progress.get(run_id),
+    }
+
+
+@app.get("/api/v1/tenants/{tenant_id}/evaluation/quality")
+def evaluation_kb_quality(tenant_id: str, _admin=Depends(require_admin)):
+    tenant = admin_store.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    engine = _get_engine(tenant)
+    return kb_quality(engine, tenant_id)
 
 
 # --- SYSTEM LOGS ---
