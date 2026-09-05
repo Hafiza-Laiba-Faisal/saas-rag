@@ -50,6 +50,7 @@ Upload → Load Document (text extraction) → Chunk → Embed → Store (SQLite
   - `fastembed` — Local BGE models (production, no API key)
   - `openai` — `text-embedding-3-small`
   - `gemini` — Gemini embedding models
+  - `mistral` — Mistral embedding models
 - **Storage:** Metadata in per-tenant SQLite + vectors in shared Qdrant collection (filtered by `tenant_id`)
 
 ### API
@@ -165,8 +166,10 @@ data: {"text": " the answer is 42.", "done": true, "citations": [{"index": 1, "d
 | **Gemini** | `@google/generative-ai` | gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash |
 | **OpenAI** | `openai` or direct HTTP | gpt-4o, gpt-4o-mini, gpt-3.5-turbo |
 | **Anthropic** | `@anthropic-ai/sdk` | claude-3-opus, claude-3-sonnet, claude-3-haiku |
+| **Mistral** | HTTP | mistral-small-latest, mistral-medium-latest, mistral-large-latest |
+| **NVIDIA NIM** | HTTP | meta/llama-3.1-8b-instruct, meta/llama-3.1-70b-instruct, mistralai/mistral-7b-instruct-v03 |
+| **OpenRouter** | HTTP | Any supported provider (GPT-4o, Claude, Llama, etc.) |
 | **Ollama** | HTTP | Any local model (llama3, mistral, etc.) |
-| **OpenRouter** | HTTP | Any supported provider |
 
 ### Conversation Context
 
@@ -218,6 +221,86 @@ When `REDIS_ENABLED=true`:
 - Job store persisted in Redis (`scraper_job:{job_id}`, 24h TTL)
 - Survives scraper service restarts
 
+### Facebook Post Scraper
+
+Scrapes posts and reels from any Facebook page:
+- Extracts captions, media URLs, post URLs, like/comment counts, timestamps
+- Primary: JSON blob extraction from page source (3 strategies)
+- Fallback: Selenium DOM extraction via JavaScript
+- DASH manifest parsing for reels — separate video + audio URLs
+- Date range filtering (`date_from` / `date_to`)
+- Configurable `max_posts` and `scroll_rounds`
+
+**Endpoints:**
+```
+POST /scrape/fb-posts          Start Facebook scrape (returns job_id)
+GET  /scrape/fb-posts/status/{job_id}   Poll progress (0-100%)
+```
+
+### Facebook Authentication
+
+3 Login Methods:
+| Method | Endpoint | How |
+|--------|----------|-----|
+| Browser window | `POST /auth/fb-login` | Opens visible Chrome, user logs in manually |
+| Cookie paste | `POST /auth/set-cookies` | Paste `document.cookie` from browser console |
+| Chrome profile | `GET /auth/fb-cookies-from-profile` | Reads existing logged-in Chrome profile |
+
+All methods persist cookies to SQLite — survive server restarts.
+
+### Profile Scraper
+
+Scrape public profiles from multiple platforms:
+| Platform | Method |
+|----------|--------|
+| Instagram | API (no browser) |
+| Twitter / X | API (no browser) |
+| Facebook | Selenium |
+| Reddit | Selenium |
+| GitHub | Selenium |
+| TikTok | Selenium |
+| Pinterest | Selenium |
+
+**Endpoint:** `POST /scrape/profile`
+
+### Media Proxy
+
+**Stream Proxy:** `GET /proxy/media?url=...`
+- Streams Facebook CDN media through server (CORS bypass)
+- Auto-detects content type
+
+**Download with DASH Merge:** `GET /proxy-download?url=...&audio_url=...`
+- Downloads video directly to client
+- Merges video + audio using `ffmpeg` for DASH reels
+
+### Data Storage (SQLite)
+
+All scrape sessions and posts stored in `scraper.db`:
+- Tables: `scrape_sessions`, `posts`, `app_settings`
+- Posts tagged by `content_type`: `post` or `reel`
+- Full-text search on caption
+- Paginated with `limit` / `offset`
+
+**Endpoints:**
+```
+GET    /db/sessions              List all sessions
+GET    /db/sessions/{id}         One session + posts
+DELETE /db/sessions/{id}
+GET    /db/posts                 Paginated with filters
+DELETE /db/posts/{id}
+GET    /db/stats                 Totals
+GET    /db/export/excel          Download .xlsx
+```
+
+### Excel Export
+
+Export posts or reels to `.xlsx`:
+- Columns: #, Image (embedded, 160×160px), Caption, Date, Post URL
+- Images fetched + resized + padded via Pillow
+- Hyperlinked post URLs
+- Frozen header row, auto-filter
+- Supports `post_ids` param for selected-post export
+
 ---
 
 ## 6. Multi-Tenant Admin
@@ -237,7 +320,7 @@ When `REDIS_ENABLED=true`:
 
 Each tenant has independent:
 - **LLM Provider + Model + API Key** — Different LLMs per tenant
-- **Embedding Provider** — hash/fastembed/openai/gemini
+- **Embedding Provider** — hash/fastembed/openai/gemini/mistral
 - **Retrieval Settings** — top_k, weights, reranker type
 - **Chunking Settings** — max tokens, overlap, semantic
 - **Session Settings** — memory limit, retention days
@@ -332,7 +415,7 @@ Redis uses **Sorted Set** with timestamps as scores. Old entries purged on each 
 
 - API keys encrypted at rest (Fernet symmetric encryption)
 - JWT tokens for admin sessions
-- CORS middleare (configurable origins)
+- CORS middleware (configurable origins)
 - File upload validation (extension + size)
 - SSRF protection (blocked private IPs, metadata endpoints)
 - HTTPS via nginx (optional SSL)
@@ -358,6 +441,97 @@ Redis uses **Sorted Set** with timestamps as scores. Old entries purged on each 
 | `POST` | `/ocr/batch` | Batch OCR multiple files |
 | `GET` | `/health` | Engine availability |
 | `GET` | `/benchmark` | Performance test |
+
+### Advanced OCR Features
+
+#### Searchable PDF Export
+```
+POST /ocr/export/searchable-pdf
+```
+Run OCR and return a searchable PDF with an invisible text layer. Allows full-text search on scanned documents.
+
+#### Excel Export
+```
+POST /ocr/export/excel
+```
+Run OCR and export regions as an Excel workbook with:
+- Summary sheet (file info, processing time, word count)
+- Per-page region sheets (text, confidence, bounding boxes)
+- Full text sheets
+
+#### Image Preprocessing Pipeline
+```
+POST /ocr/preprocess
+```
+Apply configurable preprocessing steps:
+- Grayscale conversion
+- Noise reduction
+- Contrast enhancement
+- Adaptive thresholding
+- Auto-rotation/deskew
+- Dynamic upscaling for low-DPI images
+
+#### Barcode / QR Detection
+```
+POST /ocr/barcode
+```
+Detect barcodes and QR codes in images using pyzbar or OpenCV fallback.
+
+#### Document Classification
+```
+POST /ocr/classify
+```
+Classify document type using OCR text + keyword heuristics:
+- Invoice, Receipt, Resume, Passport, ID Card
+- Bank Statement, Medical, Newspaper, Research, Form
+
+#### Layout Visualization
+```
+POST /ocr/visualize
+```
+Return annotated image with OCR bounding boxes drawn. Color-coded by confidence (green > 80%, yellow > 50%, red < 50%).
+
+#### Background Job Queue
+```
+POST /ocr/jobs/submit       Submit large file for background OCR
+GET  /ocr/jobs/{job_id}     Get job status
+GET  /ocr/jobs              List recent jobs
+```
+Asynchronous OCR processing for large files with progress tracking.
+
+#### Monitoring & Metrics
+```
+GET /ocr/metrics
+```
+Service-level metrics: total requests, success rate, average processing time, words extracted, errors.
+
+### Hybrid PDF Pipeline
+
+For PDFs processed via PaddleOCR:
+- Extracts **native text** from digital PDF pages directly
+- Detects **scanned pages** (low character count) and renders to images
+- Applies **OCR** only where needed
+- Configurable threshold: `MIN_TEXT_CHARS_THRESHOLD`
+
+### Image Preprocessing
+
+Applied automatically before PaddleOCR inference:
+- Grayscale conversion and adaptive binarization
+- Noise reduction and contrast enhancement
+- Dynamic upscaling for low-DPI images
+- Orientation correction support
+
+### Rich Structured Output
+
+Every response includes:
+- `full_text` — plain text of entire document
+- `markdown` — formatted Markdown (Mistral only)
+- `tables` — extracted tables in HTML format
+- `hyperlinks` — extracted URLs
+- `paragraphs` / `lines` / `words` — split text at different granularities
+- `regions` — bounding boxes + confidence scores per text region
+- `entities` — auto-extracted URLs, emails, phone numbers
+- `processing_time_ms` — per-request timing
 
 ---
 

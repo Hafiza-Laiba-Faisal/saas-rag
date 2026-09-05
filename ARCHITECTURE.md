@@ -56,9 +56,9 @@
 - Multi-tenant CRUD (tenants, documents, sessions)
 - Document ingestion pipeline (extract → chunk → embed → store)
 - Hybrid search retrieval (dense + sparse) with reranking
-- LLM query/chat (Gemini, OpenAI, Anthropic, Ollama)
+- LLM query/chat (Gemini, OpenAI, Anthropic, Mistral, NVIDIA NIM, OpenRouter, Ollama)
 - SSE streaming chat
-- Web scraping orchestration
+- Web scraping orchestration (single page, recursive, full-site, Facebook, profiles)
 - Cloud sync (Google Drive, OneDrive, S3, Confluence)
 - Admin authentication (JWT) + client auth (API keys)
 - Prometheus metrics
@@ -79,6 +79,14 @@
 - Image OCR (`POST /ocr/image`)
 - PDF OCR (`POST /ocr/pdf`)
 - Batch OCR (`POST /ocr/batch`)
+- Searchable PDF export (`POST /ocr/export/searchable-pdf`)
+- Excel export (`POST /ocr/export/excel`)
+- Image preprocessing (`POST /ocr/preprocess`)
+- Barcode/QR detection (`POST /ocr/barcode`)
+- Document classification (`POST /ocr/classify`)
+- Layout visualization (`POST /ocr/visualize`)
+- Background job queue (`POST /ocr/jobs/submit`)
+- Service metrics (`GET /ocr/metrics`)
 - Benchmarking (`/benchmark`)
 - Rate-limited via `slowapi`
 
@@ -98,6 +106,11 @@
 - Recursive crawl (`/crawl/recursive`)
 - Full-site crawl with images + PDFs (`/crawl/full`)
 - WordPress REST API scraping
+- Facebook post/reel scraping (`/scrape/fb-posts`)
+- Profile scraping for 7 platforms (Instagram, Twitter, Facebook, Reddit, GitHub, TikTok, Pinterest)
+- Media proxy with DASH merge for video+audio
+- SQLite data storage for scrape sessions
+- Excel export for scraped posts
 - Redis-backed cache & job queue (optional via `REDIS_ENABLED`)
 
 ### 4. Frontend (`chic-interface-design/`)

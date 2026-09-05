@@ -1,4 +1,4 @@
-# Features
+# Features — OCR Service
 
 A production-ready OCR microservice built on FastAPI with a pluggable engine architecture, cloud-primary processing, and local fallback.
 
@@ -10,8 +10,9 @@ Built on a **Strategy Pattern** — engines are swappable without touching appli
 
 | Engine | Role | Backend |
 |---|---|---|
-| `MistralOCREngine` | Primary | Mistral cloud API (`mistral-ocr-latest`) |
-| `PaddleOCREngine` | Fallback | Local inference via `onnxruntime` |
+| `NemotronOCREngine` | Primary | NVIDIA NIM API (GPU-accelerated) |
+| `MistralOCREngine` | Fallback | Mistral cloud API (`mistral-ocr-latest`) |
+| `PaddleOCREngine` | Local Fallback | Local inference via `onnxruntime` |
 
 The `OCROrchestrator` tries engines in order. If the primary fails (network issue, API limit, unsupported file), it automatically falls back to the next available engine — zero downtime.
 
@@ -100,7 +101,87 @@ Automatically extracted from all OCR output:
 
 ---
 
-## 9. Production-Grade API
+## 9. Advanced OCR Features
+
+### Searchable PDF Export
+```
+POST /ocr/export/searchable-pdf
+```
+Run OCR and return a searchable PDF with an invisible text layer. Allows full-text search on scanned documents using PyMuPDF.
+
+### Excel Export
+```
+POST /ocr/export/excel
+```
+Run OCR and export regions as an Excel workbook with:
+- Summary sheet (file info, processing time, word count)
+- Per-page region sheets (text, confidence, bounding boxes)
+- Full text sheets
+- Styled headers with auto-filter
+
+### Image Preprocessing Pipeline
+```
+POST /ocr/preprocess
+```
+Apply configurable preprocessing steps:
+- Grayscale conversion
+- Noise reduction (fastNlMeansDenoising)
+- Contrast enhancement (CLAHE)
+- Adaptive thresholding
+- Auto-rotation/deskew
+- Dynamic upscaling for low-DPI images
+
+### Barcode / QR Detection
+```
+POST /ocr/barcode
+```
+Detect barcodes and QR codes in images:
+- Uses pyzbar for high-quality detection
+- OpenCV QR detector as fallback
+- Returns type, data, bounding box, and quality score
+
+### Document Classification
+```
+POST /ocr/classify
+```
+Classify document type using OCR text + keyword heuristics:
+- Invoice, Receipt, Resume, Passport, ID Card
+- Bank Statement, Medical, Newspaper, Research, Form
+- Returns predicted class with confidence score
+
+### Layout Visualization
+```
+POST /ocr/visualize
+```
+Return annotated image with OCR bounding boxes drawn:
+- Color-coded by confidence (green > 80%, yellow > 50%, red < 50%)
+- Confidence percentage labels on each region
+
+### Background Job Queue
+```
+POST /ocr/jobs/submit       Submit large file for background OCR
+GET  /ocr/jobs/{job_id}     Get job status
+GET  /ocr/jobs              List recent jobs
+```
+Asynchronous OCR processing for large files with progress tracking.
+
+### Monitoring & Metrics
+```
+GET /ocr/metrics
+```
+Service-level metrics:
+- Total requests, successful/failed counts
+- Success rate percentage
+- Average processing time
+- Average words per request
+- Total words extracted
+- Requests by endpoint
+- Recent errors
+- Job counts by status
+
+---
+
+## 10. Production-Grade API
 
 - **Rate limiting** — 60 requests/minute per IP (configurable via `slowapi`)
 - **API key auth** — optional `X-API-Key` header auth (`OCR_API_KEY` env var)
@@ -112,7 +193,7 @@ Automatically extracted from all OCR output:
 
 ---
 
-## 10. Observability
+## 11. Observability
 
 - Structured JSON logging via `python-json-logger`
 - Per-request `X-Request-ID` tracing
